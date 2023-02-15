@@ -1,0 +1,15 @@
+[package]
+edition = "2021"
+name = "riversim"
+version = "0.1.0"
+
+[dependencies]
+argmin = "0.7.0"
+itertools = "0.10.5"
+minilp = "0.2.2"
+ndarray = {version = "0.15.4", features = ["approx-0_5"]}
+strum = "0.24"
+strum_macros = "0.24"
+
+[dev-dependencies]
+approx = "0.5.1"
