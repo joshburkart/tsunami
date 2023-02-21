@@ -1,7 +1,8 @@
-#![allow(dead_code)]
+#![deny(clippy::all)]
+
+pub mod indexing;
 
 use ndarray::{self as nd, s};
-use strum::EnumCount;
 
 pub type Float = f64;
 
@@ -15,216 +16,26 @@ pub type VectorField = nd::Array4<Float>;
 
 pub type HorizVectorField = nd::Array3<Float>;
 
-trait Indexing {
-    type Index: Copy;
-
-    fn len(&self) -> usize;
-
-    fn flatten(&self, index: Self::Index) -> usize;
-    fn unflatten(&self, flat_index: usize) -> Self::Index;
-}
-
-fn iter_indices<I: Indexing>(indexing: &I) -> impl Iterator<Item = I::Index> + '_ {
-    (0..indexing.len()).map(|flat_index| indexing.unflatten(flat_index))
-}
-
-#[derive(Clone, Copy)]
-pub struct VertexFootprintIndexing {
-    num_x_points: usize,
-    num_y_points: usize,
-}
-impl VertexFootprintIndexing {
-    pub fn neighbors(
-        &self,
-        center: VertexFootprintIndex,
-    ) -> impl Iterator<Item = VertexFootprintIndex> {
-        let min_x = center.x.checked_sub(1).unwrap_or(1);
-        let max_x = (center.x + 2).min(self.num_x_points - 1);
-        let min_y = center.y.checked_sub(1).unwrap_or(1);
-        let max_y = (center.y + 2).min(self.num_y_points - 1);
-
-        (min_x..max_x)
-            .step_by(2)
-            .map(move |x| VertexFootprintIndex { x, y: center.y })
-            .chain(
-                (min_y..max_y)
-                    .step_by(2)
-                    .map(move |y| VertexFootprintIndex { x: center.x, y }),
-            )
-    }
-}
-#[derive(Copy, Clone)]
-pub struct VertexFootprintIndex {
-    pub x: usize,
-    pub y: usize,
-}
-impl Indexing for VertexFootprintIndexing {
-    type Index = VertexFootprintIndex;
-
-    fn len(&self) -> usize {
-        self.num_x_points * self.num_y_points
-    }
-
-    fn flatten(&self, index: Self::Index) -> usize {
-        self.num_y_points * index.x + index.y
-    }
-    fn unflatten(&self, flat_index: usize) -> Self::Index {
-        VertexFootprintIndex {
-            x: flat_index / self.num_y_points,
-            y: flat_index % self.num_y_points,
-        }
-    }
-}
-
-#[derive(Clone, Copy)]
-pub struct VertexIndexing {
-    pub cell_indexing: CellIndexing,
-}
-impl VertexIndexing {
-    pub fn num_x_points(&self) -> usize {
-        self.cell_indexing
-            .cell_footprint_indexing
-            .vertex_footprint_indexing
-            .num_x_points
-    }
-    pub fn num_y_points(&self) -> usize {
-        self.cell_indexing
-            .cell_footprint_indexing
-            .vertex_footprint_indexing
-            .num_y_points
-    }
-    pub fn num_z_points(&self) -> usize {
-        self.cell_indexing.num_z_cells_per_column + 1
-    }
-}
-#[derive(Copy, Clone)]
-pub struct VertexIndex {
-    pub footprint: VertexFootprintIndex,
-    pub z: usize,
-}
-impl Indexing for VertexIndexing {
-    type Index = VertexIndex;
-
-    fn len(&self) -> usize {
-        self.cell_indexing
-            .cell_footprint_indexing
-            .vertex_footprint_indexing
-            .num_x_points
-            * self
-                .cell_indexing
-                .cell_footprint_indexing
-                .vertex_footprint_indexing
-                .num_y_points
-            * self.num_z_points()
-    }
-
-    fn flatten(&self, index: Self::Index) -> usize {
-        self.cell_indexing
-            .cell_footprint_indexing
-            .vertex_footprint_indexing
-            .flatten(index.footprint)
-            * self.num_z_points()
-            + index.z
-    }
-    fn unflatten(&self, flat_index: usize) -> Self::Index {
-        VertexIndex {
-            footprint: self
-                .cell_indexing
-                .cell_footprint_indexing
-                .vertex_footprint_indexing
-                .unflatten(flat_index / self.num_z_points()),
-            z: flat_index % self.num_z_points(),
-        }
-    }
-}
-
-#[derive(Clone, Copy)]
-pub struct CellFootprintIndexing {
-    pub vertex_footprint_indexing: VertexFootprintIndexing,
-}
-#[derive(Copy, Clone)]
-pub struct CellFootprintIndex {
-    pub x: usize,
-    pub y: usize,
-    pub triangle: Triangle,
-}
-impl Indexing for CellFootprintIndexing {
-    type Index = CellFootprintIndex;
-
-    fn len(&self) -> usize {
-        (self.vertex_footprint_indexing.num_x_points - 1)
-            * (self.vertex_footprint_indexing.num_y_points - 1)
-            * Triangle::COUNT
-    }
-
-    fn flatten(&self, index: Self::Index) -> usize {
-        (self.vertex_footprint_indexing.num_y_points - 1) * Triangle::COUNT * index.x
-            + Triangle::COUNT * index.y
-            + index.triangle as usize
-    }
-    fn unflatten(&self, flat_index: usize) -> Self::Index {
-        let triangle = match flat_index % Triangle::COUNT {
-            x if x == Triangle::LowerRight as usize => Triangle::LowerRight,
-            x if x == Triangle::UpperLeft as usize => Triangle::UpperLeft,
-            _ => unreachable!(),
-        };
-        let y = (flat_index / Triangle::COUNT) % (self.vertex_footprint_indexing.num_y_points - 1);
-        let x = flat_index / Triangle::COUNT / (self.vertex_footprint_indexing.num_y_points - 1);
-        CellFootprintIndex { x, y, triangle }
-    }
-}
-
-#[derive(Clone, Copy)]
-pub struct CellIndexing {
-    pub cell_footprint_indexing: CellFootprintIndexing,
-    pub num_z_cells_per_column: usize,
-}
-#[derive(Copy, Clone)]
-pub struct CellIndex {
-    pub footprint: CellFootprintIndex,
-    pub z: usize,
-}
-impl Indexing for CellIndexing {
-    type Index = CellIndex;
-
-    fn len(&self) -> usize {
-        self.cell_footprint_indexing.len() * self.num_z_cells_per_column
-    }
-
-    fn flatten(&self, index: Self::Index) -> usize {
-        self.cell_footprint_indexing.flatten(index.footprint) * self.num_z_cells_per_column
-            + index.z
-    }
-    fn unflatten(&self, flat_index: usize) -> Self::Index {
-        CellIndex {
-            footprint: self
-                .cell_footprint_indexing
-                .unflatten(flat_index / self.num_z_cells_per_column),
-            z: flat_index % self.num_z_cells_per_column,
-        }
-    }
-}
-
 pub struct Grid {
     x_axis: Axis,
     y_axis: Axis,
 
-    vertex_indexing: VertexIndexing,
+    vertex_indexing: indexing::VertexIndexing,
 }
 impl Grid {
     pub fn new(x_axis: Axis, y_axis: Axis, num_z_points: usize) -> Self {
-        let vertex_footprint_indexing = VertexFootprintIndexing {
+        let vertex_footprint_indexing = indexing::VertexFootprintIndexing {
             num_x_points: x_axis.vertices().len(),
             num_y_points: y_axis.vertices().len(),
         };
-        let cell_footprint_indexing = CellFootprintIndexing {
+        let cell_footprint_indexing = indexing::CellFootprintIndexing {
             vertex_footprint_indexing,
         };
-        let cell_indexing = CellIndexing {
+        let cell_indexing = indexing::CellIndexing {
             cell_footprint_indexing,
             num_z_cells_per_column: num_z_points - 1,
         };
-        let vertex_indexing = VertexIndexing { cell_indexing };
+        let vertex_indexing = indexing::VertexIndexing { cell_indexing };
         Self {
             x_axis,
             y_axis,
@@ -239,57 +50,42 @@ impl Grid {
         &self.y_axis
     }
 
-    pub fn vertex_indexing(&self) -> &VertexIndexing {
+    pub fn cell_footprint_centroid(
+        &self,
+        cell_footprint_index: &indexing::CellFootprintIndex,
+    ) -> [Float; 2] {
+        let indexing::CellFootprintIndex {
+            x: i,
+            y: j,
+            triangle,
+        } = *cell_footprint_index;
+        match triangle {
+            indexing::Triangle::UpperLeft => [
+                (2. / 3.) * self.x_axis.vertices[[i]] + (1. / 3.) * self.x_axis.vertices[[i + 1]],
+                (2. / 3.) * self.y_axis.vertices[[j]] + (1. / 3.) * self.y_axis.vertices[[j + 1]],
+            ],
+            indexing::Triangle::LowerRight => [
+                (1. / 3.) * self.x_axis.vertices[[i]] + (2. / 3.) * self.x_axis.vertices[[i + 1]],
+                (1. / 3.) * self.y_axis.vertices[[j]] + (2. / 3.) * self.y_axis.vertices[[j + 1]],
+            ],
+        }
+    }
+
+    pub fn vertex_indexing(&self) -> &indexing::VertexIndexing {
         &self.vertex_indexing
     }
-    pub fn cell_indexing(&self) -> &CellIndexing {
+    pub fn cell_indexing(&self) -> &indexing::CellIndexing {
         &self.vertex_indexing.cell_indexing
     }
-    pub fn vertex_footprint_indexing(&self) -> &VertexFootprintIndexing {
+    pub fn vertex_footprint_indexing(&self) -> &indexing::VertexFootprintIndexing {
         &self
             .vertex_indexing
             .cell_indexing
             .cell_footprint_indexing
             .vertex_footprint_indexing
     }
-    pub fn cell_footprint_indexing(&self) -> &CellFootprintIndexing {
+    pub fn cell_footprint_indexing(&self) -> &indexing::CellFootprintIndexing {
         &self.vertex_indexing.cell_indexing.cell_footprint_indexing
-    }
-
-    pub fn vertex_footprint_indices(
-        &self,
-        cell_footprint_index: CellFootprintIndex,
-    ) -> [VertexFootprintIndex; 3] {
-        match cell_footprint_index.triangle {
-            Triangle::UpperLeft => [
-                VertexFootprintIndex {
-                    x: cell_footprint_index.x,
-                    y: cell_footprint_index.y,
-                },
-                VertexFootprintIndex {
-                    x: cell_footprint_index.x + 1,
-                    y: cell_footprint_index.y + 1,
-                },
-                VertexFootprintIndex {
-                    x: cell_footprint_index.x,
-                    y: cell_footprint_index.y + 1,
-                },
-            ],
-            Triangle::LowerRight => [
-                VertexFootprintIndex {
-                    x: cell_footprint_index.x,
-                    y: cell_footprint_index.y,
-                },
-                VertexFootprintIndex {
-                    x: cell_footprint_index.x + 1,
-                    y: cell_footprint_index.y,
-                },
-                VertexFootprintIndex {
-                    x: cell_footprint_index.x + 1,
-                    y: cell_footprint_index.y + 1,
-                },
-            ],
-        }
     }
 }
 
@@ -322,12 +118,6 @@ impl Axis {
     }
 }
 
-#[derive(Copy, Clone, strum_macros::EnumIter, strum_macros::EnumCount)]
-pub enum Triangle {
-    UpperLeft = 0,
-    LowerRight = 1,
-}
-
 /// A scalar field.
 ///
 /// Defines the values of the field at cell centers.
@@ -341,6 +131,16 @@ pub struct ScalarField {
     ///     3: Which truncated triangular prism (UL/LR)
     centers: nd::Array4<Float>,
 }
+impl ScalarField {
+    pub fn center(&self, index: indexing::CellIndex) -> Float {
+        self.centers[[
+            index.footprint.x,
+            index.footprint.y,
+            index.z,
+            index.footprint.triangle as usize,
+        ]]
+    }
+}
 
 pub struct Height {
     /// Axes:
@@ -350,7 +150,7 @@ pub struct Height {
     centers: nd::Array3<Float>,
 }
 impl Height {
-    pub fn zeros(cell_footprint_indexing: &CellFootprintIndexing) -> Self {
+    pub fn zeros(cell_footprint_indexing: &indexing::CellFootprintIndexing) -> Self {
         Self {
             centers: nd::Array3::zeros((
                 cell_footprint_indexing
@@ -363,14 +163,14 @@ impl Height {
             )),
         }
     }
-    pub fn center(&self, cell_footprint_index: CellFootprintIndex) -> Float {
+    pub fn center(&self, cell_footprint_index: indexing::CellFootprintIndex) -> Float {
         self.centers[[
             cell_footprint_index.x,
             cell_footprint_index.y,
             cell_footprint_index.triangle as usize,
         ]]
     }
-    pub fn center_mut(&mut self, cell_footprint_index: CellFootprintIndex) -> &mut Float {
+    pub fn center_mut(&mut self, cell_footprint_index: indexing::CellFootprintIndex) -> &mut Float {
         &mut self.centers[[
             cell_footprint_index.x,
             cell_footprint_index.y,
@@ -396,9 +196,9 @@ impl Terrain {
         for i in 0..vertices.dim().0 - 1 {
             for j in 0..vertices.dim().1 - 1 {
                 // Take vertex means for triangle centers.
-                centers[[i, j, Triangle::UpperLeft as usize]] =
+                centers[[i, j, indexing::Triangle::UpperLeft as usize]] =
                     (vertices[[i, j]] + vertices[[i + 1, j + 1]] + vertices[[i, j + 1]]) / 3.;
-                centers[[i, j, Triangle::LowerRight as usize]] =
+                centers[[i, j, indexing::Triangle::LowerRight as usize]] =
                     (vertices[[i, j]] + vertices[[i + 1, j]] + vertices[[i + 1, j + 1]]) / 3.;
             }
         }
@@ -410,101 +210,145 @@ pub struct ZLattice {
     lattice: nd::Array3<Float>,
 }
 impl ZLattice {
-    pub fn compute(grid: &Grid, terrain: &Terrain, height: &Height) -> Result<Self, minilp::Error> {
-        let mut problem = minilp::Problem::new(minilp::OptimizationDirection::Minimize);
-
-        // Define variables to be solved for.
-        let vertex_variables = (0..grid.vertex_footprint_indexing().len())
-            .map(|_| problem.add_var(0., (0., Float::INFINITY)))
-            .collect::<Vec<_>>();
-
-        // Define the principal constraints, which specify that the average of the heights at each
-        // cell footprint's three vertices be equal to the height at the cell footprint center.
-        for cell_footprint_index in iter_indices(grid.cell_footprint_indexing()) {
-            problem.add_constraint(
-                grid.vertex_footprint_indices(cell_footprint_index)
-                    .into_iter()
-                    .map(|footprint_vertex_index| {
-                        (
-                            vertex_variables[grid
-                                .vertex_footprint_indexing()
-                                .flatten(footprint_vertex_index)],
-                            1. / 3.,
-                        )
-                    })
-                    .collect::<minilp::LinearExpr>(),
-                minilp::ComparisonOp::Eq,
-                height.center(cell_footprint_index),
-            );
-        }
-
-        // Determine how to compute the mesh Laplacian at a single vertex. TODO: Account for mesh
-        // spacing.
-        let compute_laplacian =
-            |vertex_footprint_index: VertexFootprintIndex| -> minilp::LinearExpr {
-                let neighbors = grid
-                    .vertex_footprint_indexing()
-                    .neighbors(vertex_footprint_index);
-                let mut num_neighbors = 0;
-                let mut linear_expr: minilp::LinearExpr = neighbors
-                    .map(|neighbor_vertex_footprint_index| {
-                        num_neighbors += 1;
-                        (
-                            vertex_variables[grid
-                                .vertex_footprint_indexing()
-                                .flatten(neighbor_vertex_footprint_index)],
-                            -1.,
-                        )
-                    })
-                    .collect();
-                linear_expr.add(
-                    vertex_variables[grid
-                        .vertex_footprint_indexing()
-                        .flatten(vertex_footprint_index)],
-                    num_neighbors as Float,
-                );
-                linear_expr
-            };
-
-        // Add slack variables and associated constraints to effect an absolute value objective
-        // function on the mesh Laplacian.
-        for vertex_footprint_index in iter_indices(grid.vertex_footprint_indexing()) {
-            let slack_variable = problem.add_var(1., (Float::NEG_INFINITY, Float::INFINITY));
-            let laplacian = compute_laplacian(vertex_footprint_index);
-
-            // L + s >= 0  ->  s >= -L
-            let mut slack_constraint = laplacian.clone();
-            slack_constraint.add(slack_variable, 1.);
-            problem.add_constraint(slack_constraint, minilp::ComparisonOp::Ge, 0.);
-
-            // L - s <= 0  ->  s >= L
-            let mut slack_constraint = laplacian;
-            slack_constraint.add(slack_variable, -1.);
-            problem.add_constraint(slack_constraint, minilp::ComparisonOp::Le, 0.);
-        }
-
-        // Solve.
-        let solution = problem.solve()?;
-
-        // Unpack the solution into a lattice. Evenly distribute z points across each column of
-        // cells.
+    pub fn compute(grid: &Grid, terrain: &Terrain, height: &Height) -> Self {
         let num_z_points = grid.vertex_indexing().num_z_points();
         let mut lattice = Array3::zeros((
             grid.vertex_indexing.num_x_points(),
             grid.vertex_indexing.num_y_points(),
             num_z_points,
         ));
-        for (vertex_footprint_flat_index, variable) in vertex_variables.iter().enumerate() {
-            let VertexFootprintIndex { x: i, y: j } = grid
-                .vertex_footprint_indexing()
-                .unflatten(vertex_footprint_flat_index);
-            let height = *solution.var_value(*variable);
+        let vertex_footprint_indexing = grid.vertex_footprint_indexing();
+        for vertex_footprint_index in indexing::iter_indices(vertex_footprint_indexing) {
+            let height = mean(
+                vertex_footprint_index
+                    .cells(vertex_footprint_indexing)
+                    .map(|cell_footprint_index| height.center(cell_footprint_index)),
+            )
+            .unwrap();
+            let indexing::VertexFootprintIndex { x: i, y: j } = vertex_footprint_index;
             for k in 0..num_z_points {
                 lattice[[i, j, k]] =
                     terrain.vertices[[i, j]] + (k as Float / (num_z_points as Float - 1.)) * height;
             }
         }
-        Ok(Self { lattice })
+        Self { lattice }
+    }
+    // pub fn compute_lp(
+    //     grid: &Grid,
+    //     terrain: &Terrain,
+    //     height: &Height,
+    // ) -> Result<Self, highs::HighsModelStatus> {
+    //     let mut problem = highs::RowProblem::new();
+
+    //     // Define variables to be solved for.
+    //     let vertex_variables = (0..grid.vertex_footprint_indexing().len())
+    //         .map(|flat_index| (flat_index, problem.add_column(0., (0.)..Float::INFINITY)))
+    //         .collect::<Vec<_>>();
+
+    //     // Define the principal constraints, which specify that the average of the heights at each
+    //     // cell footprint's three vertices be equal to the height at the cell footprint center.
+    //     for cell_footprint_index in indexing::iter_indices(grid.cell_footprint_indexing()) {
+    //         let center_height = height.center(cell_footprint_index);
+    //         problem.add_row(
+    //             center_height..center_height,
+    //             &cell_footprint_index
+    //                 .vertices()
+    //                 .into_iter()
+    //                 .map(|footprint_vertex_index| {
+    //                     (
+    //                         vertex_variables[grid
+    //                             .vertex_footprint_indexing()
+    //                             .flatten(footprint_vertex_index)]
+    //                         .1,
+    //                         1. / 3.,
+    //                     )
+    //                 })
+    //                 .collect::<Vec<_>>(),
+    //         );
+    //     }
+
+    //     // Determine how to compute the mesh Laplacian at a single vertex. TODO: Account for mesh
+    //     // spacing.
+    //     let compute_laplacian =
+    //         |vertex_footprint_index: indexing::VertexFootprintIndex| -> Vec<(highs::Col, Float)> {
+    //             let neighbors = grid
+    //                 .vertex_footprint_indexing()
+    //                 .neighbors(vertex_footprint_index);
+    //             let mut num_neighbors = 0;
+    //             let mut linear_expr = neighbors
+    //                 .map(|neighbor_vertex_footprint_index| {
+    //                     num_neighbors += 1;
+    //                     (
+    //                         vertex_variables[grid
+    //                             .vertex_footprint_indexing()
+    //                             .flatten(neighbor_vertex_footprint_index)]
+    //                         .1,
+    //                         -1.,
+    //                     )
+    //                 })
+    //                 .collect::<Vec<_>>();
+    //             linear_expr.push((
+    //                 vertex_variables[grid
+    //                     .vertex_footprint_indexing()
+    //                     .flatten(vertex_footprint_index)]
+    //                 .1,
+    //                 num_neighbors as Float,
+    //             ));
+    //             linear_expr
+    //         };
+
+    //     // Add slack variables and associated constraints to effect an absolute value objective
+    //     // function on the mesh Laplacian.
+    //     for vertex_footprint_index in indexing::iter_indices(grid.vertex_footprint_indexing()) {
+    //         let slack_variable = problem.add_column(1., Float::NEG_INFINITY..Float::INFINITY);
+    //         let laplacian = compute_laplacian(vertex_footprint_index);
+
+    //         // L + s >= 0  ->  s >= -L
+    //         let mut slack_constraint = laplacian.clone();
+    //         slack_constraint.push((slack_variable, 1.));
+    //         problem.add_row((0.)..Float::INFINITY, slack_constraint);
+
+    //         // L - s <= 0  ->  s >= L
+    //         let mut slack_constraint = laplacian;
+    //         slack_constraint.push((slack_variable, -1.));
+    //         problem.add_row(Float::NEG_INFINITY..0., slack_constraint);
+    //     }
+
+    //     // Solve.
+    //     let solution = problem.optimise(highs::Sense::Minimise).solve();
+    //     if solution.status() != highs::HighsModelStatus::Optimal {
+    //         return Err(solution.status());
+    //     }
+    //     let solution = solution.get_solution();
+
+    //     // Unpack the solution into a lattice. Evenly distribute z points across each column of
+    //     // cells.
+    //     let num_z_points = grid.vertex_indexing().num_z_points();
+    //     let mut lattice = Array3::zeros((
+    //         grid.vertex_indexing.num_x_points(),
+    //         grid.vertex_indexing.num_y_points(),
+    //         num_z_points,
+    //     ));
+    //     for (vertex_footprint_flat_index, variable) in vertex_variables.iter().enumerate() {
+    //         let indexing::VertexFootprintIndex { x: i, y: j } = grid
+    //             .vertex_footprint_indexing()
+    //             .unflatten(vertex_footprint_flat_index);
+    //         let height = solution.columns()[variable.0];
+    //         for k in 0..num_z_points {
+    //             lattice[[i, j, k]] =
+    //                 terrain.vertices[[i, j]] + (k as Float / (num_z_points as Float - 1.)) * height;
+    //         }
+    //     }
+    //     Ok(Self { lattice })
+    // }
+}
+
+fn mean(iterator: impl Iterator<Item = Float>) -> Option<Float> {
+    let (count, sum) = iterator.fold((0, 0.), |acc, value| (acc.0 + 1, acc.1 + value));
+    if count > 0 {
+        Some(sum / count as Float)
+    } else {
+        None
     }
 }
 
@@ -659,11 +503,11 @@ mod test {
             grid.y_axis().vertices().len(),
         ]));
         let mut height = Height::zeros(grid.cell_footprint_indexing());
-        for cell_footprint_index in iter_indices(grid.cell_footprint_indexing()) {
+        for cell_footprint_index in indexing::iter_indices(grid.cell_footprint_indexing()) {
             *height.center_mut(cell_footprint_index) = 7.3;
         }
 
-        let z_lattice = ZLattice::compute(&grid, &terrain, &height).unwrap();
+        let z_lattice = ZLattice::compute(&grid, &terrain, &height);
 
         assert_relative_eq!(
             z_lattice.lattice,
@@ -676,33 +520,53 @@ mod test {
     }
 
     #[test]
-    fn test_indexing() {
-        let vertex_footprint_indexing = VertexFootprintIndexing {
-            num_x_points: 5,
-            num_y_points: 27,
-        };
-        test_indexing_impl(&vertex_footprint_indexing);
+    fn test_construct_z_lattice_grade() {
+        let grid = Grid::new(Axis::new(0., 1., 60), Axis::new(0., 1., 31), 11);
+        let terrain = Terrain::new(nd::Array2::zeros([
+            grid.x_axis().vertices().len(),
+            grid.y_axis().vertices().len(),
+        ]));
+        let mut height = Height::zeros(grid.cell_footprint_indexing());
+        for cell_footprint_index in indexing::iter_indices(grid.cell_footprint_indexing()) {
+            let centroid = grid.cell_footprint_centroid(&cell_footprint_index);
+            *height.center_mut(cell_footprint_index) = 1. + centroid[0] + 2. * centroid[1];
+        }
 
-        let cell_footprint_indexing = CellFootprintIndexing {
-            vertex_footprint_indexing,
-        };
-        test_indexing_impl(&cell_footprint_indexing);
+        let z_lattice = ZLattice::compute(&grid, &terrain, &height);
 
-        let cell_indexing = CellIndexing {
-            cell_footprint_indexing,
-            num_z_cells_per_column: 19,
-        };
-        test_indexing_impl(&cell_indexing);
-
-        let vertex_indexing = VertexIndexing { cell_indexing };
-        test_indexing_impl(&vertex_indexing);
+        let height_expected = &grid.x_axis().vertices().slice(s![.., nd::NewAxis])
+            + 2. * &grid.y_axis().vertices().slice(s![nd::NewAxis, ..])
+            + 1.;
+        let z_lattice_expected = &height_expected.slice(s![.., .., nd::NewAxis])
+            * &nd::Array::linspace(0., 1., grid.vertex_indexing().num_z_points()).slice(s![
+                nd::NewAxis,
+                nd::NewAxis,
+                ..
+            ]);
+        // Ensure the expected array matches within a tolerance.
+        assert_relative_eq!(
+            z_lattice.lattice.slice(s![.., .., -1]),
+            height_expected,
+            epsilon = 0.2,
+        );
+        assert_relative_eq!(z_lattice.lattice, z_lattice_expected, epsilon = 0.2,);
+        // Ensure that the "inner" portions of the actual and expected arrays match to a much
+        // tighter tolerance.
+        assert_relative_eq!(
+            z_lattice.lattice.slice(s![1..-1, 1..-1, -1]),
+            &height_expected.slice(s![1..-1, 1..-1]),
+            epsilon = 1e-10
+        );
+        assert_relative_eq!(
+            z_lattice.lattice.slice(s![1..-1, 1..-1, ..]),
+            z_lattice_expected.slice(s![1..-1, 1..-1, ..]),
+            epsilon = 1e-10,
+        );
     }
 
-    fn test_indexing_impl<I: Indexing>(indexing: &I) {
-        for (expected_flat_index, index) in iter_indices(indexing).enumerate() {
-            let flat_index = indexing.flatten(index);
-            assert_eq!(expected_flat_index, flat_index);
-        }
+    #[test]
+    fn test_mean() {
+        assert_relative_eq!(mean([0., 5., 10.].into_iter()).unwrap(), 5.);
     }
 
     // #[test]
