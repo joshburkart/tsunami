@@ -4,9 +4,9 @@ name = "riversim"
 version = "0.1.0"
 
 [dependencies]
-argmin = "0.7.0"
-highs = "1.5.0"
+argmin = "0.8.0"
 itertools = "0.10.5"
+nalgebra = "0.32.2"
 ndarray = {version = "0.15.4", features = ["approx-0_5"]}
 strum = "0.24"
 strum_macros = "0.24"
