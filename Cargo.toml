@@ -3,11 +3,17 @@ edition = "2021"
 name = "riversim"
 version = "0.1.0"
 
+[lib]
+crate-type = ["cdylib", "rlib"]
+name = "riversim"
+
 [dependencies]
 argmin = "0.8.0"
 itertools = "0.10.5"
 nalgebra = "0.32.2"
 ndarray = {version = "0.15.4", features = ["approx-0_5"]}
+numpy = "0.18.0"
+pyo3 = {version = "0.18.3", features = ["extension-module"]}
 strum = "0.24"
 strum_macros = "0.24"
 

@@ -1,10 +1,14 @@
 use nalgebra as na;
 use ndarray::{self as nd, s};
+use numpy::IntoPyArray;
+use pyo3::prelude::*;
 
 use crate::{indexing, Array2, Array3, Float, UnitVector3, Vector3};
 
 pub type CoordArray = nd::Array1<Float>;
 
+#[pyclass]
+#[derive(Clone)]
 pub struct Grid {
     x_axis: Axis,
     y_axis: Axis,
@@ -36,6 +40,7 @@ impl Grid {
     pub fn x_axis(&self) -> &Axis {
         &self.x_axis
     }
+
     pub fn y_axis(&self) -> &Axis {
         &self.y_axis
     }
@@ -47,15 +52,18 @@ impl Grid {
     pub fn vertex_indexing(&self) -> &indexing::VertexIndexing {
         &self.vertex_indexing
     }
+
     pub fn cell_indexing(&self) -> &indexing::CellIndexing {
         self.vertex_indexing.cell_indexing()
     }
+
     pub fn vertex_footprint_indexing(&self) -> &indexing::VertexFootprintIndexing {
         self.vertex_indexing()
             .cell_indexing()
             .cell_footprint_indexing()
             .vertex_footprint_indexing()
     }
+
     pub fn cell_footprint_indexing(&self) -> &indexing::CellFootprintIndexing {
         self.vertex_indexing()
             .cell_indexing()
@@ -66,26 +74,38 @@ impl Grid {
         self.x_axis.spacing * self.y_axis.spacing / 2.
     }
 
-    fn make_terrain<F: Fn(Float, Float) -> Float>(&self, f: F) -> Terrain {
-        use indexing::Index;
-        use indexing::Indexing;
+    pub fn make_cell_footprint_array<F: Fn(Float, Float) -> Float>(&self, f: F) -> Array3 {
+        use indexing::{Index, Indexing};
 
         let mut centers = Array3::zeros(self.cell_footprint_indexing().shape());
-        let mut vertices = Array2::zeros(self.vertex_footprint_indexing().shape());
         for cell_footprint_index in indexing::iter_indices(self.cell_footprint_indexing()) {
             let centroid = self.compute_cell_footprint_centroid(cell_footprint_index);
             centers[cell_footprint_index.to_array_index()] = f(centroid[0], centroid[1]);
         }
+        centers
+    }
+
+    pub fn make_vertex_footprint_array<F: Fn(Float, Float) -> Float>(&self, f: F) -> Array2 {
+        use indexing::{Index, Indexing};
+
+        let mut vertices = Array2::zeros(self.vertex_footprint_indexing().shape());
         for vertex_footprint_index in indexing::iter_indices(self.vertex_footprint_indexing()) {
             vertices[vertex_footprint_index.to_array_index()] = f(
                 self.x_axis.vertices()[vertex_footprint_index.x],
                 self.y_axis.vertices()[vertex_footprint_index.y],
             );
         }
-        Terrain { centers, vertices }
+        vertices
     }
 
-    pub fn compute_cell_footprint_centroid(
+    fn make_terrain<F: Fn(Float, Float) -> Float>(&self, f: &F) -> Terrain {
+        Terrain {
+            centers: self.make_cell_footprint_array(f),
+            vertices: self.make_vertex_footprint_array(f),
+        }
+    }
+
+    fn compute_cell_footprint_centroid(
         &self,
         cell_footprint_index: indexing::CellFootprintIndex,
     ) -> [Float; 2] {
@@ -106,13 +126,29 @@ impl Grid {
         }
     }
 }
+#[pymethods]
+impl Grid {
+    #[getter]
+    #[pyo3(name = "x_axis")]
+    pub fn x_axis_py(&self) -> Axis {
+        self.x_axis.clone()
+    }
 
+    #[getter]
+    #[pyo3(name = "y_axis")]
+    pub fn y_axis_py(&self) -> Axis {
+        self.y_axis.clone()
+    }
+}
+
+#[pyclass]
+#[derive(Clone)]
 pub struct StaticGeometry {
     grid: Grid,
     terrain: Terrain,
 }
 impl StaticGeometry {
-    pub fn new<F: Fn(Float, Float) -> Float>(grid: Grid, terrain_maker: F) -> Self {
+    pub fn new<F: Fn(Float, Float) -> Float>(grid: Grid, terrain_maker: &F) -> Self {
         let terrain = grid.make_terrain(terrain_maker);
         Self { grid, terrain }
     }
@@ -120,12 +156,27 @@ impl StaticGeometry {
     pub fn grid(&self) -> &Grid {
         &self.grid
     }
+
     pub fn terrain(&self) -> &Terrain {
         &self.terrain
     }
 }
+#[pymethods]
+impl StaticGeometry {
+    #[pyo3(name = "grid")]
+    pub fn grid_py(&self) -> Grid {
+        self.grid.clone()
+    }
+
+    #[pyo3(name = "terrain")]
+    pub fn terrain_py(&self) -> Terrain {
+        self.terrain.clone()
+    }
+}
 
 /// A fixed $x$ or $y$ axis
+#[pyclass]
+#[derive(Clone)]
 pub struct Axis {
     vertices: CoordArray,
     centers: CoordArray,
@@ -146,18 +197,37 @@ impl Axis {
     pub fn vertices(&self) -> &CoordArray {
         &self.vertices
     }
+
     pub fn centers(&self) -> &CoordArray {
         &self.centers
     }
+
     pub fn spacing(&self) -> Float {
         self.spacing
+    }
+}
+#[pymethods]
+impl Axis {
+    #[getter]
+    #[pyo3(name = "vertices")]
+    pub fn vertices_py<'py>(&self, py: Python<'py>) -> &'py numpy::PyArray1<Float> {
+        self.vertices.clone().into_pyarray(py)
+    }
+
+    #[getter]
+    #[pyo3(name = "centers")]
+    pub fn centers_py<'py>(&self, py: Python<'py>) -> &'py numpy::PyArray1<Float> {
+        self.centers.clone().into_pyarray(py)
     }
 }
 
 /// A lattice of z coordinate points
 ///
-/// Each column of z points starts from the terrain and ends at the top of the height field.
-struct ZLattice {
+/// Each column of z points starts from the terrain and ends at the top of the
+/// height field.
+#[pyclass]
+#[derive(Clone)]
+pub struct ZLattice {
     /// Indexed by [`indexing::VertexIndexing`]
     lattice: Array3,
 }
@@ -184,14 +254,20 @@ impl ZLattice {
         }
         Self { lattice }
     }
+
+    pub fn z_lattice<'py>(&self, py: Python<'py>) -> &'py numpy::PyArray3<Float> {
+        self.lattice.clone().into_pyarray(py)
+    }
 }
 
-pub struct DynamicGeometry<'a> {
-    static_geometry: &'a StaticGeometry,
+#[pyclass]
+#[derive(Clone)]
+pub struct DynamicGeometry {
+    static_geometry: StaticGeometry,
     z_lattice: ZLattice,
 }
-impl<'a> DynamicGeometry<'a> {
-    pub fn new(static_geometry: &'a StaticGeometry, height: &HorizScalarField) -> Self {
+impl DynamicGeometry {
+    pub fn new(static_geometry: StaticGeometry, height: &HorizScalarField) -> Self {
         assert_eq!(
             [
                 static_geometry.grid().x_axis.centers.len(),
@@ -210,8 +286,13 @@ impl<'a> DynamicGeometry<'a> {
     pub fn grid(&self) -> &Grid {
         &self.static_geometry.grid
     }
+
     pub fn terrain(&self) -> &Terrain {
         &self.static_geometry.terrain
+    }
+
+    pub fn into_static_geometry(self) -> StaticGeometry {
+        self.static_geometry
     }
 
     pub fn compute_vertical_face(
@@ -317,8 +398,39 @@ impl<'a> DynamicGeometry<'a> {
             neighbor: cell_footprint_edge.neighbor,
         }
     }
+
+    pub fn make_cell_array<V: Default, F: Fn(Float, Float, Float) -> V>(
+        &self,
+        f: F,
+    ) -> nd::Array4<V> {
+        use indexing::{Index, Indexing};
+
+        let mut cells = nd::Array4::<V>::default(self.static_geometry.grid.cell_indexing().shape());
+        for cell_index in indexing::iter_indices(self.static_geometry.grid.cell_indexing()) {
+            let lattice_index_1 = [cell_index.footprint.x, cell_index.footprint.y, cell_index.z];
+            let lattice_index_2 = [
+                cell_index.footprint.x,
+                cell_index.footprint.y,
+                cell_index.z + 1,
+            ];
+            cells[cell_index.to_array_index()] = f(
+                self.static_geometry.grid.x_axis.vertices()[cell_index.footprint.x],
+                self.static_geometry.grid.y_axis.vertices()[cell_index.footprint.y],
+                0.5 * (self.z_lattice.lattice[lattice_index_1]
+                    + self.z_lattice.lattice[lattice_index_2]),
+            );
+        }
+        cells
+    }
+}
+#[pymethods]
+impl DynamicGeometry {
+    pub fn z_lattice<'py>(&self, py: Python<'py>) -> &'py numpy::PyArray3<Float> {
+        self.z_lattice.z_lattice(py)
+    }
 }
 
+#[derive(Debug)]
 pub struct CellVerticalFace {
     pub cell_index: indexing::CellIndex,
     pub area: Float,
@@ -326,52 +438,33 @@ pub struct CellVerticalFace {
     pub neighbor: indexing::CellFootprintNeighbor,
 }
 
-/// A scalar field
-///
-/// Defines the values of the field at cell centers.
-pub struct ScalarField {
+#[derive(Clone)]
+pub struct Field<V>
+where
+    V: Copy + Default + std::ops::Add<V, Output = V> + std::ops::Mul<Float, Output = V>,
+    Float: std::ops::Mul<V, Output = V>,
+{
     /// Indexed by [`indexing::CellIndexing`]
-    centers: nd::Array4<Float>,
+    centers: nd::Array4<V>,
 }
-impl ScalarField {
-    pub fn zeros(grid: &Grid) -> Self {
-        use indexing::Indexing;
-
+impl<V> Field<V>
+where
+    V: Copy + Default + std::ops::Add<V, Output = V> + std::ops::Mul<Float, Output = V>,
+    Float: std::ops::Mul<V, Output = V>,
+{
+    pub fn new<F: Fn(Float, Float, Float) -> V>(dynamic_geometry: &DynamicGeometry, f: F) -> Self {
         Self {
-            centers: nd::Array4::default(grid.cell_indexing().shape()),
+            centers: dynamic_geometry.make_cell_array(f),
         }
     }
 
-    pub fn center(&self, index: indexing::CellIndex) -> Float {
-        use indexing::Index;
-
-        self.centers[index.to_array_index()]
-    }
-}
-
-/// A vector field
-///
-/// Defines the values of the field at cell centers.
-pub struct VectorField {
-    /// Indexed by [`indexing::CellIndexing`]
-    centers: nd::Array4<Vector3>,
-}
-impl VectorField {
-    pub fn zeros(grid: &Grid) -> Self {
-        use indexing::Indexing;
-
-        Self {
-            centers: nd::Array4::default(grid.cell_indexing().shape()),
-        }
-    }
-
-    pub fn center(&self, index: indexing::CellIndex) -> Vector3 {
+    pub fn center(&self, index: indexing::CellIndex) -> V {
         use indexing::Index;
 
         self.centers[index.to_array_index()]
     }
 
-    pub fn interpolate_to_face(&self, vertical_face: &CellVerticalFace) -> Vector3 {
+    pub fn interpolate_to_face(&self, vertical_face: &CellVerticalFace) -> V {
         match vertical_face.neighbor {
             indexing::CellFootprintNeighbor::CellFootprint(cell_footprint_index) => {
                 let neighbor_cell_index = indexing::CellIndex {
@@ -385,20 +478,18 @@ impl VectorField {
     }
 }
 
+pub type ScalarField = Field<Float>;
+pub type VectorField = Field<Vector3>;
+
 #[derive(Clone, PartialEq, Debug)]
 pub struct HorizScalarField {
     /// Indexed by [`indexing::CellFootprintIndexing`]
     centers: Array3,
 }
 impl HorizScalarField {
-    pub fn new(centers: Array3) -> Self {
-        Self { centers }
-    }
-    pub fn zeros(cell_footprint_indexing: &indexing::CellFootprintIndexing) -> Self {
-        use indexing::Indexing;
-
+    pub fn new<F: Fn(Float, Float) -> Float>(grid: &Grid, f: F) -> Self {
         Self {
-            centers: nd::Array3::zeros(cell_footprint_indexing.shape()),
+            centers: grid.make_cell_footprint_array(f),
         }
     }
 
@@ -407,6 +498,7 @@ impl HorizScalarField {
 
         self.centers[cell_footprint_index.to_array_index()]
     }
+
     pub fn center_mut(&mut self, cell_footprint_index: indexing::CellFootprintIndex) -> &mut Float {
         use indexing::Index;
 
@@ -448,6 +540,8 @@ impl approx::AbsDiffEq for HorizScalarField {
     }
 }
 
+#[pyclass]
+#[derive(Clone)]
 pub struct Terrain {
     /// Indexed by [`indexing::CellFootprintIndexing`]
     centers: Array3,
@@ -467,15 +561,15 @@ fn mean(iterator: impl Iterator<Item = Float>) -> Option<Float> {
 
 #[cfg(test)]
 mod test {
-    use super::*;
-
     use approx::assert_relative_eq;
+
+    use super::*;
 
     #[test]
     fn test_construct_z_lattice_flat() {
         let grid = Grid::new(Axis::new(0., 1., 29), Axis::new(0., 1., 32), 11);
-        let terrain = grid.make_terrain(|_, _| 0.);
-        let mut height = HorizScalarField::zeros(grid.cell_footprint_indexing());
+        let terrain = grid.make_terrain(&|_, _| 0.);
+        let mut height = HorizScalarField::new(&grid, |_, _| 0.);
         for cell_footprint_index in indexing::iter_indices(grid.cell_footprint_indexing()) {
             *height.center_mut(cell_footprint_index) = 7.3;
         }
@@ -495,8 +589,8 @@ mod test {
     #[test]
     fn test_construct_z_lattice_grade() {
         let grid = Grid::new(Axis::new(0., 1., 60), Axis::new(0., 1., 31), 11);
-        let terrain = grid.make_terrain(|_, _| 0.);
-        let mut height = HorizScalarField::zeros(grid.cell_footprint_indexing());
+        let terrain = grid.make_terrain(&|_, _| 0.);
+        let mut height = HorizScalarField::new(&grid, |_, _| 0.);
         for cell_footprint_index in indexing::iter_indices(grid.cell_footprint_indexing()) {
             let centroid = grid.compute_cell_footprint_centroid(cell_footprint_index);
             *height.center_mut(cell_footprint_index) = 1. + centroid[0] + 2. * centroid[1];
@@ -520,8 +614,8 @@ mod test {
             epsilon = 0.2,
         );
         assert_relative_eq!(z_lattice.lattice, z_lattice_expected, epsilon = 0.2,);
-        // Ensure that the "inner" portions of the actual and expected arrays match to a much
-        // tighter tolerance.
+        // Ensure that the "inner" portions of the actual and expected arrays match to a
+        // much tighter tolerance.
         assert_relative_eq!(
             z_lattice.lattice.slice(s![1..-1, 1..-1, -1]),
             &height_expected.slice(s![1..-1, 1..-1]),
@@ -565,13 +659,13 @@ mod test {
     //         );
     //     }
     //     {
-    //         let z_new = nd::array![[[-1., 0., 0.1, 0.5, 1. - 1e-15, 1., 1. + 1e-15, 2., 3.1]]];
-    //         let y_new = interpolate_onto(&z, &v, &z_new);
-    //         assert_eq!(y_new.dim(), (1, 1, 9, 1));
+    //         let z_new = nd::array![[[-1., 0., 0.1, 0.5, 1. - 1e-15, 1., 1. +
+    // 1e-15, 2., 3.1]]];         let y_new = interpolate_onto(&z, &v,
+    // &z_new);         assert_eq!(y_new.dim(), (1, 1, 9, 1));
     //         assert_relative_eq!(
     //             y_new,
-    //             nd::array![[[10., 10., 11., 15., 20., 20., 20., 0., -20.]]].slice(s![
-    //                 ..,
+    //             nd::array![[[10., 10., 11., 15., 20., 20., 20., 0.,
+    // -20.]]].slice(s![                 ..,
     //                 ..,
     //                 ..,
     //                 nd::NewAxis

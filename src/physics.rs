@@ -1,62 +1,84 @@
-use crate::geom;
-use crate::indexing;
-use crate::Float;
+use pyo3::prelude::*;
 
+use crate::{geom, indexing, Float};
+
+#[pyclass]
+#[derive(Clone)]
 pub struct Fields {
     pub height: geom::HorizScalarField,
     pub velocity: geom::VectorField,
     pub pressure: geom::ScalarField,
 }
-// impl Fields {
-//     pub fn compute_horiz_velocity_column_int(&self, z_lattice: &ZLattice) -> HorizVectorField {
-//         (&z_lattice.spacing().slice(s![.., .., nd::NewAxis, nd::NewAxis]) * &self.velocity)
-//             .sum_axis(nd::Axis(2)) // Column integral.
-//             .slice(s![.., .., ..-1]) // Drop z component.
-//             .into_owned()
-//     }
-// }
 
-// struct Solver {
-//     grid: Grid,
-// }
-// impl Solver {
-//     pub fn step(
-//         &self,
-//         dt: Float,
-//         z_lattice: &ZLattice,
-//         fields: &Fields,
-//         terrain: &geom::HorizScalarField,
-//         rain_rate: &geom::HorizScalarField,
-//     ) -> (Fields, ZLattice) {
-//         let new_height = perform_height_update(dt, &self.grid, z_lattice, fields, rain_rate);
+#[pyclass]
+pub struct Solver {
+    dynamic_geometry: Option<geom::DynamicGeometry>,
+    rain_rate: geom::HorizScalarField,
+    fields: Fields,
+}
+impl Solver {
+    pub fn new(
+        initial_dynamic_geometry: geom::DynamicGeometry,
+        initial_fields: Fields,
+        rain_rate: geom::HorizScalarField,
+    ) -> Self {
+        Self {
+            dynamic_geometry: Some(initial_dynamic_geometry),
+            rain_rate,
+            fields: initial_fields,
+        }
+    }
 
-//         let new_z_axis = ZLattice::new(&self.grid, terrain, &fields.height);
+    pub fn step(&mut self, dt: Float) {
+        let new_height = perform_height_update(
+            dt,
+            self.dynamic_geometry.as_ref().unwrap(),
+            &self.rain_rate,
+            &mut self.fields,
+        );
 
-//         // Interpolate velocity to new height map.
-//         let new_velocity = interpolate_onto(&z_lattice.centers, &fields.velocity, &new_z_axis.centers);
+        self.dynamic_geometry = Some(geom::DynamicGeometry::new(
+            self.dynamic_geometry.take().unwrap().into_static_geometry(),
+            &new_height,
+        ));
 
-//         // Compute new pressure field.
-//         let new_pressure = compute_pressure(&self.grid, z_lattice, &new_velocity);
+        // Interpolate velocity to new height map.
+        // let new_velocity =
+        //     interpolate_onto(&z_lattice.centers, &fields.velocity,
+        // &new_z_axis.centers);
 
-//         // Perform velocity update.
-//         // TODO
+        // Compute new pressure field.
+        // let new_pressure = compute_pressure(&self.grid, z_lattice,
+        // &new_velocity);
 
-//         (
-//             Fields {
-//                 height: new_height,
-//                 velocity: new_velocity,
-//                 pressure: new_pressure,
-//             },
-//             new_z_axis,
-//         )
-//     }
-// }
+        // Perform velocity update.
+        // TODO
+    }
+}
+#[pymethods]
+impl Solver {
+    #[getter]
+    pub fn grid(&self) -> geom::Grid {
+        self.dynamic_geometry.as_ref().unwrap().grid().clone()
+    }
 
-// /// Linearly interpolate a velocity vector field array `v` with vertical coordinate array `z` onto a
-// /// new vertical coordinate array `new_z`. Use constant extrapolation if a value of `new_z` falls
-// /// outside the range of `z`.
-// fn interpolate_onto(z: &geom::ScalarField, v: &geom::VectorField, new_z: &geom::ScalarField) -> geom::VectorField {
-//     let mut new_v = geom::VectorField::zeros((v.dim().0, v.dim().1, new_z.dim().2, v.dim().3));
+    #[getter]
+    pub fn z_lattice<'py>(&self, py: Python<'py>) -> &'py numpy::PyArray3<Float> {
+        self.dynamic_geometry.as_ref().unwrap().z_lattice(py)
+    }
+
+    #[pyo3(name = "step")]
+    pub fn step_py(&mut self, dt: Float) {
+        self.step(dt)
+    }
+}
+
+// /// Linearly interpolate a velocity vector field array `v` with vertical
+// coordinate array `z` onto a /// new vertical coordinate array `new_z`. Use
+// constant extrapolation if a value of `new_z` falls /// outside the range of
+// `z`. fn interpolate_onto(z: &geom::ScalarField, v: &geom::VectorField, new_z:
+// &geom::ScalarField) -> geom::VectorField {     let mut new_v =
+// geom::VectorField::zeros((v.dim().0, v.dim().1, new_z.dim().2, v.dim().3));
 //     let dim = z.dim();
 //     for i in 0..dim.0 {
 //         for j in 0..dim.1 {
@@ -86,8 +108,8 @@ pub struct Fields {
 //                     } else {
 //                         (new_zijk - zij_left) / delta_zijk
 //                     };
-//                     (1. - alpha) * &vij.slice(s![k - 1, ..]) + alpha * &vij.slice(s![k, ..])
-//                 });
+//                     (1. - alpha) * &vij.slice(s![k - 1, ..]) + alpha *
+// &vij.slice(s![k, ..])                 });
 //             }
 //         }
 //     }
@@ -97,11 +119,11 @@ pub struct Fields {
 fn perform_height_update(
     dt: Float,
     dynamic_geometry: &geom::DynamicGeometry,
-    fields: &Fields,
     rain_rate: &geom::HorizScalarField,
+    fields: &Fields,
 ) -> geom::HorizScalarField {
-    let cell_footprint_indexing = dynamic_geometry.grid().cell_footprint_indexing();
     let mut new_height = fields.height.clone();
+    let cell_footprint_indexing = dynamic_geometry.grid().cell_footprint_indexing();
     for cell_footprint_index in indexing::iter_indices(cell_footprint_indexing) {
         let mut total_mass_flux = 0.;
         let cell_footprint_edges =
@@ -111,13 +133,21 @@ fn perform_height_update(
             .cell_indexing()
             .column(cell_footprint_index)
         {
+            println!(" Cell index {cell_index:?}");
             for cell_footprint_edge in cell_footprint_edges {
-                let vert_face =
+                let vertical_face =
                     dynamic_geometry.compute_vertical_face(cell_index, cell_footprint_edge);
-                let velocity_at_face = fields.velocity.interpolate_to_face(&vert_face);
-                total_mass_flux += velocity_at_face.dot(&vert_face.outward_normal)
+                println!("  Vertical face {vertical_face:?}");
+                let velocity_at_face = fields.velocity.interpolate_to_face(&vertical_face);
+                println!(
+                    "  Flux {:.3e}",
+                    velocity_at_face.dot(&vertical_face.outward_normal) * vertical_face.area
+                );
+                total_mass_flux +=
+                    velocity_at_face.dot(&vertical_face.outward_normal) * vertical_face.area;
             }
         }
+        println!("Cell footprint {cell_footprint_index:?}, mass flux: {total_mass_flux:.3e}");
         *new_height.center_mut(cell_footprint_index) -=
             dt * total_mass_flux / dynamic_geometry.grid().footprint_area();
         *new_height.center_mut(cell_footprint_index) += dt * rain_rate.center(cell_footprint_index);
@@ -125,55 +155,52 @@ fn perform_height_update(
     new_height
 }
 
-// fn compute_pressure(grid: &Grid, z_lattice: &ZLattice, velocity: &geom::VectorField) -> geom::ScalarField {
-//     // let cg_solver = argmin::solver::conjugategradient::ConjugateGradient::new(b)
-//     todo!()
+// fn compute_pressure(grid: &Grid, z_lattice: &ZLattice, velocity:
+// &geom::VectorField) -> geom::ScalarField {     // let cg_solver =
+// argmin::solver::conjugategradient::ConjugateGradient::new(b)     todo!()
 // }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Vector3;
 
     #[test]
     fn test_perform_height_update() {
         let x_axis = geom::Axis::new(-1., 1., 3);
         let y_axis = geom::Axis::new(10., 11., 4);
         let grid = geom::Grid::new(x_axis, y_axis, 5);
-        let static_geometry = geom::StaticGeometry::new(grid, |_, _| 0.);
+        let static_geometry = geom::StaticGeometry::new(grid, &|_, _| 0.);
 
-        let mut height =
-            geom::HorizScalarField::zeros(static_geometry.grid().cell_footprint_indexing());
+        let mut height = geom::HorizScalarField::new(static_geometry.grid(), |_, _| 0.);
         for cell_footprint_index in
             indexing::iter_indices(static_geometry.grid().cell_footprint_indexing())
         {
             *height.center_mut(cell_footprint_index) = 3.;
         }
-        let dynamic_geometry = geom::DynamicGeometry::new(&static_geometry, &height);
+        let dynamic_geometry = geom::DynamicGeometry::new(static_geometry, &height);
 
         let fields = Fields {
-            height,
-            velocity: geom::VectorField::zeros(dynamic_geometry.grid()),
-            pressure: geom::ScalarField::zeros(dynamic_geometry.grid()),
+            height: height.clone(),
+            velocity: geom::VectorField::new(&dynamic_geometry, |_, _, _| Vector3::zeros()),
+            pressure: geom::ScalarField::new(&dynamic_geometry, |_, _, _| 0.),
         };
 
         // No rain.
         {
-            let rain_rate =
-                geom::HorizScalarField::zeros(static_geometry.grid().cell_footprint_indexing());
+            let rain_rate = geom::HorizScalarField::new(dynamic_geometry.grid(), |_, _| 0.);
 
-            let new_height = perform_height_update(1., &dynamic_geometry, &fields, &rain_rate);
+            let new_height = perform_height_update(1., &dynamic_geometry, &rain_rate, &fields);
 
-            approx::assert_abs_diff_eq!(new_height, fields.height);
+            approx::assert_abs_diff_eq!(new_height, height);
         }
         // Some rain.
         {
-            let mut rain_rate =
-                geom::HorizScalarField::zeros(static_geometry.grid().cell_footprint_indexing());
-            rain_rate += 1.5e-2;
+            let rain_rate = geom::HorizScalarField::new(dynamic_geometry.grid(), |_, _| 1.5e-2);
 
-            let new_height = perform_height_update(1., &dynamic_geometry, &fields, &rain_rate);
+            let new_height = perform_height_update(1., &dynamic_geometry, &rain_rate, &fields);
 
-            approx::assert_abs_diff_eq!(new_height, &fields.height + 1.5e-2);
+            approx::assert_abs_diff_eq!(new_height, height + 1.5e-2);
         }
     }
 }

@@ -38,6 +38,7 @@ pub fn iter_indices<I: Indexing>(indexing: &I) -> impl Iterator<Item = I::Index>
     (0..indexing.len()).map(|flat_index| indexing.unflatten(flat_index))
 }
 
+#[derive(Clone)]
 pub struct VertexFootprintIndexing {
     num_x_points: usize,
     num_y_points: usize,
@@ -53,6 +54,7 @@ impl VertexFootprintIndexing {
     pub fn num_x_points(&self) -> usize {
         self.num_x_points
     }
+
     pub fn num_y_points(&self) -> usize {
         self.num_y_points
     }
@@ -90,6 +92,7 @@ impl Indexing for VertexFootprintIndexing {
     fn flatten(&self, index: Self::Index) -> usize {
         self.num_y_points * index.x + index.y
     }
+
     fn unflatten(&self, flat_index: usize) -> Self::Index {
         VertexFootprintIndex {
             x: flat_index / self.num_y_points,
@@ -143,6 +146,7 @@ impl Index for VertexFootprintIndex {
     }
 }
 
+#[derive(Clone)]
 pub struct VertexIndexing {
     cell_indexing: CellIndexing,
 }
@@ -154,18 +158,21 @@ impl VertexIndexing {
     pub fn cell_indexing(&self) -> &CellIndexing {
         &self.cell_indexing
     }
+
     pub fn num_x_points(&self) -> usize {
         self.cell_indexing
             .cell_footprint_indexing
             .vertex_footprint_indexing
             .num_x_points
     }
+
     pub fn num_y_points(&self) -> usize {
         self.cell_indexing
             .cell_footprint_indexing
             .vertex_footprint_indexing
             .num_y_points
     }
+
     pub fn num_z_points(&self) -> usize {
         self.cell_indexing.num_z_cells_per_column + 1
     }
@@ -209,6 +216,7 @@ impl Indexing for VertexIndexing {
             * self.num_z_points()
             + index.z
     }
+
     fn unflatten(&self, flat_index: usize) -> Self::Index {
         VertexIndex {
             footprint: self
@@ -234,6 +242,7 @@ impl Index for VertexIndex {
     }
 }
 
+#[derive(Clone)]
 pub struct CellFootprintIndexing {
     vertex_footprint_indexing: VertexFootprintIndexing,
 }
@@ -251,6 +260,7 @@ impl CellFootprintIndexing {
     pub fn num_x_cells(&self) -> usize {
         self.vertex_footprint_indexing.num_x_points - 1
     }
+
     pub fn num_y_cells(&self) -> usize {
         self.vertex_footprint_indexing.num_y_points - 1
     }
@@ -371,6 +381,7 @@ impl Indexing for CellFootprintIndexing {
             + Triangle::COUNT * index.y
             + index.triangle as usize
     }
+
     fn unflatten(&self, flat_index: usize) -> Self::Index {
         let triangle = match flat_index % Triangle::COUNT {
             x if x == Triangle::LowerRight as usize => Triangle::LowerRight,
@@ -431,6 +442,7 @@ impl Index for CellFootprintIndex {
     }
 }
 
+#[derive(Clone)]
 pub struct CellIndexing {
     cell_footprint_indexing: CellFootprintIndexing,
     num_z_cells_per_column: usize,
@@ -449,6 +461,7 @@ impl CellIndexing {
     pub fn cell_footprint_indexing(&self) -> &CellFootprintIndexing {
         &self.cell_footprint_indexing
     }
+
     pub fn num_z_cells_per_column(&self) -> usize {
         self.num_z_cells_per_column
     }
@@ -477,6 +490,7 @@ impl Indexing for CellIndexing {
         self.cell_footprint_indexing.flatten(index.footprint) * self.num_z_cells_per_column
             + index.z
     }
+
     fn unflatten(&self, flat_index: usize) -> Self::Index {
         CellIndex {
             footprint: self
@@ -505,7 +519,7 @@ impl Index for CellIndex {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub enum CellFootprintNeighbor {
     CellFootprint(CellFootprintIndex),
     Boundary(Boundary),
@@ -538,7 +552,7 @@ pub struct CellFootprintEdge {
     pub neighbor: CellFootprintNeighbor,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub enum Boundary {
     Upper,
     Lower,
