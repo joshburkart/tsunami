@@ -18,14 +18,15 @@ pub struct Grid {
     vertex_indexing: indexing::VertexIndexing,
 }
 impl Grid {
-    pub fn new(x_axis: Axis, y_axis: Axis, num_z_points: usize) -> Self {
+    pub fn new(x_axis: Axis, y_axis: Axis, num_z_cells_per_column: usize) -> Self {
         let vertex_footprint_indexing = indexing::VertexFootprintIndexing::new(
             x_axis.vertices().len(),
             y_axis.vertices().len(),
         );
         let cell_footprint_indexing =
             indexing::CellFootprintIndexing::new(vertex_footprint_indexing);
-        let cell_indexing = indexing::CellIndexing::new(cell_footprint_indexing, num_z_points - 1);
+        let cell_indexing =
+            indexing::CellIndexing::new(cell_footprint_indexing, num_z_cells_per_column);
         let vertex_indexing = indexing::VertexIndexing::new(cell_indexing);
         let down_right_anti_diagonal =
             UnitVector3::new_normalize(Vector3::new(y_axis.spacing(), -x_axis.spacing(), 0.));
@@ -49,6 +50,10 @@ impl Grid {
         self.down_right_anti_diagonal
     }
 
+    pub fn footprint_area(&self) -> Float {
+        self.x_axis.spacing * self.y_axis.spacing / 2.
+    }
+
     pub fn vertex_indexing(&self) -> &indexing::VertexIndexing {
         &self.vertex_indexing
     }
@@ -68,10 +73,6 @@ impl Grid {
         self.vertex_indexing()
             .cell_indexing()
             .cell_footprint_indexing()
-    }
-
-    pub fn footprint_area(&self) -> Float {
-        self.x_axis.spacing * self.y_axis.spacing / 2.
     }
 
     pub fn make_cell_footprint_array<F: Fn(Float, Float) -> Float>(&self, f: F) -> Array3 {
@@ -109,19 +110,15 @@ impl Grid {
         &self,
         cell_footprint_index: indexing::CellFootprintIndex,
     ) -> [Float; 2] {
-        let indexing::CellFootprintIndex {
-            x: i,
-            y: j,
-            triangle,
-        } = cell_footprint_index;
+        let indexing::CellFootprintIndex { x, y, triangle } = cell_footprint_index;
         match triangle {
             indexing::Triangle::UpperLeft => [
-                (2. / 3.) * self.x_axis.vertices[[i]] + (1. / 3.) * self.x_axis.vertices[[i + 1]],
-                (2. / 3.) * self.y_axis.vertices[[j]] + (1. / 3.) * self.y_axis.vertices[[j + 1]],
+                (2. / 3.) * self.x_axis.vertices[[x]] + (1. / 3.) * self.x_axis.vertices[[x + 1]],
+                (2. / 3.) * self.y_axis.vertices[[y]] + (1. / 3.) * self.y_axis.vertices[[y + 1]],
             ],
             indexing::Triangle::LowerRight => [
-                (1. / 3.) * self.x_axis.vertices[[i]] + (2. / 3.) * self.x_axis.vertices[[i + 1]],
-                (1. / 3.) * self.y_axis.vertices[[j]] + (2. / 3.) * self.y_axis.vertices[[j + 1]],
+                (1. / 3.) * self.x_axis.vertices[[x]] + (2. / 3.) * self.x_axis.vertices[[x + 1]],
+                (1. / 3.) * self.y_axis.vertices[[y]] + (2. / 3.) * self.y_axis.vertices[[y + 1]],
             ],
         }
     }
@@ -148,8 +145,8 @@ pub struct StaticGeometry {
     terrain: Terrain,
 }
 impl StaticGeometry {
-    pub fn new<F: Fn(Float, Float) -> Float>(grid: Grid, terrain_maker: &F) -> Self {
-        let terrain = grid.make_terrain(terrain_maker);
+    pub fn new<F: Fn(Float, Float) -> Float>(grid: Grid, terrain_func: &F) -> Self {
+        let terrain = grid.make_terrain(terrain_func);
         Self { grid, terrain }
     }
 
@@ -249,7 +246,7 @@ impl ZLattice {
             .unwrap();
             for vertex_index in vertex_indexing.column(vertex_footprint_index) {
                 lattice[vertex_index.to_array_index()] = terrain_height
-                    + (vertex_index.z as Float / (num_z_points as Float - 1.)) * height
+                    + height * vertex_index.z as Float / (num_z_points as Float - 1.);
             }
         }
         Self { lattice }
@@ -334,7 +331,7 @@ impl DynamicGeometry {
                     ),
                     indexing::UpperLeftTriangleEdge::Left => (
                         indexing::VertexFootprintIndex { x, y },
-                        indexing::VertexFootprintIndex { x: x + 1, y },
+                        indexing::VertexFootprintIndex { x, y: y + 1 },
                         dy,
                         -na::Vector3::x_axis(),
                     ),
@@ -504,6 +501,24 @@ impl HorizScalarField {
 
         &mut self.centers[cell_footprint_index.to_array_index()]
     }
+
+    // TODO: Remove otherwise what's the point of this wrapper struct...
+    pub fn centers(&self) -> &Array3 {
+        &self.centers
+    }
+}
+impl std::ops::Add for HorizScalarField {
+    type Output = Self;
+
+    fn add(mut self, rhs: HorizScalarField) -> Self::Output {
+        self += rhs;
+        self
+    }
+}
+impl std::ops::AddAssign for HorizScalarField {
+    fn add_assign(&mut self, rhs: HorizScalarField) {
+        self.centers += &rhs.centers;
+    }
 }
 impl std::ops::Add<Float> for HorizScalarField {
     type Output = Self;
@@ -522,9 +537,44 @@ impl std::ops::Add<Float> for &HorizScalarField {
         new
     }
 }
+impl std::ops::Add<HorizScalarField> for Float {
+    type Output = HorizScalarField;
+
+    fn add(self, mut rhs: HorizScalarField) -> Self::Output {
+        rhs += self;
+        rhs
+    }
+}
+impl std::ops::Add<&HorizScalarField> for Float {
+    type Output = HorizScalarField;
+
+    fn add(self, rhs: &HorizScalarField) -> Self::Output {
+        let mut new = rhs.clone();
+        new += self;
+        new
+    }
+}
 impl std::ops::AddAssign<Float> for HorizScalarField {
     fn add_assign(&mut self, rhs: Float) {
         self.centers += rhs;
+    }
+}
+impl std::ops::Mul<HorizScalarField> for Float {
+    type Output = HorizScalarField;
+
+    fn mul(self, rhs: HorizScalarField) -> Self::Output {
+        HorizScalarField {
+            centers: self * rhs.centers,
+        }
+    }
+}
+impl std::ops::Mul<&HorizScalarField> for Float {
+    type Output = HorizScalarField;
+
+    fn mul(self, rhs: &HorizScalarField) -> Self::Output {
+        HorizScalarField {
+            centers: self * &rhs.centers,
+        }
     }
 }
 #[cfg(test)]
@@ -566,8 +616,23 @@ mod test {
     use super::*;
 
     #[test]
+    fn test_construct_z_lattice_zero_height() {
+        let grid = Grid::new(Axis::new(0., 1., 29), Axis::new(0., 1., 32), 10);
+        let terrain = grid.make_terrain(&|x, y| 10. * x * y);
+        let height = HorizScalarField::new(&grid, |_, _| 0.);
+
+        let z_lattice = ZLattice::new(&grid, &terrain, &height);
+
+        let heights = (&z_lattice.lattice.slice(s![.., .., 1..])
+            - &z_lattice.lattice.slice(s![.., .., ..-1]))
+            .into_owned();
+        let expected_heights = 0. * &heights;
+        assert_relative_eq!(heights, expected_heights, epsilon = 1e-6,);
+    }
+
+    #[test]
     fn test_construct_z_lattice_flat() {
-        let grid = Grid::new(Axis::new(0., 1., 29), Axis::new(0., 1., 32), 11);
+        let grid = Grid::new(Axis::new(0., 1., 29), Axis::new(0., 1., 32), 10);
         let terrain = grid.make_terrain(&|_, _| 0.);
         let mut height = HorizScalarField::new(&grid, |_, _| 0.);
         for cell_footprint_index in indexing::iter_indices(grid.cell_footprint_indexing()) {
@@ -588,7 +653,7 @@ mod test {
 
     #[test]
     fn test_construct_z_lattice_grade() {
-        let grid = Grid::new(Axis::new(0., 1., 60), Axis::new(0., 1., 31), 11);
+        let grid = Grid::new(Axis::new(0., 1., 60), Axis::new(0., 1., 31), 10);
         let terrain = grid.make_terrain(&|_, _| 0.);
         let mut height = HorizScalarField::new(&grid, |_, _| 0.);
         for cell_footprint_index in indexing::iter_indices(grid.cell_footprint_indexing()) {

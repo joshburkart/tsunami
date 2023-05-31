@@ -30,16 +30,29 @@ impl Solver {
     }
 
     pub fn step(&mut self, dt: Float) {
-        let new_height = perform_height_update(
-            dt,
+        // println!("Performing height update");
+        let dhdt = compute_height_time_deriv(
             self.dynamic_geometry.as_ref().unwrap(),
             &self.rain_rate,
-            &mut self.fields,
+            &self.fields,
         );
+        for cell_footprint_index in indexing::iter_indices(
+            self.dynamic_geometry
+                .as_ref()
+                .unwrap()
+                .grid()
+                .cell_footprint_indexing(),
+        ) {
+            let new_center = (self.fields.height.center(cell_footprint_index)
+                + dt * dhdt.center(cell_footprint_index))
+            .max(0.);
+            *self.fields.height.center_mut(cell_footprint_index) = new_center;
+        }
 
+        // println!("Computing new geometry");
         self.dynamic_geometry = Some(geom::DynamicGeometry::new(
             self.dynamic_geometry.take().unwrap().into_static_geometry(),
-            &new_height,
+            &self.fields.height,
         ));
 
         // Interpolate velocity to new height map.
@@ -62,9 +75,31 @@ impl Solver {
         self.dynamic_geometry.as_ref().unwrap().grid().clone()
     }
 
+    // TODO: Remove, just for debugging
+    pub fn compute_height_time_deriv<'py>(&self, py: Python<'py>) -> &'py numpy::PyArray3<Float> {
+        use numpy::IntoPyArray;
+
+        compute_height_time_deriv(
+            self.dynamic_geometry.as_ref().unwrap(),
+            &self.rain_rate,
+            &self.fields,
+        )
+        .centers()
+        .clone()
+        .into_pyarray(py)
+    }
+
     #[getter]
     pub fn z_lattice<'py>(&self, py: Python<'py>) -> &'py numpy::PyArray3<Float> {
         self.dynamic_geometry.as_ref().unwrap().z_lattice(py)
+    }
+
+    // TODO: Remove, just for debugging
+    #[getter]
+    pub fn height<'py>(&self, py: Python<'py>) -> &'py numpy::PyArray3<Float> {
+        use numpy::IntoPyArray;
+
+        self.fields.height.centers().clone().into_pyarray(py)
     }
 
     #[pyo3(name = "step")]
@@ -116,16 +151,15 @@ impl Solver {
 //     new_v
 // }
 
-fn perform_height_update(
-    dt: Float,
+pub fn compute_height_time_deriv(
     dynamic_geometry: &geom::DynamicGeometry,
     rain_rate: &geom::HorizScalarField,
     fields: &Fields,
 ) -> geom::HorizScalarField {
-    let mut new_height = fields.height.clone();
+    let mut dhdt = 0. * &fields.height;
     let cell_footprint_indexing = dynamic_geometry.grid().cell_footprint_indexing();
     for cell_footprint_index in indexing::iter_indices(cell_footprint_indexing) {
-        let mut total_mass_flux = 0.;
+        let mut total_mass_outward_flux = 0.;
         let cell_footprint_edges =
             cell_footprint_indexing.compute_footprint_edges(cell_footprint_index);
         for cell_index in dynamic_geometry
@@ -133,26 +167,30 @@ fn perform_height_update(
             .cell_indexing()
             .column(cell_footprint_index)
         {
-            println!(" Cell index {cell_index:?}");
+            // println!(" Cell index {cell_index:?}");
             for cell_footprint_edge in cell_footprint_edges {
                 let vertical_face =
                     dynamic_geometry.compute_vertical_face(cell_index, cell_footprint_edge);
-                println!("  Vertical face {vertical_face:?}");
+                // println!("  Vertical face {vertical_face:?}");
                 let velocity_at_face = fields.velocity.interpolate_to_face(&vertical_face);
-                println!(
-                    "  Flux {:.3e}",
-                    velocity_at_face.dot(&vertical_face.outward_normal) * vertical_face.area
-                );
-                total_mass_flux +=
+                // println!(
+                //     "  Flux {}",
+                //     velocity_at_face.dot(&vertical_face.outward_normal) * vertical_face.area
+                // );
+                total_mass_outward_flux +=
                     velocity_at_face.dot(&vertical_face.outward_normal) * vertical_face.area;
             }
         }
-        println!("Cell footprint {cell_footprint_index:?}, mass flux: {total_mass_flux:.3e}");
-        *new_height.center_mut(cell_footprint_index) -=
-            dt * total_mass_flux / dynamic_geometry.grid().footprint_area();
-        *new_height.center_mut(cell_footprint_index) += dt * rain_rate.center(cell_footprint_index);
+        let height_rate_of_change =
+            -total_mass_outward_flux / dynamic_geometry.grid().footprint_area();
+        // println!(
+        //     "Cell footprint {cell_footprint_index:?}, mass flux:
+        // {total_mass_outward_flux:.5e}, \      dhdt:
+        // {height_rate_of_change:.5e}" );
+        *dhdt.center_mut(cell_footprint_index) += height_rate_of_change;
+        *dhdt.center_mut(cell_footprint_index) += rain_rate.center(cell_footprint_index);
     }
-    new_height
+    dhdt
 }
 
 // fn compute_pressure(grid: &Grid, z_lattice: &ZLattice, velocity:
@@ -166,7 +204,7 @@ mod tests {
     use crate::Vector3;
 
     #[test]
-    fn test_perform_height_update() {
+    fn test_rain() {
         let x_axis = geom::Axis::new(-1., 1., 3);
         let y_axis = geom::Axis::new(10., 11., 4);
         let grid = geom::Grid::new(x_axis, y_axis, 5);
@@ -190,17 +228,17 @@ mod tests {
         {
             let rain_rate = geom::HorizScalarField::new(dynamic_geometry.grid(), |_, _| 0.);
 
-            let new_height = perform_height_update(1., &dynamic_geometry, &rain_rate, &fields);
+            let dhdt = compute_height_time_deriv(&dynamic_geometry, &rain_rate, &fields);
 
-            approx::assert_abs_diff_eq!(new_height, height);
+            approx::assert_abs_diff_eq!(dhdt, 0. * &dhdt);
         }
         // Some rain.
         {
             let rain_rate = geom::HorizScalarField::new(dynamic_geometry.grid(), |_, _| 1.5e-2);
 
-            let new_height = perform_height_update(1., &dynamic_geometry, &rain_rate, &fields);
+            let dhdt = compute_height_time_deriv(&dynamic_geometry, &rain_rate, &fields);
 
-            approx::assert_abs_diff_eq!(new_height, height + 1.5e-2);
+            approx::assert_abs_diff_eq!(dhdt, 1.5e-2 + 0. * &dhdt);
         }
     }
 }

@@ -22,5 +22,5 @@ pub type Array3 = nd::Array3<Float>;
 
 #[pymodule]
 fn riversim(_py: Python<'_>, m: &PyModule) -> PyResult<()> {
-    m.add_function(wrap_pyfunction!(examples::wave_1d, m)?)
+    m.add_function(wrap_pyfunction!(examples::advection_1d, m)?)
 }

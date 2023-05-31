@@ -5,3 +5,6 @@ rustflags = [
   "-C",
   "link-arg=dynamic_lookup",
 ]
+
+[env]
+PYO3_PYTHON = "/usr/local/bin/python3"
