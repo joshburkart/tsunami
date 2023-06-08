@@ -1,6 +1,6 @@
 *.mp4
 .ipynb_checkpoints
-
+.venv
 
 # Added by cargo
 

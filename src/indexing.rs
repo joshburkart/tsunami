@@ -137,6 +137,20 @@ impl VertexFootprintIndex {
             })
         })
     }
+
+    pub fn increment_x(self, dx: isize) -> Self {
+        Self {
+            x: self.x.checked_add_signed(dx).unwrap(),
+            y: self.y,
+        }
+    }
+
+    pub fn increment_y(self, dy: isize) -> Self {
+        Self {
+            x: self.x,
+            y: self.y.checked_add_signed(dy).unwrap(),
+        }
+    }
 }
 impl Index for VertexFootprintIndex {
     type ArrayIndex = [usize; 2];
@@ -174,7 +188,7 @@ impl VertexIndexing {
     }
 
     pub fn num_z_points(&self) -> usize {
-        self.cell_indexing.num_z_cells_per_column + 1
+        self.cell_indexing.num_z_cells + 1
     }
 
     pub fn column(
@@ -182,6 +196,43 @@ impl VertexIndexing {
         footprint: VertexFootprintIndex,
     ) -> impl Iterator<Item = VertexIndex> + '_ {
         (0..self.num_z_points()).map(move |z| VertexIndex { footprint, z })
+    }
+
+    pub fn classify_vertex(&self, vertex: VertexIndex) -> VertexClassification {
+        let VertexIndex { footprint, z } = vertex;
+        let VertexFootprintIndex { x, y } = footprint;
+
+        if z == 0 {
+            VertexClassification::Floor
+        } else if z == self.num_z_points() - 1 {
+            VertexClassification::Surface
+        } else {
+            if x == 0 {
+                if y == 0 {
+                    VertexClassification::LowerLeft
+                } else if y == self.num_y_points() - 1 {
+                    VertexClassification::UpperLeft
+                } else {
+                    VertexClassification::Left
+                }
+            } else if x == self.num_x_points() - 1 {
+                if y == 0 {
+                    VertexClassification::LowerRight
+                } else if y == self.num_y_points() - 1 {
+                    VertexClassification::LowerRight
+                } else {
+                    VertexClassification::Right
+                }
+            } else {
+                if y == 0 {
+                    VertexClassification::Lower
+                } else if y == self.num_y_points() - 1 {
+                    VertexClassification::Upper
+                } else {
+                    VertexClassification::Interior
+                }
+            }
+        }
     }
 }
 impl Indexing for VertexIndexing {
@@ -234,6 +285,28 @@ pub struct VertexIndex {
     pub footprint: VertexFootprintIndex,
     pub z: usize,
 }
+impl VertexIndex {
+    pub fn increment_x(self, dx: isize) -> Self {
+        Self {
+            footprint: self.footprint.increment_x(dx),
+            ..self
+        }
+    }
+
+    pub fn increment_y(self, dy: isize) -> Self {
+        Self {
+            footprint: self.footprint.increment_y(dy),
+            ..self
+        }
+    }
+
+    pub fn increment_z(self, dz: isize) -> Self {
+        Self {
+            z: self.z.checked_add_signed(dz).unwrap(),
+            ..self
+        }
+    }
+}
 impl Index for VertexIndex {
     type ArrayIndex = [usize; 3];
 
@@ -241,6 +314,49 @@ impl Index for VertexIndex {
         [self.footprint.x, self.footprint.y, self.z]
     }
 }
+
+pub enum VertexClassification {
+    /// For `z = 0`
+    Floor,
+    /// For `z = num_z_points - 1`
+    Surface,
+    /// For `x = 0`
+    Left,
+    /// For `x = num_x_points - 1`
+    Right,
+    /// For `y = 0`
+    Lower,
+    /// For `y = num_y_points - 1`
+    Upper,
+    /// For `x = 0`, `y = 0`
+    LowerLeft,
+    /// For `x = num_x_points - 1`, `y = 0`
+    LowerRight,
+    /// For `x = 0`, `y = num_y_points - 1`
+    UpperLeft,
+    /// For `x = num_x_points - 1`, `y = num_y_points - 1`
+    UpperRight,
+    /// Otherwise
+    Interior,
+}
+pub struct AxisVertexNeighbors {
+    pub lower: VertexIndex,
+    pub upper: VertexIndex,
+}
+
+// pub struct VertexNeighbors {
+//     pub x: AxisVertexNeighbors,
+//     pub y: AxisVertexNeighbors,
+//     pub z: AxisVertexNeighbors,
+// }
+// pub struct AxisVertexNeighbors {
+//     pub lower: AxisVertexNeighbor,
+//     pub upper: AxisVertexNeighbor,
+// }
+// pub enum AxisVertexNeighbor {
+//     Vertex(VertexIndex),
+//     Boundary,
+// }
 
 #[derive(Clone)]
 pub struct CellFootprintIndexing {
@@ -265,7 +381,7 @@ impl CellFootprintIndexing {
         self.vertex_footprint_indexing.num_y_points - 1
     }
 
-    pub fn compute_footprint_edges(&self, footprint: CellFootprintIndex) -> [CellFootprintEdge; 3] {
+    pub fn compute_footprint_pairs(&self, footprint: CellFootprintIndex) -> [CellFootprintPair; 3] {
         let triangle = footprint.triangle;
         let neighbor_triangle = triangle.flip();
         // ---------------
@@ -285,7 +401,7 @@ impl CellFootprintIndexing {
         // ---------------
         match triangle {
             Triangle::UpperLeft => [
-                CellFootprintEdge {
+                CellFootprintPair {
                     x: footprint.x,
                     y: footprint.y,
                     triangle_edge: TriangleEdge::UpperLeft(UpperLeftTriangleEdge::Up),
@@ -299,7 +415,7 @@ impl CellFootprintIndexing {
                         CellFootprintNeighbor::Boundary(Boundary::Upper)
                     },
                 },
-                CellFootprintEdge {
+                CellFootprintPair {
                     x: footprint.x,
                     y: footprint.y,
                     triangle_edge: TriangleEdge::UpperLeft(UpperLeftTriangleEdge::Left),
@@ -313,7 +429,7 @@ impl CellFootprintIndexing {
                         CellFootprintNeighbor::Boundary(Boundary::Left)
                     },
                 },
-                CellFootprintEdge {
+                CellFootprintPair {
                     x: footprint.x,
                     y: footprint.y,
                     triangle_edge: TriangleEdge::UpperLeft(UpperLeftTriangleEdge::DownRight),
@@ -324,7 +440,7 @@ impl CellFootprintIndexing {
                 },
             ],
             Triangle::LowerRight => [
-                CellFootprintEdge {
+                CellFootprintPair {
                     x: footprint.x,
                     y: footprint.y,
                     triangle_edge: TriangleEdge::LowerRight(LowerRightTriangleEdge::Down),
@@ -338,7 +454,7 @@ impl CellFootprintIndexing {
                         CellFootprintNeighbor::Boundary(Boundary::Lower)
                     },
                 },
-                CellFootprintEdge {
+                CellFootprintPair {
                     triangle_edge: TriangleEdge::LowerRight(LowerRightTriangleEdge::Right),
                     x: footprint.x,
                     y: footprint.y,
@@ -352,7 +468,7 @@ impl CellFootprintIndexing {
                         CellFootprintNeighbor::Boundary(Boundary::Right)
                     },
                 },
-                CellFootprintEdge {
+                CellFootprintPair {
                     triangle_edge: TriangleEdge::LowerRight(LowerRightTriangleEdge::UpLeft),
                     x: footprint.x,
                     y: footprint.y,
@@ -445,16 +561,13 @@ impl Index for CellFootprintIndex {
 #[derive(Clone)]
 pub struct CellIndexing {
     cell_footprint_indexing: CellFootprintIndexing,
-    num_z_cells_per_column: usize,
+    num_z_cells: usize,
 }
 impl CellIndexing {
-    pub fn new(
-        cell_footprint_indexing: CellFootprintIndexing,
-        num_z_cells_per_column: usize,
-    ) -> Self {
+    pub fn new(cell_footprint_indexing: CellFootprintIndexing, num_z_cells: usize) -> Self {
         Self {
             cell_footprint_indexing,
-            num_z_cells_per_column,
+            num_z_cells,
         }
     }
 
@@ -462,12 +575,12 @@ impl CellIndexing {
         &self.cell_footprint_indexing
     }
 
-    pub fn num_z_cells_per_column(&self) -> usize {
-        self.num_z_cells_per_column
+    pub fn num_z_cells(&self) -> usize {
+        self.num_z_cells
     }
 
     pub fn column(&self, footprint: CellFootprintIndex) -> impl Iterator<Item = CellIndex> {
-        (0..self.num_z_cells_per_column).map(move |z| CellIndex { footprint, z })
+        (0..self.num_z_cells).map(move |z| CellIndex { footprint, z })
     }
 }
 impl Indexing for CellIndexing {
@@ -477,26 +590,25 @@ impl Indexing for CellIndexing {
         [
             self.cell_footprint_indexing.num_x_cells(),
             self.cell_footprint_indexing.num_y_cells(),
-            self.num_z_cells_per_column,
+            self.num_z_cells,
             Triangle::COUNT,
         ]
     }
 
     fn len(&self) -> usize {
-        self.cell_footprint_indexing.len() * self.num_z_cells_per_column
+        self.cell_footprint_indexing.len() * self.num_z_cells
     }
 
     fn flatten(&self, index: Self::Index) -> usize {
-        self.cell_footprint_indexing.flatten(index.footprint) * self.num_z_cells_per_column
-            + index.z
+        self.cell_footprint_indexing.flatten(index.footprint) * self.num_z_cells + index.z
     }
 
     fn unflatten(&self, flat_index: usize) -> Self::Index {
         CellIndex {
             footprint: self
                 .cell_footprint_indexing
-                .unflatten(flat_index / self.num_z_cells_per_column),
-            z: flat_index % self.num_z_cells_per_column,
+                .unflatten(flat_index / self.num_z_cells),
+            z: flat_index % self.num_z_cells,
         }
     }
 }
@@ -525,27 +637,27 @@ pub enum CellFootprintNeighbor {
     Boundary(Boundary),
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub enum UpperLeftTriangleEdge {
     Up,
     Left,
     DownRight,
 }
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub enum LowerRightTriangleEdge {
     Down,
     Right,
     UpLeft,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub enum TriangleEdge {
     UpperLeft(UpperLeftTriangleEdge),
     LowerRight(LowerRightTriangleEdge),
 }
 
-#[derive(Clone, Copy)]
-pub struct CellFootprintEdge {
+#[derive(Clone, Copy, Debug)]
+pub struct CellFootprintPair {
     pub x: usize,
     pub y: usize,
     pub triangle_edge: TriangleEdge,
@@ -760,7 +872,7 @@ mod test {
 
         let cell_indexing = CellIndexing {
             cell_footprint_indexing,
-            num_z_cells_per_column: 19,
+            num_z_cells: 19,
         };
         test_indexing_impl(&cell_indexing);
 

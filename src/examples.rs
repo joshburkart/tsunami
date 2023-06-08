@@ -2,6 +2,9 @@ use pyo3::prelude::*;
 
 use crate::{geom, physics, Float, Vector3};
 
+// TODO: Make this the only public module in order to surface and delete dead
+// code
+
 #[pyfunction]
 pub fn advection_1d(num_x_cells: usize, num_z_cells_per_column: usize) -> physics::Solver {
     let x_axis = geom::Axis::new(0., 1., num_x_cells);
@@ -10,23 +13,23 @@ pub fn advection_1d(num_x_cells: usize, num_z_cells_per_column: usize) -> physic
     let static_geometry = geom::StaticGeometry::new(grid, &|_, _| 0.);
 
     fn initial_height(x: Float, _y: Float) -> Float {
-        (-((x - 0.5) / (0.1)).powi(2)).exp() + 0.1
-        // (x * (2. * std::f64::consts::PI) * 5.5).sin().powi(2) + 1.
+        (-((x - 0.7) / (0.1)).powi(2)).exp() + 0.1
     }
-    let initial_height = geom::HorizScalarField::new(static_geometry.grid(), initial_height);
+    let initial_height = geom::HeightField::new(static_geometry.grid(), initial_height);
     let initial_dynamic_geometry = geom::DynamicGeometry::new(static_geometry, &initial_height);
 
-    let initial_fields = physics::Fields {
-        height: initial_height,
-        pressure: geom::ScalarField::new(&initial_dynamic_geometry, |_, _, _| 0.),
-        velocity: geom::VectorField::new(&initial_dynamic_geometry, |_, _, _| {
-            Vector3::new(0.1, 0., 0.)
-        }),
+    let problem = physics::Problem {
+        rain_rate: None,
+        fluid_density: 1e3,
+        grav_accel: 9.8,
+        x_boundary_condition: physics::HorizBoundaryCondition::HomogeneousNeumann,
+        y_boundary_condition: physics::HorizBoundaryCondition::HomogeneousNeumann,
     };
 
-    let rain_rate = geom::HorizScalarField::new(initial_dynamic_geometry.grid(), |_, _| 0.);
-
-    physics::Solver::new(initial_dynamic_geometry, initial_fields, rain_rate)
+    let velocity = geom::VelocityField::new(&initial_dynamic_geometry, |_, _, _| {
+        Vector3::new(-0.03, 0., 0.)
+    });
+    physics::Solver::new(problem, initial_dynamic_geometry, initial_height, velocity)
 }
 
 #[cfg(test)]

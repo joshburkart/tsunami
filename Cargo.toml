@@ -8,7 +8,8 @@ crate-type = ["cdylib", "rlib"]
 name = "riversim"
 
 [dependencies]
-argmin = "0.8.1"
+argmin = {version = "0.8.1", default-features = false}
+argmin-math = {version = "0.3.0", features = ["ndarray_latest"]}
 itertools = "0.10.5"
 nalgebra = "0.32.2"
 ndarray = {version = "0.15.4", features = ["approx-0_5"]}
