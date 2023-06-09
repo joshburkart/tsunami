@@ -64,9 +64,9 @@ impl VertexFootprintIndexing {
         center: VertexFootprintIndex,
     ) -> impl Iterator<Item = VertexFootprintIndex> {
         let min_x = center.x.checked_sub(1).unwrap_or(1);
-        let max_x = (center.x + 2).min(self.num_x_points - 1);
+        let max_x = (center.x + 2).min(self.num_x_points);
         let min_y = center.y.checked_sub(1).unwrap_or(1);
-        let max_y = (center.y + 2).min(self.num_y_points - 1);
+        let max_y = (center.y + 2).min(self.num_y_points);
 
         (min_x..max_x)
             .step_by(2)
@@ -683,178 +683,256 @@ mod test {
             num_y_points: 27,
         };
 
-        assert_eq!(
-            VertexFootprintIndex { x: 0, y: 0 }
-                .adjacent_cells(&vertex_footprint_indexing)
-                .collect::<Vec<_>>(),
-            vec![
-                CellFootprintIndex {
-                    x: 0,
-                    y: 0,
-                    triangle: Triangle::UpperLeft
-                },
-                CellFootprintIndex {
-                    x: 0,
-                    y: 0,
-                    triangle: Triangle::LowerRight
-                }
-            ]
-        );
-        assert_eq!(
-            VertexFootprintIndex { x: 2, y: 0 }
-                .adjacent_cells(&vertex_footprint_indexing)
-                .collect::<Vec<_>>(),
-            vec![
-                CellFootprintIndex {
-                    x: 1,
-                    y: 0,
-                    triangle: Triangle::UpperLeft
-                },
-                CellFootprintIndex {
-                    x: 1,
-                    y: 0,
-                    triangle: Triangle::LowerRight
-                },
-                CellFootprintIndex {
-                    x: 2,
-                    y: 0,
-                    triangle: Triangle::UpperLeft
-                },
-                CellFootprintIndex {
-                    x: 2,
-                    y: 0,
-                    triangle: Triangle::LowerRight
-                },
-            ]
-        );
-        assert_eq!(
-            VertexFootprintIndex { x: 0, y: 11 }
-                .adjacent_cells(&vertex_footprint_indexing)
-                .collect::<Vec<_>>(),
-            vec![
-                CellFootprintIndex {
-                    x: 0,
-                    y: 10,
-                    triangle: Triangle::UpperLeft
-                },
-                CellFootprintIndex {
-                    x: 0,
-                    y: 10,
-                    triangle: Triangle::LowerRight
-                },
-                CellFootprintIndex {
-                    x: 0,
-                    y: 11,
-                    triangle: Triangle::UpperLeft
-                },
-                CellFootprintIndex {
-                    x: 0,
-                    y: 11,
-                    triangle: Triangle::LowerRight
-                },
-            ]
-        );
-        assert_eq!(
-            VertexFootprintIndex { x: 4, y: 11 }
-                .adjacent_cells(&vertex_footprint_indexing)
-                .collect::<Vec<_>>(),
-            vec![
-                CellFootprintIndex {
-                    x: 3,
-                    y: 10,
-                    triangle: Triangle::UpperLeft
-                },
-                CellFootprintIndex {
-                    x: 3,
-                    y: 10,
-                    triangle: Triangle::LowerRight
-                },
-                CellFootprintIndex {
-                    x: 3,
-                    y: 11,
-                    triangle: Triangle::UpperLeft
-                },
-                CellFootprintIndex {
-                    x: 3,
-                    y: 11,
-                    triangle: Triangle::LowerRight
-                },
-            ]
-        );
-        assert_eq!(
-            VertexFootprintIndex { x: 3, y: 26 }
-                .adjacent_cells(&vertex_footprint_indexing)
-                .collect::<Vec<_>>(),
-            vec![
-                CellFootprintIndex {
-                    x: 2,
-                    y: 25,
-                    triangle: Triangle::UpperLeft
-                },
-                CellFootprintIndex {
-                    x: 2,
-                    y: 25,
-                    triangle: Triangle::LowerRight
-                },
-                CellFootprintIndex {
-                    x: 3,
-                    y: 25,
-                    triangle: Triangle::UpperLeft
-                },
-                CellFootprintIndex {
-                    x: 3,
-                    y: 25,
-                    triangle: Triangle::LowerRight
-                },
-            ]
-        );
-        assert_eq!(
-            VertexFootprintIndex { x: 3, y: 20 }
-                .adjacent_cells(&vertex_footprint_indexing)
-                .collect::<Vec<_>>(),
-            vec![
-                CellFootprintIndex {
-                    x: 2,
-                    y: 19,
-                    triangle: Triangle::UpperLeft
-                },
-                CellFootprintIndex {
-                    x: 2,
-                    y: 19,
-                    triangle: Triangle::LowerRight
-                },
-                CellFootprintIndex {
-                    x: 2,
-                    y: 20,
-                    triangle: Triangle::UpperLeft
-                },
-                CellFootprintIndex {
-                    x: 2,
-                    y: 20,
-                    triangle: Triangle::LowerRight
-                },
-                CellFootprintIndex {
-                    x: 3,
-                    y: 19,
-                    triangle: Triangle::UpperLeft
-                },
-                CellFootprintIndex {
-                    x: 3,
-                    y: 19,
-                    triangle: Triangle::LowerRight
-                },
-                CellFootprintIndex {
-                    x: 3,
-                    y: 20,
-                    triangle: Triangle::UpperLeft
-                },
-                CellFootprintIndex {
-                    x: 3,
-                    y: 20,
-                    triangle: Triangle::LowerRight
-                },
-            ]
-        );
+        {
+            let vertex_footprint_index = VertexFootprintIndex { x: 0, y: 0 };
+            assert_eq!(
+                vertex_footprint_index
+                    .adjacent_cells(&vertex_footprint_indexing)
+                    .collect::<Vec<_>>(),
+                vec![
+                    CellFootprintIndex {
+                        x: 0,
+                        y: 0,
+                        triangle: Triangle::UpperLeft
+                    },
+                    CellFootprintIndex {
+                        x: 0,
+                        y: 0,
+                        triangle: Triangle::LowerRight
+                    }
+                ]
+            );
+            assert_eq!(
+                vertex_footprint_indexing
+                    .neighbors(vertex_footprint_index)
+                    .collect::<Vec<_>>(),
+                vec![
+                    VertexFootprintIndex { x: 1, y: 0 },
+                    VertexFootprintIndex { x: 0, y: 1 }
+                ]
+            );
+        }
+        {
+            let vertex_footprint_index = VertexFootprintIndex { x: 2, y: 0 };
+            assert_eq!(
+                vertex_footprint_index
+                    .adjacent_cells(&vertex_footprint_indexing)
+                    .collect::<Vec<_>>(),
+                vec![
+                    CellFootprintIndex {
+                        x: 1,
+                        y: 0,
+                        triangle: Triangle::UpperLeft
+                    },
+                    CellFootprintIndex {
+                        x: 1,
+                        y: 0,
+                        triangle: Triangle::LowerRight
+                    },
+                    CellFootprintIndex {
+                        x: 2,
+                        y: 0,
+                        triangle: Triangle::UpperLeft
+                    },
+                    CellFootprintIndex {
+                        x: 2,
+                        y: 0,
+                        triangle: Triangle::LowerRight
+                    },
+                ]
+            );
+            assert_eq!(
+                vertex_footprint_indexing
+                    .neighbors(vertex_footprint_index)
+                    .collect::<Vec<_>>(),
+                vec![
+                    VertexFootprintIndex { x: 1, y: 0 },
+                    VertexFootprintIndex { x: 3, y: 0 },
+                    VertexFootprintIndex { x: 2, y: 1 }
+                ]
+            );
+        }
+        {
+            let vertex_footprint_index = VertexFootprintIndex { x: 0, y: 11 };
+            assert_eq!(
+                vertex_footprint_index
+                    .adjacent_cells(&vertex_footprint_indexing)
+                    .collect::<Vec<_>>(),
+                vec![
+                    CellFootprintIndex {
+                        x: 0,
+                        y: 10,
+                        triangle: Triangle::UpperLeft
+                    },
+                    CellFootprintIndex {
+                        x: 0,
+                        y: 10,
+                        triangle: Triangle::LowerRight
+                    },
+                    CellFootprintIndex {
+                        x: 0,
+                        y: 11,
+                        triangle: Triangle::UpperLeft
+                    },
+                    CellFootprintIndex {
+                        x: 0,
+                        y: 11,
+                        triangle: Triangle::LowerRight
+                    },
+                ]
+            );
+            assert_eq!(
+                vertex_footprint_indexing
+                    .neighbors(vertex_footprint_index)
+                    .collect::<Vec<_>>(),
+                vec![
+                    VertexFootprintIndex { x: 1, y: 11 },
+                    VertexFootprintIndex { x: 0, y: 10 },
+                    VertexFootprintIndex { x: 0, y: 12 }
+                ]
+            );
+        }
+        {
+            let vertex_footprint_index = VertexFootprintIndex { x: 4, y: 11 };
+            assert_eq!(
+                vertex_footprint_index
+                    .adjacent_cells(&vertex_footprint_indexing)
+                    .collect::<Vec<_>>(),
+                vec![
+                    CellFootprintIndex {
+                        x: 3,
+                        y: 10,
+                        triangle: Triangle::UpperLeft
+                    },
+                    CellFootprintIndex {
+                        x: 3,
+                        y: 10,
+                        triangle: Triangle::LowerRight
+                    },
+                    CellFootprintIndex {
+                        x: 3,
+                        y: 11,
+                        triangle: Triangle::UpperLeft
+                    },
+                    CellFootprintIndex {
+                        x: 3,
+                        y: 11,
+                        triangle: Triangle::LowerRight
+                    },
+                ]
+            );
+            assert_eq!(
+                vertex_footprint_indexing
+                    .neighbors(vertex_footprint_index)
+                    .collect::<Vec<_>>(),
+                vec![
+                    VertexFootprintIndex { x: 3, y: 11 },
+                    VertexFootprintIndex { x: 4, y: 10 },
+                    VertexFootprintIndex { x: 4, y: 12 }
+                ]
+            );
+        }
+        {
+            let vertex_footprint_index = VertexFootprintIndex { x: 3, y: 26 };
+            assert_eq!(
+                vertex_footprint_index
+                    .adjacent_cells(&vertex_footprint_indexing)
+                    .collect::<Vec<_>>(),
+                vec![
+                    CellFootprintIndex {
+                        x: 2,
+                        y: 25,
+                        triangle: Triangle::UpperLeft
+                    },
+                    CellFootprintIndex {
+                        x: 2,
+                        y: 25,
+                        triangle: Triangle::LowerRight
+                    },
+                    CellFootprintIndex {
+                        x: 3,
+                        y: 25,
+                        triangle: Triangle::UpperLeft
+                    },
+                    CellFootprintIndex {
+                        x: 3,
+                        y: 25,
+                        triangle: Triangle::LowerRight
+                    },
+                ]
+            );
+            assert_eq!(
+                vertex_footprint_indexing
+                    .neighbors(vertex_footprint_index)
+                    .collect::<Vec<_>>(),
+                vec![
+                    VertexFootprintIndex { x: 2, y: 26 },
+                    VertexFootprintIndex { x: 4, y: 26 },
+                    VertexFootprintIndex { x: 3, y: 25 },
+                ]
+            );
+        }
+        {
+            let vertex_footprint_index = VertexFootprintIndex { x: 3, y: 20 };
+            assert_eq!(
+                vertex_footprint_index
+                    .adjacent_cells(&vertex_footprint_indexing)
+                    .collect::<Vec<_>>(),
+                vec![
+                    CellFootprintIndex {
+                        x: 2,
+                        y: 19,
+                        triangle: Triangle::UpperLeft
+                    },
+                    CellFootprintIndex {
+                        x: 2,
+                        y: 19,
+                        triangle: Triangle::LowerRight
+                    },
+                    CellFootprintIndex {
+                        x: 2,
+                        y: 20,
+                        triangle: Triangle::UpperLeft
+                    },
+                    CellFootprintIndex {
+                        x: 2,
+                        y: 20,
+                        triangle: Triangle::LowerRight
+                    },
+                    CellFootprintIndex {
+                        x: 3,
+                        y: 19,
+                        triangle: Triangle::UpperLeft
+                    },
+                    CellFootprintIndex {
+                        x: 3,
+                        y: 19,
+                        triangle: Triangle::LowerRight
+                    },
+                    CellFootprintIndex {
+                        x: 3,
+                        y: 20,
+                        triangle: Triangle::UpperLeft
+                    },
+                    CellFootprintIndex {
+                        x: 3,
+                        y: 20,
+                        triangle: Triangle::LowerRight
+                    },
+                ]
+            );
+            assert_eq!(
+                vertex_footprint_indexing
+                    .neighbors(vertex_footprint_index)
+                    .collect::<Vec<_>>(),
+                vec![
+                    VertexFootprintIndex { x: 2, y: 20 },
+                    VertexFootprintIndex { x: 4, y: 20 },
+                    VertexFootprintIndex { x: 3, y: 19 },
+                    VertexFootprintIndex { x: 3, y: 21 }
+                ]
+            );
+        }
     }
 
     #[test]

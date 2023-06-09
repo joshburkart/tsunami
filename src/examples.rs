@@ -13,7 +13,7 @@ pub fn advection_1d(num_x_cells: usize, num_z_cells_per_column: usize) -> physic
     let static_geometry = geom::StaticGeometry::new(grid, &|_, _| 0.);
 
     fn initial_height(x: Float, _y: Float) -> Float {
-        (-((x - 0.7) / (0.1)).powi(2)).exp() + 0.1
+        (-((x - 0.7) / (0.05)).powi(2)).exp() + 0.1
     }
     let initial_height = geom::HeightField::new(static_geometry.grid(), initial_height);
     let initial_dynamic_geometry = geom::DynamicGeometry::new(static_geometry, &initial_height);

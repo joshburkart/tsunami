@@ -3,7 +3,7 @@ use ndarray::{self as nd, s};
 use numpy::IntoPyArray;
 use pyo3::prelude::*;
 
-use crate::{indexing, Array1, Array2, Array3, Float, UnitVector2, UnitVector3, Vector2, Vector3};
+use crate::{indexing, Array1, Array2, Array3, Float, UnitVector2, Vector2, Vector3};
 
 #[pyclass]
 #[derive(Clone)]
@@ -306,7 +306,165 @@ pub struct ZLattice {
     spacings: Array2,
 }
 impl ZLattice {
-    pub fn new(grid: &Grid, terrain: &Terrain, height: &HeightField) -> Self {
+    pub fn new_lp(grid: &Grid, terrain: &Terrain, height: &HeightField) -> Self {
+        Self::new_lp_first_pass(grid, terrain, height)
+            .unwrap_or_else(|_| Self::new_lp_second_pass(grid, terrain, height))
+    }
+
+    /// Attempt to find a lattice of points such that the average height of
+    /// every triangle is equal to the corresponding height cell center
+    /// value.
+    fn new_lp_first_pass(
+        grid: &Grid,
+        terrain: &Terrain,
+        height: &HeightField,
+    ) -> Result<Self, highs::HighsModelStatus> {
+        use indexing::Indexing;
+
+        let mut problem = highs::RowProblem::new();
+
+        // Define variables to be solved for.
+        let vertex_variables = (0..grid.vertex_footprint_indexing().len())
+            .map(|_| problem.add_column(0., (0.)..Float::INFINITY))
+            .collect::<Vec<_>>();
+
+        // Define the principal constraints, which specify that the average of the
+        // heights at each cell footprint's three vertices be equal to the
+        // height at the cell footprint center.
+        for cell_footprint_index in indexing::iter_indices(grid.cell_footprint_indexing()) {
+            let center_height = height.center_value(cell_footprint_index);
+            problem.add_row(
+                center_height..center_height,
+                &cell_footprint_index
+                    .vertices()
+                    .into_iter()
+                    .map(|vertex_footprint_index| {
+                        (
+                            vertex_variables[grid
+                                .vertex_footprint_indexing()
+                                .flatten(vertex_footprint_index)],
+                            1. / 3.,
+                        )
+                    })
+                    .collect::<Vec<_>>(),
+            );
+        }
+
+        // Determine how to compute the mesh Laplacian at a single vertex. TODO: Account
+        // for mesh spacing.
+        let compute_laplacian =
+            |vertex_footprint_index: indexing::VertexFootprintIndex| -> Vec<(highs::Col, Float)> {
+                let neighbors = grid
+                    .vertex_footprint_indexing()
+                    .neighbors(vertex_footprint_index);
+                let mut num_neighbors = 0;
+                let mut linear_expr = neighbors
+                    .map(|neighbor_vertex_footprint_index| {
+                        num_neighbors += 1;
+                        (
+                            vertex_variables[grid
+                                .vertex_footprint_indexing()
+                                .flatten(neighbor_vertex_footprint_index)],
+                            -1.,
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                linear_expr.push((
+                    vertex_variables[grid
+                        .vertex_footprint_indexing()
+                        .flatten(vertex_footprint_index)],
+                    num_neighbors as Float,
+                ));
+                linear_expr
+            };
+
+        // Add slack variables and associated constraints to effect an absolute value
+        // objective function on the mesh Laplacian.
+        for vertex_footprint_index in indexing::iter_indices(grid.vertex_footprint_indexing()) {
+            let slack_variable = problem.add_column(1., (0.)..Float::INFINITY);
+            let laplacian = compute_laplacian(vertex_footprint_index);
+
+            // L + s >= 0  ->  s >= -L
+            let mut slack_constraint = laplacian.clone();
+            slack_constraint.push((slack_variable, 1.));
+            problem.add_row((0.)..Float::INFINITY, slack_constraint);
+
+            // L - s <= 0  ->  s >= L
+            let mut slack_constraint = laplacian;
+            slack_constraint.push((slack_variable, -1.));
+            problem.add_row(Float::NEG_INFINITY..0., slack_constraint);
+        }
+
+        // Solve.
+        let solved_model = Self::solve_lp(problem);
+        if solved_model.status() != highs::HighsModelStatus::Optimal {
+            return Err(solved_model.status());
+        }
+        Ok(Self::extract_lp_solution(
+            solved_model.get_solution(),
+            vertex_variables,
+            grid,
+            terrain,
+        ))
+    }
+
+    /// Find a lattice of points such that the average height of every triangle
+    /// is as close as possible in an L1 sense to the corresponding height
+    /// cell center value.
+    fn new_lp_second_pass(grid: &Grid, terrain: &Terrain, height: &HeightField) -> Self {
+        use indexing::Indexing;
+
+        let mut problem = highs::RowProblem::new();
+
+        // Define variables to be solved for.
+        let vertex_variables = (0..grid.vertex_footprint_indexing().len())
+            .map(|_| problem.add_column(0., (0.)..Float::INFINITY))
+            .collect::<Vec<_>>();
+
+        // Define the optimization objective, which specifies that the average of the
+        // heights at each cell footprint's three vertices be as close as
+        // possible in an L1 sense to the height at the cell footprint center.
+        for cell_footprint_index in indexing::iter_indices(grid.cell_footprint_indexing()) {
+            // Delta = 1/3 * (z1 + z2 + z3) - h
+            let center_height = height.center_value(cell_footprint_index);
+            let center_height_val = problem.add_column(0., center_height..center_height);
+            let mut diff_height = cell_footprint_index
+                .vertices()
+                .into_iter()
+                .map(|vertex_footprint_index| {
+                    (
+                        vertex_variables[grid
+                            .vertex_footprint_indexing()
+                            .flatten(vertex_footprint_index)],
+                        1. / 3.,
+                    )
+                })
+                .collect::<Vec<_>>();
+            diff_height.push((center_height_val, -1.));
+
+            // Delta + s >= 0  ->  s >= -Delta
+            let slack_variable = problem.add_column(1., (0.)..Float::INFINITY);
+            let mut slack_constraint = diff_height.clone();
+            slack_constraint.push((slack_variable, 1.));
+            problem.add_row((0.)..Float::INFINITY, slack_constraint);
+
+            // Delta - s <= 0  ->  s >= Delta
+            let mut slack_constraint = diff_height;
+            slack_constraint.push((slack_variable, -1.));
+            problem.add_row(Float::NEG_INFINITY..(0.), slack_constraint);
+        }
+
+        let solved_model = Self::solve_lp(problem);
+        if solved_model.status() != highs::HighsModelStatus::Optimal {
+            panic!(
+                "Second pass was infeasible, should be impossible: {:?}",
+                solved_model.status()
+            );
+        }
+        Self::extract_lp_solution(solved_model.get_solution(), vertex_variables, grid, terrain)
+    }
+
+    pub fn new_averaging(grid: &Grid, terrain: &Terrain, height: &HeightField) -> Self {
         use indexing::{Index, Indexing};
 
         let vertex_indexing = grid.vertex_indexing();
@@ -318,7 +476,7 @@ impl ZLattice {
             let height = mean(
                 vertex_footprint_index
                     .adjacent_cells(vertex_footprint_indexing)
-                    .map(|cell_footprint_index| height.center(cell_footprint_index)),
+                    .map(|cell_footprint_index| height.center_value(cell_footprint_index)),
             )
             .unwrap();
             let spacing = height / grid.cell_indexing().num_z_cells() as Float;
@@ -350,6 +508,53 @@ impl ZLattice {
     pub fn z_lattice<'py>(&self, py: Python<'py>) -> &'py numpy::PyArray3<Float> {
         self.lattice.clone().into_pyarray(py)
     }
+
+    fn solve_lp(problem: highs::RowProblem) -> highs::SolvedModel {
+        let mut model = problem.optimise(highs::Sense::Minimise);
+        model.set_option("parallel", "on");
+        // model.set_option("time_limit", 10.);
+        model.solve()
+    }
+
+    fn extract_lp_solution(
+        solution: highs::Solution,
+        vertex_variables: Vec<highs::Col>,
+        grid: &Grid,
+        terrain: &Terrain,
+    ) -> Self {
+        use indexing::{Index, Indexing};
+
+        // Unpack the solution into a lattice. Evenly distribute z points across each
+        // column of cells.
+        let num_z_points = grid.vertex_indexing().num_z_points();
+        let mut lattice = Array3::zeros((
+            grid.vertex_indexing.num_x_points(),
+            grid.vertex_indexing.num_y_points(),
+            num_z_points,
+        ));
+        let mut spacings = Array2::zeros((
+            grid.vertex_indexing.num_x_points(),
+            grid.vertex_indexing.num_y_points(),
+        ));
+        for (vertex_footprint_flat_index, _) in vertex_variables.iter().enumerate() {
+            let vertex_footprint_index = grid
+                .vertex_footprint_indexing()
+                .unflatten(vertex_footprint_flat_index);
+            let height = solution.columns()[vertex_footprint_flat_index];
+            let spacing = height / (num_z_points as Float - 1.);
+            spacings[vertex_footprint_index.to_array_index()] = spacing;
+            for k in 0..num_z_points {
+                let vertex_index = indexing::VertexIndex {
+                    footprint: vertex_footprint_index,
+                    z: k,
+                };
+                lattice[vertex_index.to_array_index()] = terrain.vertices
+                    [vertex_footprint_index.to_array_index()]
+                    + spacing * k as Float;
+            }
+        }
+        Self { lattice, spacings }
+    }
 }
 
 #[pyclass]
@@ -368,7 +573,8 @@ impl DynamicGeometry {
             ],
             height.centers.shape()
         );
-        let z_lattice = ZLattice::new(static_geometry.grid(), static_geometry.terrain(), &height);
+        let z_lattice =
+            ZLattice::new_averaging(static_geometry.grid(), static_geometry.terrain(), &height);
         Self {
             static_geometry,
             z_lattice,
@@ -681,13 +887,16 @@ impl HeightField {
         }
     }
 
-    pub fn center(&self, cell_footprint_index: indexing::CellFootprintIndex) -> Float {
+    pub fn center_value(&self, cell_footprint_index: indexing::CellFootprintIndex) -> Float {
         use indexing::Index;
 
         self.centers[cell_footprint_index.to_array_index()]
     }
 
-    pub fn center_mut(&mut self, cell_footprint_index: indexing::CellFootprintIndex) -> &mut Float {
+    pub fn center_value_mut(
+        &mut self,
+        cell_footprint_index: indexing::CellFootprintIndex,
+    ) -> &mut Float {
         use indexing::Index;
 
         &mut self.centers[cell_footprint_index.to_array_index()]
@@ -812,7 +1021,7 @@ mod test {
         let terrain = grid.make_terrain(&|x, y| 10. * x * y);
         let height = HeightField::new(&grid, |_, _| 0.);
 
-        let z_lattice = ZLattice::new(&grid, &terrain, &height);
+        let z_lattice = ZLattice::new_averaging(&grid, &terrain, &height);
 
         let heights = (&z_lattice.lattice.slice(s![.., .., 1..])
             - &z_lattice.lattice.slice(s![.., .., ..-1]))
@@ -827,10 +1036,10 @@ mod test {
         let terrain = grid.make_terrain(&|_, _| 0.);
         let mut height = HeightField::new(&grid, |_, _| 0.);
         for cell_footprint_index in indexing::iter_indices(grid.cell_footprint_indexing()) {
-            *height.center_mut(cell_footprint_index) = 7.3;
+            *height.center_value_mut(cell_footprint_index) = 7.3;
         }
 
-        let z_lattice = ZLattice::new(&grid, &terrain, &height);
+        let z_lattice = ZLattice::new_averaging(&grid, &terrain, &height);
 
         assert_relative_eq!(
             z_lattice.lattice,
@@ -849,10 +1058,10 @@ mod test {
         let mut height = HeightField::new(&grid, |_, _| 0.);
         for cell_footprint_index in indexing::iter_indices(grid.cell_footprint_indexing()) {
             let centroid = grid.compute_cell_footprint_centroid(cell_footprint_index);
-            *height.center_mut(cell_footprint_index) = 1. + centroid[0] + 2. * centroid[1];
+            *height.center_value_mut(cell_footprint_index) = 1. + centroid[0] + 2. * centroid[1];
         }
 
-        let z_lattice = ZLattice::new(&grid, &terrain, &height);
+        let z_lattice = ZLattice::new_averaging(&grid, &terrain, &height);
 
         let height_expected = &grid.x_axis().vertices().slice(s![.., nd::NewAxis])
             + 2. * &grid.y_axis().vertices().slice(s![nd::NewAxis, ..])

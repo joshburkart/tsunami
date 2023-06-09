@@ -68,10 +68,10 @@ impl Solver {
                 .grid()
                 .cell_footprint_indexing(),
         ) {
-            let new_center = (self.fields.height.center(cell_footprint_index)
-                + dt * dhdt.center(cell_footprint_index))
+            let new_center = (self.fields.height.center_value(cell_footprint_index)
+                + dt * dhdt.center_value(cell_footprint_index))
             .max(0.);
-            *self.fields.height.center_mut(cell_footprint_index) = new_center;
+            *self.fields.height.center_value_mut(cell_footprint_index) = new_center;
         }
 
         self.dynamic_geometry = Some(geom::DynamicGeometry::new(
@@ -202,10 +202,10 @@ pub fn compute_height_time_deriv(
             let cell_footprint_edge = grid.compute_cell_footprint_edge(cell_footprint_pair);
             let outward_normal = cell_footprint_edge.outward_normal;
 
-            let height = fields.height.center(cell_footprint_index);
+            let height = fields.height.center_value(cell_footprint_index);
             let neighbor_height = match cell_footprint_pair.neighbor {
                 indexing::CellFootprintNeighbor::CellFootprint(neighbor_cell_footprint) => {
-                    fields.height.center(neighbor_cell_footprint)
+                    fields.height.center_value(neighbor_cell_footprint)
                 }
                 indexing::CellFootprintNeighbor::Boundary(_) => 0.,
             };
@@ -225,14 +225,15 @@ pub fn compute_height_time_deriv(
             //     + linear_height_to_advect)
             //     / (1. + upwind_weight);
 
-            *dhdt.center_mut(cell_footprint_index) -= upwind_height_to_advect
+            *dhdt.center_value_mut(cell_footprint_index) -= upwind_height_to_advect
                 * cell_footprint_edge.length
                 * projected_column_averaged_velocity
                 / grid.footprint_area();
         }
 
         if let Some(rain_rate) = rain_rate {
-            *dhdt.center_mut(cell_footprint_index) += rain_rate.center(cell_footprint_index);
+            *dhdt.center_value_mut(cell_footprint_index) +=
+                rain_rate.center_value(cell_footprint_index);
         }
     }
     dhdt
