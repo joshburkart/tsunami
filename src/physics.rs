@@ -7,6 +7,7 @@ pub struct Fields {
     pub height: geom::HeightField,
     pub velocity: geom::VelocityField,
     pub pressure: geom::PressureField,
+    pub hydrostatic_pressure: geom::PressureField,
 }
 
 pub struct Problem {
@@ -36,10 +37,14 @@ impl Solver {
         initial_height: geom::HeightField,
         initial_velocity: geom::VelocityField,
     ) -> Self {
-        // TODO
-        let pressure = compute_hydrostatic_pressure(&problem, &initial_dynamic_geometry);
-        // let pressure = compute_pressure(&problem, &initial_dynamic_geometry,
-        // &initial_velocity);
+        let hydrostatic_pressure =
+            compute_hydrostatic_pressure(&problem, &initial_dynamic_geometry);
+        let pressure = compute_pressure(
+            &problem,
+            &initial_dynamic_geometry,
+            &initial_velocity,
+            &hydrostatic_pressure,
+        );
         Self {
             problem,
             dynamic_geometry: Some(initial_dynamic_geometry),
@@ -47,6 +52,7 @@ impl Solver {
                 height: initial_height,
                 velocity: initial_velocity,
                 pressure,
+                hydrostatic_pressure,
             },
         }
     }
@@ -85,8 +91,14 @@ impl Solver {
         // &new_z_axis.centers);
 
         // Compute new pressure field.
-        self.fields.pressure =
+        self.fields.hydrostatic_pressure =
             compute_hydrostatic_pressure(&self.problem, self.dynamic_geometry.as_ref().unwrap());
+        self.fields.pressure = compute_pressure(
+            &self.problem,
+            self.dynamic_geometry.as_ref().unwrap(),
+            &self.fields.velocity,
+            &self.fields.hydrostatic_pressure,
+        );
 
         // Perform velocity update.
         // TODO
@@ -130,6 +142,12 @@ impl Solver {
     #[pyo3(name = "pressure")]
     pub fn pressure_py<'py>(&self, py: Python<'py>) -> &'py numpy::PyArray3<Float> {
         self.fields.pressure.pressure_py(py)
+    }
+
+    #[getter]
+    #[pyo3(name = "hydrostatic_pressure")]
+    pub fn hydrostatic_pressure_py<'py>(&self, py: Python<'py>) -> &'py numpy::PyArray3<Float> {
+        self.fields.hydrostatic_pressure.pressure_py(py)
     }
 
     #[pyo3(name = "step")]
@@ -338,6 +356,7 @@ fn compute_pressure(
     problem: &Problem,
     dynamic_geometry: &geom::DynamicGeometry,
     velocity: &geom::VelocityField,
+    hydrostatic_pressure: &geom::PressureField,
 ) -> geom::PressureField {
     use argmin::solver::conjugategradient::ConjugateGradient;
 
@@ -345,13 +364,14 @@ fn compute_pressure(
         problem,
         dynamic_geometry,
     };
+    panic!("{:?}", pressure_opt_problem.compute_rhs(velocity));
     let cg_solver: ConjugateGradient<_, Float> =
         ConjugateGradient::new(pressure_opt_problem.compute_rhs(velocity));
     let executor =
         argmin::core::Executor::new(pressure_opt_problem, cg_solver).configure(|state| {
             state
-                .max_iters(10)
-                .param(compute_hydrostatic_pressure(problem, dynamic_geometry))
+                .max_iters(10000)
+                .param(geom::PressureField::zeros(dynamic_geometry))
         });
     executor
         .run()
@@ -452,6 +472,7 @@ mod tests {
             height: height.clone(),
             velocity: geom::VelocityField::new(&dynamic_geometry, |_, _, _| Vector3::zeros()),
             pressure: geom::PressureField::zeros(&dynamic_geometry),
+            hydrostatic_pressure: geom::PressureField::zeros(&dynamic_geometry),
         };
 
         // No rain.

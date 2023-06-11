@@ -21,3 +21,6 @@ strum_macros = "0.24"
 
 [dev-dependencies]
 approx = "0.5.1"
+
+[profile.release]
+lto = "thin"

@@ -5,6 +5,8 @@ use pyo3::prelude::*;
 
 use crate::{indexing, Array1, Array2, Array3, Float, UnitVector2, Vector2, Vector3};
 
+const EPSILON: Float = 1e-14;
+
 #[pyclass]
 #[derive(Clone)]
 pub struct Grid {
@@ -311,6 +313,51 @@ impl ZLattice {
             .unwrap_or_else(|_| Self::new_lp_second_pass(grid, terrain, height))
     }
 
+    pub fn new_averaging(grid: &Grid, terrain: &Terrain, height: &HeightField) -> Self {
+        use indexing::{Index, Indexing};
+
+        let vertex_indexing = grid.vertex_indexing();
+        let mut lattice = Array3::zeros(vertex_indexing.shape());
+        let mut spacings = Array2::zeros(grid.vertex_footprint_indexing().shape());
+        let vertex_footprint_indexing = grid.vertex_footprint_indexing();
+        for vertex_footprint_index in indexing::iter_indices(vertex_footprint_indexing) {
+            let terrain_height = terrain.vertices[vertex_footprint_index.to_array_index()];
+            let height = mean(
+                vertex_footprint_index
+                    .adjacent_cells(vertex_footprint_indexing)
+                    .map(|cell_footprint_index| height.center_value(cell_footprint_index)),
+            )
+            .unwrap();
+            let spacing = height / grid.cell_indexing().num_z_cells() as Float;
+            spacings[vertex_footprint_index.to_array_index()] = spacing;
+            for vertex_index in vertex_indexing.column(vertex_footprint_index) {
+                lattice[vertex_index.to_array_index()] =
+                    terrain_height + spacing * vertex_index.z as Float;
+            }
+        }
+        Self { lattice, spacings }
+    }
+
+    pub fn z_spacing(&self, vertex_footprint_index: indexing::VertexFootprintIndex) -> Float {
+        use indexing::Index;
+
+        self.spacings[vertex_footprint_index.to_array_index()]
+    }
+
+    pub fn z_spacing_array(&self) -> &Array2 {
+        &self.spacings
+    }
+
+    pub fn vertex_value(&self, vertex_index: indexing::VertexIndex) -> Float {
+        use indexing::Index;
+
+        self.lattice[vertex_index.to_array_index()]
+    }
+
+    pub fn z_lattice<'py>(&self, py: Python<'py>) -> &'py numpy::PyArray3<Float> {
+        self.lattice.clone().into_pyarray(py)
+    }
+
     /// Attempt to find a lattice of points such that the average height of
     /// every triangle is equal to the corresponding height cell center
     /// value.
@@ -462,51 +509,6 @@ impl ZLattice {
             );
         }
         Self::extract_lp_solution(solved_model.get_solution(), vertex_variables, grid, terrain)
-    }
-
-    pub fn new_averaging(grid: &Grid, terrain: &Terrain, height: &HeightField) -> Self {
-        use indexing::{Index, Indexing};
-
-        let vertex_indexing = grid.vertex_indexing();
-        let mut lattice = Array3::zeros(vertex_indexing.shape());
-        let mut spacings = Array2::zeros(grid.vertex_footprint_indexing().shape());
-        let vertex_footprint_indexing = grid.vertex_footprint_indexing();
-        for vertex_footprint_index in indexing::iter_indices(vertex_footprint_indexing) {
-            let terrain_height = terrain.vertices[vertex_footprint_index.to_array_index()];
-            let height = mean(
-                vertex_footprint_index
-                    .adjacent_cells(vertex_footprint_indexing)
-                    .map(|cell_footprint_index| height.center_value(cell_footprint_index)),
-            )
-            .unwrap();
-            let spacing = height / grid.cell_indexing().num_z_cells() as Float;
-            spacings[vertex_footprint_index.to_array_index()] = spacing;
-            for vertex_index in vertex_indexing.column(vertex_footprint_index) {
-                lattice[vertex_index.to_array_index()] =
-                    terrain_height + spacing * vertex_index.z as Float;
-            }
-        }
-        Self { lattice, spacings }
-    }
-
-    pub fn z_spacing(&self, vertex_footprint_index: indexing::VertexFootprintIndex) -> Float {
-        use indexing::Index;
-
-        self.spacings[vertex_footprint_index.to_array_index()]
-    }
-
-    pub fn z_spacing_array(&self) -> &Array2 {
-        &self.spacings
-    }
-
-    pub fn vertex_value(&self, vertex_index: indexing::VertexIndex) -> Float {
-        use indexing::Index;
-
-        self.lattice[vertex_index.to_array_index()]
-    }
-
-    pub fn z_lattice<'py>(&self, py: Python<'py>) -> &'py numpy::PyArray3<Float> {
-        self.lattice.clone().into_pyarray(py)
     }
 
     fn solve_lp(problem: highs::RowProblem) -> highs::SolvedModel {
@@ -826,7 +828,22 @@ impl PressureField {
             + &self.vertices.slice(s![1..-1, 1..-1, ..-2]))
             / w_spacing.powi(2);
 
-        todo!()
+        let h = &dynamic_geometry
+            .z_lattice()
+            .lattice
+            .slice(s![1..-1, 1..-1, -1])
+            - &dynamic_geometry
+                .z_lattice()
+                .lattice
+                .slice(s![1..-1, 1..-1, 0]);
+        let w_z = 1. / (h + EPSILON);
+
+        // TODO
+        return PressureField {
+            vertices: partial_xx
+                + partial_yy
+                + partial_ww * (w_z.slice(s![.., .., nd::NewAxis]).mapv(|val| val.powi(2))),
+        };
     }
 }
 impl argmin_math::ArgminDot<PressureField, Float> for PressureField {
