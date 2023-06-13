@@ -5,8 +5,6 @@ use pyo3::prelude::*;
 
 use crate::{indexing, Array1, Array2, Array3, Float, UnitVector2, Vector2, Vector3};
 
-const EPSILON: Float = 1e-14;
-
 #[pyclass]
 #[derive(Clone)]
 pub struct Grid {
@@ -178,7 +176,8 @@ impl Grid {
 
     fn make_terrain<F: Fn(Float, Float) -> Float>(&self, f: &F) -> Terrain {
         Terrain {
-            centers: self.make_cell_footprint_array(f),
+            // TODO use or remove
+            // centers: self.make_cell_footprint_array(f),
             vertices: self.make_vertex_footprint_array(f),
         }
     }
@@ -713,6 +712,10 @@ impl VelocityField {
         }
     }
 
+    pub fn zeros(dynamic_geometry: &DynamicGeometry) -> Self {
+        Self::new(dynamic_geometry, |_, _, _| Vector3::zeros())
+    }
+
     pub fn cell_value(&self, index: indexing::CellIndex) -> Vector3 {
         use indexing::Index;
 
@@ -748,17 +751,17 @@ impl VelocityField {
 }
 
 #[pyclass]
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct PressureField {
     /// Indexed by [`indexing::VertexIndexing`]
     vertices: Array3,
 }
 impl PressureField {
-    pub fn zeros(dynamic_geometry: &DynamicGeometry) -> Self {
+    pub fn zeros(vertex_indexing: &indexing::VertexIndexing) -> Self {
         use indexing::Indexing;
 
         Self {
-            vertices: Array3::zeros(dynamic_geometry.grid().vertex_indexing().shape()),
+            vertices: Array3::zeros(vertex_indexing.shape()),
         }
     }
 
@@ -774,114 +777,13 @@ impl PressureField {
         &mut self.vertices[vertex.to_array_index()]
     }
 
-    // TODO: This is the partial at constant w, not at constant z.
-    pub fn forward_deriv_x(
-        &self,
-        dynamic_geometry: &DynamicGeometry,
-        vertex: indexing::VertexIndex,
-    ) -> Float {
-        let x_spacing = dynamic_geometry.grid().x_axis().spacing();
-        (self.vertex_value(vertex.increment_x(1)) - self.vertex_value(vertex)) / x_spacing
+    pub fn flatten(&self, vertex_indexing: &indexing::VertexIndexing) -> Array1 {
+        indexing::flatten_array(vertex_indexing, &self.vertices)
     }
 
-    // TODO: This is the partial at constant w, not at constant z.
-    pub fn forward_deriv_y(
-        &self,
-        dynamic_geometry: &DynamicGeometry,
-        vertex: indexing::VertexIndex,
-    ) -> Float {
-        let y_spacing = dynamic_geometry.grid().y_axis().spacing();
-        (self.vertex_value(vertex.increment_y(1)) - self.vertex_value(vertex)) / y_spacing
-    }
-
-    pub fn forward_deriv_z(
-        &self,
-        dynamic_geometry: &DynamicGeometry,
-        vertex: indexing::VertexIndex,
-    ) -> Float {
-        let z_spacing = dynamic_geometry.z_lattice().z_spacing(vertex.footprint);
-        (self.vertex_value(vertex.increment_z(1)) - self.vertex_value(vertex)) / z_spacing
-    }
-
-    pub fn laplacian(&self, dynamic_geometry: &DynamicGeometry) -> Self {
-        let x_spacing = dynamic_geometry.grid().x_axis().spacing();
-        let y_spacing = dynamic_geometry.grid().y_axis().spacing();
-
-        let w = Array1::linspace(
-            0.,
-            1.,
-            dynamic_geometry.grid().vertex_indexing().num_z_points(),
-        );
-        let w_spacing = w[1] - w[0];
-        // let z_spacing_array = dynamic_geometry.z_lattice().z_spacing_array();
-
-        let partial_xx = (-2. * &self.vertices.slice(s![1..-1, 1..-1, 1..-1])
-            + &self.vertices.slice(s![2.., 1..-1, 1..-1])
-            + &self.vertices.slice(s![..-2, 1..-1, 1..-1]))
-            / x_spacing.powi(2);
-        let partial_yy = (-2. * &self.vertices.slice(s![1..-1, 1..-1, 1..-1])
-            + &self.vertices.slice(s![1..-1, 2.., 1..-1])
-            + &self.vertices.slice(s![1..-1, ..-2, 1..-1]))
-            / y_spacing.powi(2);
-        let partial_ww = (-2. * &self.vertices.slice(s![1..-1, 1..-1, 1..-1])
-            + &self.vertices.slice(s![1..-1, 1..-1, 2..])
-            + &self.vertices.slice(s![1..-1, 1..-1, ..-2]))
-            / w_spacing.powi(2);
-
-        let h = &dynamic_geometry
-            .z_lattice()
-            .lattice
-            .slice(s![1..-1, 1..-1, -1])
-            - &dynamic_geometry
-                .z_lattice()
-                .lattice
-                .slice(s![1..-1, 1..-1, 0]);
-        let w_z = 1. / (h + EPSILON);
-
-        // TODO
-        return PressureField {
-            vertices: partial_xx
-                + partial_yy
-                + partial_ww * (w_z.slice(s![.., .., nd::NewAxis]).mapv(|val| val.powi(2))),
-        };
-    }
-}
-impl argmin_math::ArgminDot<PressureField, Float> for PressureField {
-    fn dot(&self, other: &PressureField) -> Float {
-        (&self.vertices * &other.vertices).sum()
-    }
-}
-impl argmin_math::ArgminSub<PressureField, PressureField> for PressureField {
-    fn sub(&self, other: &PressureField) -> PressureField {
-        PressureField {
-            vertices: &self.vertices - &other.vertices,
-        }
-    }
-}
-impl argmin_math::ArgminAdd<PressureField, PressureField> for PressureField {
-    fn add(&self, other: &PressureField) -> PressureField {
-        PressureField {
-            vertices: &self.vertices + &other.vertices,
-        }
-    }
-}
-impl argmin_math::ArgminConj for PressureField {
-    fn conj(&self) -> Self {
-        self.clone()
-    }
-}
-impl argmin_math::ArgminMul<Float, PressureField> for PressureField {
-    fn mul(&self, other: &Float) -> PressureField {
-        Self {
-            vertices: *other * &self.vertices,
-        }
-    }
-}
-impl argmin_math::ArgminMul<PressureField, PressureField> for Float {
-    fn mul(&self, other: &PressureField) -> PressureField {
-        PressureField {
-            vertices: *self * &other.vertices,
-        }
+    pub fn unflatten(vertex_indexing: &indexing::VertexIndexing, flattened: &Array1) -> Self {
+        let vertices = indexing::unflatten_array(vertex_indexing, flattened);
+        Self { vertices }
     }
 }
 #[pymethods]
@@ -889,6 +791,18 @@ impl PressureField {
     #[pyo3(name = "pressure")]
     pub fn pressure_py<'py>(&self, py: Python<'py>) -> &'py numpy::PyArray3<Float> {
         self.vertices.clone().into_pyarray(py)
+    }
+}
+#[cfg(test)]
+impl approx::AbsDiffEq for PressureField {
+    type Epsilon = Float;
+
+    fn default_epsilon() -> Self::Epsilon {
+        1e-5
+    }
+
+    fn abs_diff_eq(&self, other: &Self, epsilon: Self::Epsilon) -> bool {
+        self.vertices.abs_diff_eq(&other.vertices, epsilon)
     }
 }
 
@@ -1010,8 +924,9 @@ impl approx::AbsDiffEq for HeightField {
 #[pyclass]
 #[derive(Clone)]
 pub struct Terrain {
-    /// Indexed by [`indexing::CellFootprintIndexing`]
-    centers: Array3,
+    // TODO use or remove
+    // /// Indexed by [`indexing::CellFootprintIndexing`]
+    // centers: Array3,
     /// Indexed by [`indexing::VertexFootprintIndexing`]
     vertices: Array2,
 }

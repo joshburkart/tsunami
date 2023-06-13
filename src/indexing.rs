@@ -1,6 +1,8 @@
 use ndarray as nd;
 use strum::{EnumCount, IntoEnumIterator};
 
+use crate::{Array1, Float};
+
 #[derive(Copy, Clone, Debug, PartialEq, Eq, strum_macros::EnumIter, strum_macros::EnumCount)]
 pub enum Triangle {
     UpperLeft = 0,
@@ -21,21 +23,42 @@ pub trait Indexing {
     fn shape(&self) -> <<Self as Indexing>::Index as Index>::ArrayIndex;
 
     fn len(&self) -> usize;
-    fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
 
     fn flatten(&self, index: Self::Index) -> usize;
     fn unflatten(&self, flat_index: usize) -> Self::Index;
 }
 pub trait Index: Copy + std::fmt::Debug + PartialEq + Eq {
-    type ArrayIndex: nd::ShapeBuilder;
+    type ArrayIndex: nd::Dimension;
 
     fn to_array_index(self) -> Self::ArrayIndex;
 }
 
 pub fn iter_indices<I: Indexing>(indexing: &I) -> impl Iterator<Item = I::Index> + '_ {
     (0..indexing.len()).map(|flat_index| indexing.unflatten(flat_index))
+}
+
+pub fn flatten_array<I: Indexing>(
+    indexing: &I,
+    array: &nd::Array<Float, <I::Index as Index>::ArrayIndex>,
+) -> Array1 {
+    let mut flattened = Array1::zeros(indexing.len());
+    for (flat_index, value) in flattened.iter_mut().enumerate() {
+        let index = indexing.unflatten(flat_index);
+        *value = array[index.to_array_index()];
+    }
+    flattened
+}
+
+pub fn unflatten_array<I: Indexing>(
+    indexing: &I,
+    flattened: &Array1,
+) -> nd::Array<Float, <I::Index as Index>::ArrayIndex> {
+    let mut unflattened = nd::Array::zeros(indexing.shape());
+    for (flat_index, value) in flattened.iter().copied().enumerate() {
+        let index = indexing.unflatten(flat_index);
+        unflattened[index.to_array_index()] = value;
+    }
+    unflattened
 }
 
 #[derive(Clone)]
@@ -82,7 +105,7 @@ impl Indexing for VertexFootprintIndexing {
     type Index = VertexFootprintIndex;
 
     fn shape(&self) -> <<Self as Indexing>::Index as Index>::ArrayIndex {
-        [self.num_x_points, self.num_y_points]
+        nd::Dim([self.num_x_points, self.num_y_points])
     }
 
     fn len(&self) -> usize {
@@ -153,10 +176,10 @@ impl VertexFootprintIndex {
     }
 }
 impl Index for VertexFootprintIndex {
-    type ArrayIndex = [usize; 2];
+    type ArrayIndex = nd::Dim<[usize; 2]>;
 
     fn to_array_index(self) -> Self::ArrayIndex {
-        [self.x, self.y]
+        nd::Dim([self.x, self.y])
     }
 }
 
@@ -239,11 +262,11 @@ impl Indexing for VertexIndexing {
     type Index = VertexIndex;
 
     fn shape(&self) -> <<Self as Indexing>::Index as Index>::ArrayIndex {
-        [
+        nd::Dim([
             self.num_x_points(),
             self.num_y_points(),
             self.num_z_points(),
-        ]
+        ])
     }
 
     fn len(&self) -> usize {
@@ -308,13 +331,14 @@ impl VertexIndex {
     }
 }
 impl Index for VertexIndex {
-    type ArrayIndex = [usize; 3];
+    type ArrayIndex = nd::Dim<[usize; 3]>;
 
     fn to_array_index(self) -> Self::ArrayIndex {
-        [self.footprint.x, self.footprint.y, self.z]
+        nd::Dim([self.footprint.x, self.footprint.y, self.z])
     }
 }
 
+#[derive(Debug)]
 pub enum VertexClassification {
     /// For `z = 0`
     Floor,
@@ -485,7 +509,7 @@ impl Indexing for CellFootprintIndexing {
     type Index = CellFootprintIndex;
 
     fn shape(&self) -> <<Self as Indexing>::Index as Index>::ArrayIndex {
-        [self.num_x_cells(), self.num_y_cells(), Triangle::COUNT]
+        nd::Dim([self.num_x_cells(), self.num_y_cells(), Triangle::COUNT])
     }
 
     fn len(&self) -> usize {
@@ -551,10 +575,10 @@ impl CellFootprintIndex {
     }
 }
 impl Index for CellFootprintIndex {
-    type ArrayIndex = [usize; 3];
+    type ArrayIndex = nd::Dim<[usize; 3]>;
 
     fn to_array_index(self) -> Self::ArrayIndex {
-        [self.x, self.y, self.triangle as usize]
+        nd::Dim([self.x, self.y, self.triangle as usize])
     }
 }
 
@@ -587,12 +611,12 @@ impl Indexing for CellIndexing {
     type Index = CellIndex;
 
     fn shape(&self) -> <<Self as Indexing>::Index as Index>::ArrayIndex {
-        [
+        nd::Dim([
             self.cell_footprint_indexing.num_x_cells(),
             self.cell_footprint_indexing.num_y_cells(),
             self.num_z_cells,
             Triangle::COUNT,
-        ]
+        ])
     }
 
     fn len(&self) -> usize {
@@ -619,15 +643,15 @@ pub struct CellIndex {
     pub z: usize,
 }
 impl Index for CellIndex {
-    type ArrayIndex = [usize; 4];
+    type ArrayIndex = nd::Dim<[usize; 4]>;
 
     fn to_array_index(self) -> Self::ArrayIndex {
-        [
+        nd::Dim([
             self.footprint.x,
             self.footprint.y,
             self.z,
             self.footprint.triangle as usize,
-        ]
+        ])
     }
 }
 
@@ -941,6 +965,17 @@ mod test {
             num_x_points: 5,
             num_y_points: 27,
         };
+        let vertex_footprint = VertexFootprintIndex { x: 2, y: 13 };
+        assert_eq!(
+            vertex_footprint_indexing.flatten(vertex_footprint.increment_y(2))
+                - vertex_footprint_indexing.flatten(vertex_footprint),
+            2
+        );
+        assert_eq!(
+            vertex_footprint_indexing.flatten(vertex_footprint.increment_x(1))
+                - vertex_footprint_indexing.flatten(vertex_footprint),
+            vertex_footprint_indexing.num_y_points()
+        );
         test_indexing_impl(&vertex_footprint_indexing);
 
         let cell_footprint_indexing = CellFootprintIndexing {
@@ -955,6 +990,22 @@ mod test {
         test_indexing_impl(&cell_indexing);
 
         let vertex_indexing = VertexIndexing { cell_indexing };
+        let vertex = VertexIndex {
+            footprint: vertex_footprint,
+            z: 4,
+        };
+        assert_eq!(
+            vertex_indexing.flatten(vertex.increment_z(2)) - vertex_indexing.flatten(vertex),
+            2
+        );
+        assert_eq!(
+            vertex_indexing.flatten(vertex.increment_y(1)) - vertex_indexing.flatten(vertex),
+            vertex_indexing.num_z_points()
+        );
+        assert_eq!(
+            vertex_indexing.flatten(vertex.increment_x(1)) - vertex_indexing.flatten(vertex),
+            vertex_indexing.num_y_points() * vertex_indexing.num_z_points()
+        );
         test_indexing_impl(&vertex_indexing);
     }
 

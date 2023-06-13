@@ -1,6 +1,8 @@
 use pyo3::prelude::*;
 
-use crate::{geom, indexing, Float};
+use crate::{geom, indexing, math, Array1, Float};
+
+const MIN_HEIGHT: Float = 1e-14;
 
 #[derive(Clone)]
 pub struct Fields {
@@ -29,24 +31,29 @@ pub struct Solver {
     problem: Problem,
     dynamic_geometry: Option<geom::DynamicGeometry>,
     fields: Fields,
+
+    pressure_solver: PressureSolver,
 }
 impl Solver {
     pub fn new(
         problem: Problem,
+        pressure_solver: PressureSolver,
         initial_dynamic_geometry: geom::DynamicGeometry,
         initial_height: geom::HeightField,
         initial_velocity: geom::VelocityField,
     ) -> Self {
         let hydrostatic_pressure =
             compute_hydrostatic_pressure(&problem, &initial_dynamic_geometry);
-        let pressure = compute_pressure(
+        let pressure = pressure_solver.solve(
             &problem,
             &initial_dynamic_geometry,
             &initial_velocity,
             &hydrostatic_pressure,
+            &hydrostatic_pressure,
         );
         Self {
             problem,
+            pressure_solver,
             dynamic_geometry: Some(initial_dynamic_geometry),
             fields: Fields {
                 height: initial_height,
@@ -57,8 +64,20 @@ impl Solver {
         }
     }
 
+    pub fn problem(&self) -> &Problem {
+        &self.problem
+    }
+
     pub fn problem_mut(&mut self) -> &mut Problem {
         &mut self.problem
+    }
+
+    pub fn dynamic_geometry(&self) -> &geom::DynamicGeometry {
+        self.dynamic_geometry.as_ref().unwrap()
+    }
+
+    pub fn fields(&self) -> &Fields {
+        &self.fields
     }
 
     pub fn step(&mut self, dt: Float) {
@@ -93,11 +112,12 @@ impl Solver {
         // Compute new pressure field.
         self.fields.hydrostatic_pressure =
             compute_hydrostatic_pressure(&self.problem, self.dynamic_geometry.as_ref().unwrap());
-        self.fields.pressure = compute_pressure(
+        self.fields.pressure = self.pressure_solver.solve(
             &self.problem,
             self.dynamic_geometry.as_ref().unwrap(),
             &self.fields.velocity,
             &self.fields.hydrostatic_pressure,
+            &self.fields.pressure,
         );
 
         // Perform velocity update.
@@ -111,31 +131,9 @@ impl Solver {
         self.dynamic_geometry.as_ref().unwrap().grid().clone()
     }
 
-    // TODO: Remove, just for debugging
-    pub fn compute_height_time_deriv<'py>(&self, py: Python<'py>) -> &'py numpy::PyArray3<Float> {
-        use numpy::IntoPyArray;
-
-        compute_height_time_deriv(
-            self.dynamic_geometry.as_ref().unwrap().grid(),
-            self.problem.rain_rate.as_ref(),
-            &self.fields,
-        )
-        .centers()
-        .clone()
-        .into_pyarray(py)
-    }
-
     #[getter]
     pub fn z_lattice<'py>(&self, py: Python<'py>) -> &'py numpy::PyArray3<Float> {
         self.dynamic_geometry.as_ref().unwrap().z_lattice_py(py)
-    }
-
-    // TODO: Remove, just for debugging
-    #[getter]
-    pub fn height<'py>(&self, py: Python<'py>) -> &'py numpy::PyArray3<Float> {
-        use numpy::IntoPyArray;
-
-        self.fields.height.centers().clone().into_pyarray(py)
     }
 
     #[getter]
@@ -257,135 +255,199 @@ pub fn compute_height_time_deriv(
     dhdt
 }
 
-struct PressureOptimizationProblem<'a> {
-    problem: &'a Problem,
-    dynamic_geometry: &'a geom::DynamicGeometry,
+#[derive(Debug)]
+pub enum PressureSolver {
+    GaussSeidel {
+        max_iters: usize,
+        rel_error_tol: Float,
+    },
+    Direct,
 }
-impl<'a> argmin::core::Operator for PressureOptimizationProblem<'a> {
-    type Output = geom::PressureField;
-    type Param = geom::PressureField;
+impl PressureSolver {
+    pub fn solve(
+        &self,
+        problem: &Problem,
+        dynamic_geometry: &geom::DynamicGeometry,
+        velocity: &geom::VelocityField,
+        hydrostatic_pressure: &geom::PressureField,
+        guess_pressure: &geom::PressureField,
+    ) -> geom::PressureField {
+        let pressure_matrix = Self::make_pressure_matrix(dynamic_geometry);
+        let pressure_rhs = Self::make_pressure_rhs_vector(
+            problem,
+            dynamic_geometry,
+            hydrostatic_pressure,
+            velocity,
+        );
 
-    fn apply(&self, pressure: &Self::Param) -> Result<Self::Output, argmin::core::Error> {
-        let laplacian = pressure.laplacian(self.dynamic_geometry);
+        let flattened_pressure = match *self {
+            PressureSolver::GaussSeidel {
+                max_iters,
+                rel_error_tol,
+            } => math::solve_linear_system_gauss_seidel(
+                pressure_matrix.view(),
+                guess_pressure.flatten(dynamic_geometry.grid().vertex_indexing()),
+                pressure_rhs,
+                max_iters,
+                rel_error_tol,
+            ),
+            PressureSolver::Direct => {
+                math::solve_linear_system_direct(pressure_matrix.to_dense(), pressure_rhs)
+            }
+        };
+        let flattened_pressure = match flattened_pressure {
+            Err(math::LinearSolveError::NotDiagonallyDominant {
+                row_index,
+                abs_diag,
+                sum_abs_row,
+            }) => {
+                use indexing::Indexing;
+                let vertex = dynamic_geometry
+                    .grid()
+                    .vertex_indexing()
+                    .unflatten(row_index);
+                panic!(
+                    "Pressure system was not diagonally dominant at vertex {vertex:?} ({:?}): \
+                     |diag| = {abs_diag:.4} vs. sum_j |M_ij| = {sum_abs_row:.4}",
+                    dynamic_geometry
+                        .grid()
+                        .vertex_indexing()
+                        .classify_vertex(vertex)
+                )
+            }
+            Err(error) => panic!("Failed to solve pressure equations: {error:?}"),
+            Ok(result) => result,
+        };
 
-        let compute_vertex_value = |vertex| {
-            use indexing::VertexClassification;
+        geom::PressureField::unflatten(
+            dynamic_geometry.grid().vertex_indexing(),
+            &flattened_pressure,
+        )
+    }
 
-            match self
-                .dynamic_geometry
+    fn make_pressure_matrix(dynamic_geometry: &geom::DynamicGeometry) -> sprs::CsMat<Float> {
+        use indexing::{Indexing, VertexClassification};
+
+        let vertex_indexing = dynamic_geometry.grid().vertex_indexing();
+        let mut matrix = sprs::TriMat::new((vertex_indexing.len(), vertex_indexing.len()));
+
+        let dx_inv = 1. / dynamic_geometry.grid().x_axis().spacing();
+        let dx_inv_sq = dx_inv.powi(2);
+        let dy_inv = 1. / dynamic_geometry.grid().y_axis().spacing();
+        let dy_inv_sq = dy_inv.powi(2);
+
+        for flat_index in 0..vertex_indexing.len() {
+            let mut add_entry = |vertex, value| {
+                matrix.add_triplet(flat_index, vertex_indexing.flatten(vertex), value)
+            };
+
+            let vertex = vertex_indexing.unflatten(flat_index);
+            let dz = dynamic_geometry.z_lattice().z_spacing(vertex.footprint);
+            if dz < MIN_HEIGHT {
+                add_entry(vertex, 1.);
+                continue;
+            }
+
+            let dz_inv = 1. / dz;
+            let dz_inv_sq = dz_inv.powi(2);
+
+            match dynamic_geometry
                 .grid()
                 .vertex_indexing()
                 .classify_vertex(vertex)
             {
                 // Floor boundary condition: hydrostatic equilibrium.
                 VertexClassification::Floor => {
-                    pressure.forward_deriv_z(self.dynamic_geometry, vertex)
+                    add_entry(vertex, -dz_inv);
+                    add_entry(vertex.increment_z(1), dz_inv);
                 }
                 // Surface boundary condition: pressure is zero.
-                VertexClassification::Surface => pressure.vertex_value(vertex),
-                // Horizontal boundary conditions: homogeneous Neumann.
+                VertexClassification::Surface => add_entry(vertex, 1.),
+                // Horizontal boundary conditions: hydrostatic equilibrium.
                 VertexClassification::Left
                 | VertexClassification::LowerLeft
-                | VertexClassification::UpperLeft => {
-                    pressure.forward_deriv_x(self.dynamic_geometry, vertex)
-                }
-                VertexClassification::Right
-                | VertexClassification::LowerRight
-                | VertexClassification::UpperRight => {
-                    pressure.forward_deriv_x(self.dynamic_geometry, vertex.increment_x(-1))
-                }
-                VertexClassification::Lower => {
-                    pressure.forward_deriv_y(self.dynamic_geometry, vertex)
-                }
-                VertexClassification::Upper => {
-                    pressure.forward_deriv_y(self.dynamic_geometry, vertex.increment_y(-1))
-                }
-                VertexClassification::Interior => {
-                    laplacian.vertex_value(vertex.increment_x(-1).increment_y(-1).increment_z(-1))
-                }
-            }
-        };
-
-        let mut result = geom::PressureField::zeros(self.dynamic_geometry);
-        for vertex in indexing::iter_indices(self.dynamic_geometry.grid().vertex_indexing()) {
-            *result.vertex_value_mut(vertex) = compute_vertex_value(vertex);
-        }
-        Ok(result)
-    }
-}
-impl<'a> PressureOptimizationProblem<'a> {
-    pub fn compute_rhs(&self, velocity: &geom::VelocityField) -> geom::PressureField {
-        let compute_vertex_value = |vertex| {
-            use indexing::VertexClassification;
-
-            match self
-                .dynamic_geometry
-                .grid()
-                .vertex_indexing()
-                .classify_vertex(vertex)
-            {
-                // Terrain boundary condition: hydrostatic equilibrium (projected).
-                VertexClassification::Floor => {
-                    -self.problem.fluid_density * self.problem.grav_accel
-                }
-                // Surface boundary condition: pressure is zero.
-                VertexClassification::Surface => 0.,
-                // Horizontal boundary conditions are all homogeneous.
-                VertexClassification::Left
-                | VertexClassification::Right
-                | VertexClassification::Lower
-                | VertexClassification::Upper
-                | VertexClassification::LowerLeft
-                | VertexClassification::LowerRight
                 | VertexClassification::UpperLeft
-                | VertexClassification::UpperRight => 0.,
-                // Interior PDE is TEMPORARILY (TODO) homogeneous.
-                VertexClassification::Interior => 0.,
+                | VertexClassification::Right
+                | VertexClassification::LowerRight
+                | VertexClassification::UpperRight
+                | VertexClassification::Lower
+                | VertexClassification::Upper => {
+                    add_entry(vertex, 1.);
+                }
+                // Interior boundary conditions: Poisson's equation.
+                VertexClassification::Interior => {
+                    add_entry(vertex, -2. * (dx_inv_sq + dy_inv_sq + dz_inv_sq));
+                    add_entry(vertex.increment_x(-1), dx_inv_sq);
+                    add_entry(vertex.increment_x(1), dx_inv_sq);
+                    add_entry(vertex.increment_y(-1), dy_inv_sq);
+                    add_entry(vertex.increment_y(1), dy_inv_sq);
+                    // TODO: Need to include Jacobian terms
+                    add_entry(vertex.increment_z(-1), dz_inv_sq);
+                    add_entry(vertex.increment_z(1), dz_inv_sq);
+                }
             }
-        };
-
-        let mut result = geom::PressureField::zeros(self.dynamic_geometry);
-        for vertex in indexing::iter_indices(self.dynamic_geometry.grid().vertex_indexing()) {
-            *result.vertex_value_mut(vertex) = compute_vertex_value(vertex);
         }
-        result
+        matrix.to_csr()
+    }
+
+    fn make_pressure_rhs_vector(
+        problem: &Problem,
+        dynamic_geometry: &geom::DynamicGeometry,
+        hydrostatic_pressure: &geom::PressureField,
+        _velocity: &geom::VelocityField,
+    ) -> Array1 {
+        let vertex_indexing = dynamic_geometry.grid().vertex_indexing();
+
+        let mut rhs = geom::PressureField::zeros(vertex_indexing);
+        for vertex in indexing::iter_indices(vertex_indexing) {
+            *rhs.vertex_value_mut(vertex) = {
+                use indexing::VertexClassification;
+
+                let dz = dynamic_geometry.z_lattice().z_spacing(vertex.footprint);
+                if dz < MIN_HEIGHT {
+                    hydrostatic_pressure.vertex_value(vertex)
+                } else {
+                    match vertex_indexing.classify_vertex(vertex) {
+                        // Terrain boundary condition: hydrostatic equilibrium.
+                        VertexClassification::Floor => -problem.fluid_density * problem.grav_accel,
+                        // Surface boundary condition: pressure is zero.
+                        VertexClassification::Surface => 0.,
+                        // Horizontal boundary conditions: hydrostatic equilibrium.
+                        VertexClassification::Left
+                        | VertexClassification::Right
+                        | VertexClassification::Lower
+                        | VertexClassification::Upper
+                        | VertexClassification::LowerLeft
+                        | VertexClassification::LowerRight
+                        | VertexClassification::UpperLeft
+                        | VertexClassification::UpperRight => {
+                            hydrostatic_pressure.vertex_value(vertex)
+                        }
+                        // Interior PDE is TEMPORARILY (TODO) homogeneous. Should instead be the
+                        // trace of the square of the shear tensor.
+                        VertexClassification::Interior => 0.,
+                    }
+                }
+            };
+        }
+        rhs.flatten(vertex_indexing)
     }
 }
-
-fn compute_pressure(
-    problem: &Problem,
-    dynamic_geometry: &geom::DynamicGeometry,
-    velocity: &geom::VelocityField,
-    hydrostatic_pressure: &geom::PressureField,
-) -> geom::PressureField {
-    use argmin::solver::conjugategradient::ConjugateGradient;
-
-    let pressure_opt_problem = PressureOptimizationProblem {
-        problem,
-        dynamic_geometry,
-    };
-    panic!("{:?}", pressure_opt_problem.compute_rhs(velocity));
-    let cg_solver: ConjugateGradient<_, Float> =
-        ConjugateGradient::new(pressure_opt_problem.compute_rhs(velocity));
-    let executor =
-        argmin::core::Executor::new(pressure_opt_problem, cg_solver).configure(|state| {
-            state
-                .max_iters(10000)
-                .param(geom::PressureField::zeros(dynamic_geometry))
-        });
-    executor
-        .run()
-        .expect("Failed to solve for pressure")
-        .state
-        .take_best_param()
-        .unwrap()
+impl Default for PressureSolver {
+    fn default() -> Self {
+        Self::GaussSeidel {
+            max_iters: 300,
+            rel_error_tol: 1e-4,
+        }
+    }
 }
 
 pub fn compute_hydrostatic_pressure(
     problem: &Problem,
     dynamic_geometry: &geom::DynamicGeometry,
 ) -> geom::PressureField {
-    let mut hydrostatic_pressure = geom::PressureField::zeros(dynamic_geometry);
+    let mut hydrostatic_pressure =
+        geom::PressureField::zeros(dynamic_geometry.grid().vertex_indexing());
     for vertex_footprint in
         indexing::iter_indices(dynamic_geometry.grid().vertex_footprint_indexing())
     {
@@ -412,6 +474,36 @@ pub fn compute_hydrostatic_pressure(
 mod tests {
     use super::*;
     use crate::Vector3;
+
+    #[test]
+    fn test_pressure_solver() {
+        let x_axis = geom::Axis::new(-1., 1., 3);
+        let y_axis = geom::Axis::new(10., 11., 4);
+        let grid = geom::Grid::new(x_axis, y_axis, 50);
+        let static_geometry = geom::StaticGeometry::new(grid, &|_, _| 0.);
+
+        let height = geom::HeightField::new(static_geometry.grid(), |_, _| 10.);
+        let dynamic_geometry = geom::DynamicGeometry::new(static_geometry, &height);
+
+        let problem = Problem {
+            rain_rate: None,
+            fluid_density: 1000.,
+            grav_accel: 9.8,
+            x_boundary_condition: HorizBoundaryCondition::HomogeneousNeumann,
+            y_boundary_condition: HorizBoundaryCondition::HomogeneousNeumann,
+        };
+
+        let hydrostatic_pressure = compute_hydrostatic_pressure(&problem, &dynamic_geometry);
+        let pressure = PressureSolver::default().solve(
+            &problem,
+            &dynamic_geometry,
+            &geom::VelocityField::zeros(&dynamic_geometry),
+            &hydrostatic_pressure,
+            &hydrostatic_pressure,
+        );
+
+        approx::assert_abs_diff_eq!(hydrostatic_pressure, pressure, epsilon = 1e-5);
+    }
 
     #[test]
     fn test_hydrostatic_pressure() {
@@ -471,8 +563,10 @@ mod tests {
         let fields = Fields {
             height: height.clone(),
             velocity: geom::VelocityField::new(&dynamic_geometry, |_, _, _| Vector3::zeros()),
-            pressure: geom::PressureField::zeros(&dynamic_geometry),
-            hydrostatic_pressure: geom::PressureField::zeros(&dynamic_geometry),
+            pressure: geom::PressureField::zeros(dynamic_geometry.grid().vertex_indexing()),
+            hydrostatic_pressure: geom::PressureField::zeros(
+                dynamic_geometry.grid().vertex_indexing(),
+            ),
         };
 
         // No rain.

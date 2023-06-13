@@ -8,14 +8,14 @@ crate-type = ["cdylib", "rlib"]
 name = "riversim"
 
 [dependencies]
-argmin = {version = "0.8.1", default-features = false}
-argmin-math = {version = "0.3.0", features = ["ndarray_latest"]}
 highs = "1.5.0"
 itertools = "0.10.5"
 nalgebra = "0.32.2"
 ndarray = {version = "0.15.4", features = ["approx-0_5"]}
+ndarray-linalg = {version = "0.16.0", features = ["openblas-system"]}
 numpy = "0.18.0"
 pyo3 = {version = "0.18.3", features = ["extension-module"]}
+sprs = "0.11.1"
 strum = "0.24"
 strum_macros = "0.24"
 
