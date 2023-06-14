@@ -1,6 +1,6 @@
 use pyo3::prelude::*;
 
-use crate::{geom, indexing, math, Array1, Float};
+use crate::{geom, indexing, math, Array1, Float, Vector2};
 
 const MIN_HEIGHT: Float = 1e-14;
 
@@ -219,14 +219,18 @@ pub fn compute_height_time_deriv(
             let outward_normal = cell_footprint_edge.outward_normal;
 
             let height = fields.height.center_value(cell_footprint_index);
-            let neighbor_height = match cell_footprint_pair.neighbor {
-                indexing::CellFootprintNeighbor::CellFootprint(neighbor_cell_footprint) => {
-                    fields.height.center_value(neighbor_cell_footprint)
-                }
-                indexing::CellFootprintNeighbor::Boundary(_) => 0.,
-            };
+            let (neighbor_height, neighbor_column_averaged_velocity) =
+                match cell_footprint_pair.neighbor {
+                    indexing::CellFootprintNeighbor::CellFootprint(neighbor_cell_footprint) => (
+                        fields.height.center_value(neighbor_cell_footprint),
+                        column_averaged_velocity_field[neighbor_cell_footprint.to_array_index()],
+                    ),
+                    indexing::CellFootprintNeighbor::Boundary(_) => (0., Vector2::zeros()),
+                };
 
-            let projected_column_averaged_velocity = outward_normal.dot(&column_averaged_velocity);
+            let projected_column_averaged_velocity = 0.5
+                * outward_normal
+                    .dot(&(&column_averaged_velocity + &neighbor_column_averaged_velocity));
             let neighbor_is_upwind = projected_column_averaged_velocity < 0.;
             let upwind_height_to_advect = if neighbor_is_upwind {
                 neighbor_height
@@ -374,7 +378,7 @@ impl PressureSolver {
                 | VertexClassification::Upper => {
                     add_entry(vertex, 1.);
                 }
-                // Interior boundary conditions: Poisson's equation.
+                // Interior PDE: Poisson's equation.
                 VertexClassification::Interior => {
                     add_entry(vertex, -2. * (dx_inv_sq + dy_inv_sq + dz_inv_sq));
                     add_entry(vertex.increment_x(-1), dx_inv_sq);
@@ -436,8 +440,8 @@ impl PressureSolver {
 impl Default for PressureSolver {
     fn default() -> Self {
         Self::GaussSeidel {
-            max_iters: 300,
-            rel_error_tol: 1e-4,
+            max_iters: 1000,
+            rel_error_tol: 1e-3,
         }
     }
 }
