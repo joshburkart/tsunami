@@ -1,25 +1,25 @@
 #![deny(clippy::all)]
 
-pub mod examples;
-pub mod geom;
-pub mod indexing;
+mod examples;
+mod geom;
+mod indexing;
 mod math;
-pub mod physics;
+mod physics;
 
 use nalgebra as na;
 use ndarray as nd;
 use pyo3::prelude::*;
 
-pub type Float = f64;
+type Float = f64;
 
-pub type Vector2 = na::Vector2<Float>;
-pub type Vector3 = na::Vector3<Float>;
-pub type UnitVector2 = na::UnitVector2<Float>;
-pub type UnitVector3 = na::UnitVector3<Float>;
+type Vector2 = na::Vector2<Float>;
+type Vector3 = na::Vector3<Float>;
+type UnitVector2 = na::UnitVector2<Float>;
+type UnitVector3 = na::UnitVector3<Float>;
 
-pub type Array1 = nd::Array1<Float>;
-pub type Array2 = nd::Array2<Float>;
-pub type Array3 = nd::Array3<Float>;
+type Array1 = nd::Array1<Float>;
+type Array2 = nd::Array2<Float>;
+type Array3 = nd::Array3<Float>;
 
 #[pymodule]
 fn riversim(_py: Python<'_>, m: &PyModule) -> PyResult<()> {

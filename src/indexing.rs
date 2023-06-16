@@ -363,24 +363,6 @@ pub enum VertexClassification {
     /// Otherwise
     Interior,
 }
-pub struct AxisVertexNeighbors {
-    pub lower: VertexIndex,
-    pub upper: VertexIndex,
-}
-
-// pub struct VertexNeighbors {
-//     pub x: AxisVertexNeighbors,
-//     pub y: AxisVertexNeighbors,
-//     pub z: AxisVertexNeighbors,
-// }
-// pub struct AxisVertexNeighbors {
-//     pub lower: AxisVertexNeighbor,
-//     pub upper: AxisVertexNeighbor,
-// }
-// pub enum AxisVertexNeighbor {
-//     Vertex(VertexIndex),
-//     Boundary,
-// }
 
 #[derive(Clone)]
 pub struct CellFootprintIndexing {
@@ -426,9 +408,8 @@ impl CellFootprintIndexing {
         match triangle {
             Triangle::UpperLeft => [
                 CellFootprintPair {
-                    x: footprint.x,
-                    y: footprint.y,
-                    triangle_edge: TriangleEdge::UpperLeft(UpperLeftTriangleEdge::Up),
+                    footprint,
+                    triangle_side: TriangleSide::UpperLeft(UpperLeftTriangleSide::Up),
                     neighbor: if footprint.y + 1 < self.num_y_cells() {
                         CellFootprintNeighbor::CellFootprint(CellFootprintIndex {
                             y: footprint.y + 1,
@@ -440,9 +421,8 @@ impl CellFootprintIndexing {
                     },
                 },
                 CellFootprintPair {
-                    x: footprint.x,
-                    y: footprint.y,
-                    triangle_edge: TriangleEdge::UpperLeft(UpperLeftTriangleEdge::Left),
+                    footprint,
+                    triangle_side: TriangleSide::UpperLeft(UpperLeftTriangleSide::Left),
                     neighbor: if let Some(neighbor_x) = footprint.x.checked_sub(1) {
                         CellFootprintNeighbor::CellFootprint(CellFootprintIndex {
                             x: neighbor_x,
@@ -454,9 +434,8 @@ impl CellFootprintIndexing {
                     },
                 },
                 CellFootprintPair {
-                    x: footprint.x,
-                    y: footprint.y,
-                    triangle_edge: TriangleEdge::UpperLeft(UpperLeftTriangleEdge::DownRight),
+                    footprint,
+                    triangle_side: TriangleSide::UpperLeft(UpperLeftTriangleSide::DownRight),
                     neighbor: CellFootprintNeighbor::CellFootprint(CellFootprintIndex {
                         triangle: neighbor_triangle,
                         ..footprint
@@ -465,9 +444,8 @@ impl CellFootprintIndexing {
             ],
             Triangle::LowerRight => [
                 CellFootprintPair {
-                    x: footprint.x,
-                    y: footprint.y,
-                    triangle_edge: TriangleEdge::LowerRight(LowerRightTriangleEdge::Down),
+                    footprint,
+                    triangle_side: TriangleSide::LowerRight(LowerRightTriangleSide::Down),
                     neighbor: if let Some(neighbor_y) = footprint.y.checked_sub(1) {
                         CellFootprintNeighbor::CellFootprint(CellFootprintIndex {
                             y: neighbor_y,
@@ -479,9 +457,8 @@ impl CellFootprintIndexing {
                     },
                 },
                 CellFootprintPair {
-                    triangle_edge: TriangleEdge::LowerRight(LowerRightTriangleEdge::Right),
-                    x: footprint.x,
-                    y: footprint.y,
+                    triangle_side: TriangleSide::LowerRight(LowerRightTriangleSide::Right),
+                    footprint,
                     neighbor: if footprint.x + 1 < self.num_x_cells() {
                         CellFootprintNeighbor::CellFootprint(CellFootprintIndex {
                             x: footprint.x + 1,
@@ -493,9 +470,8 @@ impl CellFootprintIndexing {
                     },
                 },
                 CellFootprintPair {
-                    triangle_edge: TriangleEdge::LowerRight(LowerRightTriangleEdge::UpLeft),
-                    x: footprint.x,
-                    y: footprint.y,
+                    triangle_side: TriangleSide::LowerRight(LowerRightTriangleSide::UpLeft),
+                    footprint,
                     neighbor: CellFootprintNeighbor::CellFootprint(CellFootprintIndex {
                         triangle: neighbor_triangle,
                         ..footprint
@@ -541,7 +517,8 @@ pub struct CellFootprintIndex {
     pub triangle: Triangle,
 }
 impl CellFootprintIndex {
-    pub fn vertices(self) -> [VertexFootprintIndex; 3] {
+    /// Vertices in right-handed order looking top down
+    pub fn vertices_right_handed(self) -> [VertexFootprintIndex; 3] {
         match self.triangle {
             Triangle::UpperLeft => [
                 VertexFootprintIndex {
@@ -662,29 +639,28 @@ pub enum CellFootprintNeighbor {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub enum UpperLeftTriangleEdge {
+pub enum UpperLeftTriangleSide {
     Up,
     Left,
     DownRight,
 }
 #[derive(Clone, Copy, Debug)]
-pub enum LowerRightTriangleEdge {
+pub enum LowerRightTriangleSide {
     Down,
     Right,
     UpLeft,
 }
 
 #[derive(Clone, Copy, Debug)]
-pub enum TriangleEdge {
-    UpperLeft(UpperLeftTriangleEdge),
-    LowerRight(LowerRightTriangleEdge),
+pub enum TriangleSide {
+    UpperLeft(UpperLeftTriangleSide),
+    LowerRight(LowerRightTriangleSide),
 }
 
 #[derive(Clone, Copy, Debug)]
 pub struct CellFootprintPair {
-    pub x: usize,
-    pub y: usize,
-    pub triangle_edge: TriangleEdge,
+    pub footprint: CellFootprintIndex,
+    pub triangle_side: TriangleSide,
     pub neighbor: CellFootprintNeighbor,
 }
 

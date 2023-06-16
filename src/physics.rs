@@ -501,7 +501,7 @@ mod tests {
         let pressure = PressureSolver::default().solve(
             &problem,
             &dynamic_geometry,
-            &geom::VelocityField::zeros(&dynamic_geometry),
+            &geom::VelocityField::zeros(dynamic_geometry.grid().cell_indexing()),
             &hydrostatic_pressure,
             &hydrostatic_pressure,
         );
