@@ -4,9 +4,9 @@ use numpy::IntoPyArray;
 use pyo3::prelude::*;
 
 use crate::{
+    fields,
     indexing::{self, Index, Indexing},
-    Array1, Array2, Array3, Float, Matrix3, Point2, Point3, UnitVector2, UnitVector3, Vector2,
-    Vector3,
+    Array1, Array2, Array3, Float, Point2, Point3, UnitVector2, UnitVector3, Vector2, Vector3,
 };
 
 #[pyclass]
@@ -172,14 +172,6 @@ impl Grid {
         }
     }
 
-    fn make_terrain<F: Fn(Float, Float) -> Float>(&self, f: &F) -> Terrain {
-        Terrain {
-            // TODO use or remove
-            // centers: self.make_cell_footprint_array(f),
-            vertices: self.make_vertex_footprint_array(f),
-        }
-    }
-
     fn compute_cell_footprint_centroid(
         &self,
         cell_footprint_index: indexing::CellFootprintIndex,
@@ -216,11 +208,11 @@ impl Grid {
 #[derive(Clone)]
 pub struct StaticGeometry {
     grid: Grid,
-    terrain: Terrain,
+    terrain: fields::Terrain,
 }
 impl StaticGeometry {
     pub fn new<F: Fn(Float, Float) -> Float>(grid: Grid, terrain_func: &F) -> Self {
-        let terrain = grid.make_terrain(terrain_func);
+        let terrain = fields::Terrain::new(&grid, terrain_func);
         Self { grid, terrain }
     }
 
@@ -228,7 +220,7 @@ impl StaticGeometry {
         &self.grid
     }
 
-    pub fn terrain(&self) -> &Terrain {
+    pub fn terrain(&self) -> &fields::Terrain {
         &self.terrain
     }
 }
@@ -240,7 +232,7 @@ impl StaticGeometry {
     }
 
     #[pyo3(name = "terrain")]
-    pub fn terrain_py(&self) -> Terrain {
+    pub fn terrain_py(&self) -> fields::Terrain {
         self.terrain.clone()
     }
 }
@@ -305,18 +297,22 @@ pub struct ZLattice {
     spacings: Array2,
 }
 impl ZLattice {
-    pub fn new_lp(grid: &Grid, terrain: &Terrain, height: &HeightField) -> Self {
+    pub fn new_lp(grid: &Grid, terrain: &fields::Terrain, height: &fields::HeightField) -> Self {
         Self::new_lp_first_pass(grid, terrain, height)
             .unwrap_or_else(|_| Self::new_lp_second_pass(grid, terrain, height))
     }
 
-    pub fn new_averaging(grid: &Grid, terrain: &Terrain, height: &HeightField) -> Self {
+    pub fn new_averaging(
+        grid: &Grid,
+        terrain: &fields::Terrain,
+        height: &fields::HeightField,
+    ) -> Self {
         let vertex_indexing = grid.vertex_indexing();
         let mut lattice = Array3::zeros(vertex_indexing.shape());
         let mut spacings = Array2::zeros(grid.vertex_footprint_indexing().shape());
         let vertex_footprint_indexing = grid.vertex_footprint_indexing();
         for vertex_footprint_index in indexing::iter_indices(vertex_footprint_indexing) {
-            let terrain_height = terrain.vertices[vertex_footprint_index.to_array_index()];
+            let terrain_height = terrain.vertex_value(vertex_footprint_index);
             let height = mean(
                 vertex_footprint_index
                     .adjacent_cells(vertex_footprint_indexing)
@@ -354,8 +350,8 @@ impl ZLattice {
     /// value.
     fn new_lp_first_pass(
         grid: &Grid,
-        terrain: &Terrain,
-        height: &HeightField,
+        terrain: &fields::Terrain,
+        height: &fields::HeightField,
     ) -> Result<Self, highs::HighsModelStatus> {
         let mut problem = highs::RowProblem::new();
 
@@ -447,7 +443,11 @@ impl ZLattice {
     /// Find a lattice of points such that the average height of every triangle
     /// is as close as possible in an L1 sense to the corresponding height
     /// cell center value.
-    fn new_lp_second_pass(grid: &Grid, terrain: &Terrain, height: &HeightField) -> Self {
+    fn new_lp_second_pass(
+        grid: &Grid,
+        terrain: &fields::Terrain,
+        height: &fields::HeightField,
+    ) -> Self {
         let mut problem = highs::RowProblem::new();
 
         // Define variables to be solved for.
@@ -509,7 +509,7 @@ impl ZLattice {
         solution: highs::Solution,
         vertex_variables: Vec<highs::Col>,
         grid: &Grid,
-        terrain: &Terrain,
+        terrain: &fields::Terrain,
     ) -> Self {
         // Unpack the solution into a lattice. Evenly distribute z points across each
         // column of cells.
@@ -535,9 +535,8 @@ impl ZLattice {
                     footprint: vertex_footprint_index,
                     z: k,
                 };
-                lattice[vertex_index.to_array_index()] = terrain.vertices
-                    [vertex_footprint_index.to_array_index()]
-                    + spacing * k as Float;
+                lattice[vertex_index.to_array_index()] =
+                    terrain.vertex_value(vertex_footprint_index) + spacing * k as Float;
             }
         }
         Self { lattice, spacings }
@@ -552,15 +551,7 @@ pub struct DynamicGeometry {
     cells: nd::Array<Cell, <indexing::CellIndex as indexing::Index>::ArrayIndex>,
 }
 impl DynamicGeometry {
-    pub fn new(static_geometry: StaticGeometry, height: &HeightField) -> Self {
-        assert_eq!(
-            [
-                static_geometry.grid().x_axis.centers.len(),
-                static_geometry.grid().y_axis.centers.len(),
-                2
-            ],
-            height.centers.shape()
-        );
+    pub fn new(static_geometry: StaticGeometry, height: &fields::HeightField) -> Self {
         let z_lattice =
             ZLattice::new_averaging(static_geometry.grid(), static_geometry.terrain(), &height);
         let mut cells = nd::Array::default(static_geometry.grid().cell_indexing().shape());
@@ -582,7 +573,7 @@ impl DynamicGeometry {
         &self.z_lattice
     }
 
-    pub fn terrain(&self) -> &Terrain {
+    pub fn terrain(&self) -> &fields::Terrain {
         &self.static_geometry.terrain
     }
 
@@ -1081,440 +1072,6 @@ pub enum CellFaceVertices {
     Horizontal([indexing::VertexIndex; 3]),
 }
 
-#[derive(Clone, Debug, PartialEq)]
-pub struct ShearField {
-    /// Indexed by [`indexing::CellIndexing`]
-    cells: nd::Array4<Matrix3>,
-}
-impl ShearField {
-    pub fn new<F: Fn(Float, Float, Float) -> Matrix3>(
-        dynamic_geometry: &DynamicGeometry,
-        f: F,
-    ) -> Self {
-        Self {
-            cells: dynamic_geometry.make_cell_array(f),
-        }
-    }
-
-    pub fn zeros(cell_indexing: &indexing::CellIndexing) -> Self {
-        Self {
-            cells: nd::Array4::zeros(cell_indexing.shape()),
-        }
-    }
-
-    pub fn cell_value(&self, index: indexing::CellIndex) -> Matrix3 {
-        self.cells[index.to_array_index()]
-    }
-
-    pub fn cell_value_mut(&mut self, index: indexing::CellIndex) -> &mut Matrix3 {
-        &mut self.cells[index.to_array_index()]
-    }
-
-    pub fn compute_divergence(&self, dynamic_geometry: &DynamicGeometry) -> VelocityField {
-        let mut divergence = VelocityField::zeros(dynamic_geometry.grid().cell_indexing());
-        for cell_index in indexing::iter_indices(dynamic_geometry.grid().cell_indexing()) {
-            let cell = dynamic_geometry.cell(cell_index);
-            let cell_value = self.cell_value(cell_index);
-            for face in &cell.faces {
-                if let indexing::CellNeighbor::Interior(neighbor_cell_index) = face.neighbor() {
-                    *divergence.cell_value_mut(cell_index) += 0.5
-                        * face.area()
-                        * (cell_value + self.cell_value(neighbor_cell_index))
-                            .tr_mul(&face.outward_normal().into_inner());
-                } else {
-                    *divergence.cell_value_mut(cell_index) +=
-                        face.area() * cell_value.tr_mul(&face.outward_normal().into_inner());
-                }
-            }
-            *divergence.cell_value_mut(cell_index) /= cell.volume;
-        }
-        divergence
-    }
-}
-#[cfg(test)]
-impl approx::AbsDiffEq for ShearField {
-    type Epsilon = Float;
-
-    fn default_epsilon() -> Self::Epsilon {
-        1e-5
-    }
-
-    fn abs_diff_eq(&self, other: &Self, epsilon: Self::Epsilon) -> bool {
-        self.cells
-            .iter()
-            .zip(other.cells.iter())
-            .all(|(left, right)| left.abs_diff_eq(right, epsilon))
-    }
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct VelocityField {
-    /// Indexed by [`indexing::CellIndexing`]
-    cells: nd::Array4<Vector3>,
-}
-impl VelocityField {
-    pub fn new<F: Fn(Float, Float, Float) -> Vector3>(
-        dynamic_geometry: &DynamicGeometry,
-        f: F,
-    ) -> Self {
-        Self {
-            cells: dynamic_geometry.make_cell_array(f),
-        }
-    }
-
-    pub fn zeros(cell_indexing: &indexing::CellIndexing) -> Self {
-        Self {
-            cells: nd::Array4::zeros(cell_indexing.shape()),
-        }
-    }
-
-    pub fn cell_value(&self, index: indexing::CellIndex) -> Vector3 {
-        self.cells[index.to_array_index()]
-    }
-
-    pub fn cell_value_mut(&mut self, index: indexing::CellIndex) -> &mut Vector3 {
-        &mut self.cells[index.to_array_index()]
-    }
-
-    pub fn compute_shear(&self, dynamic_geometry: &DynamicGeometry) -> ShearField {
-        let mut gradient = ShearField::zeros(dynamic_geometry.grid().cell_indexing());
-        for cell_index in indexing::iter_indices(dynamic_geometry.grid().cell_indexing()) {
-            let cell = dynamic_geometry.cell(cell_index);
-            let cell_value = self.cell_value(cell_index);
-            for face in &cell.faces {
-                if let indexing::CellNeighbor::Interior(neighbor_cell_index) = face.neighbor() {
-                    *gradient.cell_value_mut(cell_index) += 0.5
-                        * face.area()
-                        * (face.outward_normal().into_inner()
-                            * (cell_value + self.cell_value(neighbor_cell_index)).transpose());
-                } else {
-                    *gradient.cell_value_mut(cell_index) +=
-                        face.area() * face.outward_normal().into_inner() * cell_value.transpose();
-                }
-            }
-            *gradient.cell_value_mut(cell_index) /= cell.volume;
-        }
-        gradient
-    }
-
-    pub fn compute_laplacian(&self, dynamic_geometry: &DynamicGeometry) -> Self {
-        self.compute_shear(dynamic_geometry)
-            .compute_divergence(dynamic_geometry)
-        // let mut laplacian =
-        // Self::zeros(dynamic_geometry.grid().cell_indexing());
-        // for cell_index in
-        // indexing::iter_indices(dynamic_geometry.grid().cell_indexing()) {
-        //     let cell = dynamic_geometry.cell(cell_index);
-        //     let cell_value = self.cell_value(cell_index);
-        //     for face in &cell.faces {
-        //         let quotient = if let
-        // indexing::CellNeighbor::Interior(neighbor_cell_index) =
-        //             face.neighbor()
-        //         {
-        //             if cell_index
-        //                 == (indexing::CellIndex {
-        //                     z: 2,
-        //                     footprint: indexing::CellFootprintIndex {
-        //                         x: 1,
-        //                         y: 1,
-        //                         triangle: indexing::Triangle::UpperLeft,
-        //                     },
-        //                 })
-        //             {
-        //                 println!("  face: {:?}", face);
-        //                 println!("  cell volume: {:?}", cell.volume);
-        //                 println!("  face area / volume: {:?}", face.area() /
-        // cell.volume);                 println!(
-        //                     "  delta value: {:?}",
-        //                     self.cell_value(neighbor_cell_index) - cell_value
-        //                 );
-        //                 println!(
-        //                     "  delta position: {:?}",
-        //
-        // dynamic_geometry.cell(neighbor_cell_index).centroid - cell.centroid
-        //                 );
-        //                 println!(
-        //                     "  delta position . normal: {:?}",
-        //
-        // (dynamic_geometry.cell(neighbor_cell_index).centroid - cell.centroid)
-        //                         .dot(&face.outward_normal().into_inner())
-        //                 );
-        //                 println!(
-        //                     "  surface normal gradient: {:?}",
-        //                     (self.cell_value(neighbor_cell_index) -
-        // cell_value)                         /
-        // (dynamic_geometry.cell(neighbor_cell_index).centroid
-        //                             - cell.centroid)
-        //                             .dot(&face.outward_normal().into_inner())
-        //                 );
-        //                 println!(
-        //                     "  overall face: {:?}\n",
-        //                     (self.cell_value(neighbor_cell_index) -
-        // cell_value)                         /
-        // (dynamic_geometry.cell(neighbor_cell_index).centroid
-        //                             - cell.centroid)
-        //                             .dot(&face.outward_normal().into_inner())
-        //                         * face.area()
-        //                         / cell.volume
-        //                 );
-        //             }
-        //             (self.cell_value(neighbor_cell_index) - cell_value)
-        //                 /
-        // (dynamic_geometry.cell(neighbor_cell_index).centroid - cell.centroid)
-        //                     .dot(&face.outward_normal().into_inner())
-        //         } else {
-        //             Vector3::zeros()
-        //         };
-        //         *laplacian.cell_value_mut(cell_index) += face.area() *
-        // quotient;     }
-        //     *laplacian.cell_value_mut(cell_index) /= cell.volume;
-        // }
-        // println!(
-        //     "total: {:?}",
-        //     laplacian.cell_value(indexing::CellIndex {
-        //         z: 2,
-        //         footprint: indexing::CellFootprintIndex {
-        //             x: 1,
-        //             y: 1,
-        //             triangle: indexing::Triangle::UpperLeft,
-        //         },
-        //     })
-        // );
-        // laplacian
-    }
-
-    pub fn column_average(&self) -> nd::Array3<na::Vector2<Float>> {
-        self.cells
-            .mapv(|velocity| na::Vector2::new(velocity.x, velocity.y))
-            .sum_axis(nd::Axis(2))
-            / self.cells.shape()[2] as Float
-    }
-}
-#[cfg(test)]
-impl approx::AbsDiffEq for VelocityField {
-    type Epsilon = Float;
-
-    fn default_epsilon() -> Self::Epsilon {
-        1e-5
-    }
-
-    fn abs_diff_eq(&self, other: &Self, epsilon: Self::Epsilon) -> bool {
-        self.cells
-            .iter()
-            .zip(other.cells.iter())
-            .all(|(cell, other_cell)| cell.abs_diff_eq(other_cell, epsilon))
-    }
-}
-
-#[pyclass]
-#[derive(Clone, Debug, PartialEq)]
-pub struct PressureField {
-    /// Indexed by [`indexing::VertexIndexing`]
-    vertices: Array3,
-}
-impl PressureField {
-    pub fn new<F: Fn(Float, Float, Float) -> Float>(
-        dynamic_geometry: &DynamicGeometry,
-        f: F,
-    ) -> Self {
-        Self {
-            vertices: dynamic_geometry.make_vertex_array(f),
-        }
-    }
-
-    pub fn zeros(vertex_indexing: &indexing::VertexIndexing) -> Self {
-        Self {
-            vertices: Array3::zeros(vertex_indexing.shape()),
-        }
-    }
-
-    pub fn vertex_value(&self, vertex: indexing::VertexIndex) -> Float {
-        self.vertices[vertex.to_array_index()]
-    }
-
-    pub fn vertex_value_mut(&mut self, vertex: indexing::VertexIndex) -> &mut Float {
-        &mut self.vertices[vertex.to_array_index()]
-    }
-
-    pub fn compute_gradient(&self, dynamic_geometry: &DynamicGeometry) -> VelocityField {
-        let mut gradient_field = VelocityField::zeros(dynamic_geometry.grid().cell_indexing());
-        for cell_index in indexing::iter_indices(dynamic_geometry.grid().cell_indexing()) {
-            let cell = dynamic_geometry.cell(cell_index);
-            for face in &cell.faces {
-                let face_interp_value = match face.vertices() {
-                    CellFaceVertices::Vertical(vertices) => {
-                        vertices
-                            .iter()
-                            .map(|vertex| self.vertex_value(*vertex))
-                            .sum::<Float>()
-                            / vertices.len() as Float
-                    }
-                    CellFaceVertices::Horizontal(vertices) => {
-                        vertices
-                            .iter()
-                            .map(|vertex| self.vertex_value(*vertex))
-                            .sum::<Float>()
-                            / vertices.len() as Float
-                    }
-                };
-                *gradient_field.cell_value_mut(cell_index) +=
-                    face.outward_normal().into_inner() * face.area() * face_interp_value;
-            }
-            *gradient_field.cell_value_mut(cell_index) /= cell.volume;
-        }
-        gradient_field
-    }
-
-    pub fn flatten(&self, vertex_indexing: &indexing::VertexIndexing) -> Array1 {
-        indexing::flatten_array(vertex_indexing, &self.vertices)
-    }
-
-    pub fn unflatten(vertex_indexing: &indexing::VertexIndexing, flattened: &Array1) -> Self {
-        let vertices = indexing::unflatten_array(vertex_indexing, flattened);
-        Self { vertices }
-    }
-}
-#[pymethods]
-impl PressureField {
-    #[pyo3(name = "pressure")]
-    pub fn pressure_py<'py>(&self, py: Python<'py>) -> &'py numpy::PyArray3<Float> {
-        self.vertices.clone().into_pyarray(py)
-    }
-}
-#[cfg(test)]
-impl approx::AbsDiffEq for PressureField {
-    type Epsilon = Float;
-
-    fn default_epsilon() -> Self::Epsilon {
-        1e-5
-    }
-
-    fn abs_diff_eq(&self, other: &Self, epsilon: Self::Epsilon) -> bool {
-        self.vertices.abs_diff_eq(&other.vertices, epsilon)
-    }
-}
-
-#[derive(Clone, PartialEq, Debug)]
-pub struct HeightField {
-    /// Indexed by [`indexing::CellFootprintIndexing`]
-    centers: Array3,
-}
-impl HeightField {
-    pub fn new<F: Fn(Float, Float) -> Float>(grid: &Grid, f: F) -> Self {
-        Self {
-            centers: grid.make_cell_footprint_array(f),
-        }
-    }
-
-    pub fn center_value(&self, cell_footprint_index: indexing::CellFootprintIndex) -> Float {
-        self.centers[cell_footprint_index.to_array_index()]
-    }
-
-    pub fn center_value_mut(
-        &mut self,
-        cell_footprint_index: indexing::CellFootprintIndex,
-    ) -> &mut Float {
-        &mut self.centers[cell_footprint_index.to_array_index()]
-    }
-
-    // TODO: Remove otherwise what's the point of this wrapper struct...
-    pub fn centers(&self) -> &Array3 {
-        &self.centers
-    }
-}
-impl std::ops::Add for HeightField {
-    type Output = Self;
-
-    fn add(mut self, rhs: HeightField) -> Self::Output {
-        self += rhs;
-        self
-    }
-}
-impl std::ops::AddAssign for HeightField {
-    fn add_assign(&mut self, rhs: HeightField) {
-        self.centers += &rhs.centers;
-    }
-}
-impl std::ops::Add<Float> for HeightField {
-    type Output = Self;
-
-    fn add(mut self, rhs: Float) -> Self::Output {
-        self += rhs;
-        self
-    }
-}
-impl std::ops::Add<Float> for &HeightField {
-    type Output = HeightField;
-
-    fn add(self, rhs: Float) -> Self::Output {
-        let mut new = self.clone();
-        new += rhs;
-        new
-    }
-}
-impl std::ops::Add<HeightField> for Float {
-    type Output = HeightField;
-
-    fn add(self, mut rhs: HeightField) -> Self::Output {
-        rhs += self;
-        rhs
-    }
-}
-impl std::ops::Add<&HeightField> for Float {
-    type Output = HeightField;
-
-    fn add(self, rhs: &HeightField) -> Self::Output {
-        let mut new = rhs.clone();
-        new += self;
-        new
-    }
-}
-impl std::ops::AddAssign<Float> for HeightField {
-    fn add_assign(&mut self, rhs: Float) {
-        self.centers += rhs;
-    }
-}
-impl std::ops::Mul<HeightField> for Float {
-    type Output = HeightField;
-
-    fn mul(self, rhs: HeightField) -> Self::Output {
-        HeightField {
-            centers: self * rhs.centers,
-        }
-    }
-}
-impl std::ops::Mul<&HeightField> for Float {
-    type Output = HeightField;
-
-    fn mul(self, rhs: &HeightField) -> Self::Output {
-        HeightField {
-            centers: self * &rhs.centers,
-        }
-    }
-}
-#[cfg(test)]
-impl approx::AbsDiffEq for HeightField {
-    type Epsilon = Float;
-
-    fn default_epsilon() -> Self::Epsilon {
-        1e-5
-    }
-
-    fn abs_diff_eq(&self, other: &Self, epsilon: Self::Epsilon) -> bool {
-        self.centers.abs_diff_eq(&other.centers, epsilon)
-    }
-}
-
-#[pyclass]
-#[derive(Clone)]
-pub struct Terrain {
-    // TODO use or remove
-    // /// Indexed by [`indexing::CellFootprintIndexing`]
-    // centers: Array3,
-    /// Indexed by [`indexing::VertexFootprintIndexing`]
-    vertices: Array2,
-}
-
 /// Compute the mean of an iterator over numbers
 fn mean(iterator: impl Iterator<Item = Float>) -> Option<Float> {
     let (count, sum) = iterator.fold((0, 0.), |acc, value| (acc.0 + 1, acc.1 + value));
@@ -1530,11 +1087,12 @@ mod test {
     use approx::assert_relative_eq;
 
     use super::*;
+    use crate::Matrix3;
 
     #[test]
     fn test_construct_z_lattice_zero_height() {
         let grid = Grid::new(Axis::new(0., 1., 29), Axis::new(0., 1., 32), 10);
-        let height = HeightField::new(&grid, |_, _| 0.);
+        let height = fields::HeightField::new(&grid, |_, _| 0.);
         let static_geometry = StaticGeometry::new(grid, &|x, y| 10. * x * y);
         let dynamic_geometry = DynamicGeometry::new(static_geometry, &height);
 
@@ -1563,7 +1121,7 @@ mod test {
     #[test]
     fn test_construct_z_lattice_flat() {
         let grid = Grid::new(Axis::new(0., 1., 29), Axis::new(0., 1., 32), 10);
-        let height = HeightField::new(&grid, |_, _| 7.3);
+        let height = fields::HeightField::new(&grid, |_, _| 7.3);
 
         let static_geometry = StaticGeometry::new(grid, &|_, _| 0.);
         let dynamic_geometry = DynamicGeometry::new(static_geometry, &height);
@@ -1615,8 +1173,8 @@ mod test {
     #[test]
     fn test_construct_z_lattice_grade() {
         let grid = Grid::new(Axis::new(0., 1., 60), Axis::new(0., 1., 31), 10);
-        let terrain = grid.make_terrain(&|_, _| 0.);
-        let mut height = HeightField::new(&grid, |_, _| 0.);
+        let terrain = fields::Terrain::new(&grid, &|_, _| 0.);
+        let mut height = fields::HeightField::new(&grid, |_, _| 0.);
         for cell_footprint_index in indexing::iter_indices(grid.cell_footprint_indexing()) {
             let centroid = grid.compute_cell_footprint_centroid(cell_footprint_index);
             *height.center_value_mut(cell_footprint_index) = 1. + centroid[0] + 2. * centroid[1];
@@ -1665,11 +1223,11 @@ mod test {
 
         // Zero velocity.
         {
-            let velocity = VelocityField::zeros(dynamic_geometry.grid().cell_indexing());
+            let velocity = fields::VelocityField::zeros(dynamic_geometry.grid().cell_indexing());
             let shear = velocity.compute_shear(&dynamic_geometry);
             approx::assert_abs_diff_eq!(
                 shear,
-                ShearField::zeros(dynamic_geometry.grid().cell_indexing()),
+                fields::ShearField::zeros(dynamic_geometry.grid().cell_indexing()),
                 epsilon = 1e-5
             );
         }
@@ -1677,21 +1235,22 @@ mod test {
         // Constant velocity.
         {
             let velocity =
-                VelocityField::new(&dynamic_geometry, |_, _, _| Vector3::new(2., -1., 7.));
+                fields::VelocityField::new(&dynamic_geometry, |_, _, _| Vector3::new(2., -1., 7.));
             let shear = velocity.compute_shear(&dynamic_geometry);
             approx::assert_abs_diff_eq!(
                 shear,
-                ShearField::zeros(dynamic_geometry.grid().cell_indexing()),
+                fields::ShearField::zeros(dynamic_geometry.grid().cell_indexing()),
                 epsilon = 1e-5
             );
         }
 
         // Linearly increasing velocity.
         {
-            let velocity =
-                VelocityField::new(&dynamic_geometry, |x, _, _| Vector3::new(2. * x, 0., 0.));
+            let velocity = fields::VelocityField::new(&dynamic_geometry, |x, _, _| {
+                Vector3::new(2. * x, 0., 0.)
+            });
             let shear = velocity.compute_shear(&dynamic_geometry);
-            let expected_shear = ShearField::new(&dynamic_geometry, |_, _, _| {
+            let expected_shear = fields::ShearField::new(&dynamic_geometry, |_, _, _| {
                 Matrix3::new(2., 0., 0., 0., 0., 0., 0., 0., 0.)
             });
 
@@ -1714,11 +1273,11 @@ mod test {
 
         // Zero velocity.
         {
-            let velocity = VelocityField::zeros(dynamic_geometry.grid().cell_indexing());
+            let velocity = fields::VelocityField::zeros(dynamic_geometry.grid().cell_indexing());
             let laplacian = velocity.compute_laplacian(&dynamic_geometry);
             approx::assert_abs_diff_eq!(
                 laplacian,
-                VelocityField::zeros(dynamic_geometry.grid().cell_indexing()),
+                fields::VelocityField::zeros(dynamic_geometry.grid().cell_indexing()),
                 epsilon = 1e-5
             );
         }
@@ -1726,21 +1285,23 @@ mod test {
         // Constant velocity.
         {
             let velocity =
-                VelocityField::new(&dynamic_geometry, |_, _, _| Vector3::new(2., -1., 7.));
+                fields::VelocityField::new(&dynamic_geometry, |_, _, _| Vector3::new(2., -1., 7.));
             let laplacian = velocity.compute_laplacian(&dynamic_geometry);
             approx::assert_abs_diff_eq!(
                 laplacian,
-                VelocityField::zeros(dynamic_geometry.grid().cell_indexing()),
+                fields::VelocityField::zeros(dynamic_geometry.grid().cell_indexing()),
                 epsilon = 1e-5
             );
         }
 
         // Linearly increasing velocity.
         {
-            let velocity =
-                VelocityField::new(&dynamic_geometry, |x, y, z| Vector3::new(2. * x - z, -z, y));
+            let velocity = fields::VelocityField::new(&dynamic_geometry, |x, y, z| {
+                Vector3::new(2. * x - z, -z, y)
+            });
             let laplacian = velocity.compute_laplacian(&dynamic_geometry);
-            let expected_laplacian = VelocityField::zeros(dynamic_geometry.grid().cell_indexing());
+            let expected_laplacian =
+                fields::VelocityField::zeros(dynamic_geometry.grid().cell_indexing());
 
             for cell_index in [
                 indexing::CellIndex {
@@ -1787,33 +1348,33 @@ mod test {
     fn test_compute_gradient_impl(dynamic_geometry: &DynamicGeometry) {
         // Zero pressure.
         {
-            let pressure = PressureField::zeros(dynamic_geometry.grid().vertex_indexing());
+            let pressure = fields::PressureField::zeros(dynamic_geometry.grid().vertex_indexing());
             let gradient = pressure.compute_gradient(&dynamic_geometry);
             approx::assert_abs_diff_eq!(
                 gradient,
-                VelocityField::zeros(dynamic_geometry.grid().cell_indexing()),
+                fields::VelocityField::zeros(dynamic_geometry.grid().cell_indexing()),
                 epsilon = 1e-5
             );
         }
 
         // Constant pressure.
         {
-            let pressure = PressureField::new(&dynamic_geometry, |_, _, _| 1.9);
+            let pressure = fields::PressureField::new(&dynamic_geometry, |_, _, _| 1.9);
             let gradient = pressure.compute_gradient(&dynamic_geometry);
             approx::assert_abs_diff_eq!(
                 gradient,
-                VelocityField::zeros(dynamic_geometry.grid().cell_indexing()),
+                fields::VelocityField::zeros(dynamic_geometry.grid().cell_indexing()),
                 epsilon = 1e-5
             );
         }
 
         // Linearly rising pressure.
         {
-            let pressure = PressureField::new(&dynamic_geometry, |_, _, z| 2. * z);
+            let pressure = fields::PressureField::new(&dynamic_geometry, |_, _, z| 2. * z);
             let gradient = pressure.compute_gradient(&dynamic_geometry);
             approx::assert_abs_diff_eq!(
                 gradient,
-                VelocityField::new(&dynamic_geometry, |_, _, _| Vector3::new(0., 0., 2.)),
+                fields::VelocityField::new(&dynamic_geometry, |_, _, _| Vector3::new(0., 0., 2.)),
                 epsilon = 1e-1
             );
         }
@@ -1821,7 +1382,7 @@ mod test {
 
     fn make_flat_geometry() -> DynamicGeometry {
         let grid = Grid::new(Axis::new(0., 1., 8), Axis::new(0., 1., 8), 8);
-        let height = HeightField::new(&grid, |_, _| 7.3);
+        let height = fields::HeightField::new(&grid, |_, _| 7.3);
 
         let static_geometry = StaticGeometry::new(grid, &|_, _| 0.);
         DynamicGeometry::new(static_geometry, &height)
@@ -1834,7 +1395,7 @@ mod test {
             (x_axis, y_axis) = (y_axis, x_axis);
         }
         let grid = Grid::new(x_axis, y_axis, 100);
-        let height = HeightField::new(&grid, |x, y| 7.3 * x + y + 1.);
+        let height = fields::HeightField::new(&grid, |x, y| 7.3 * x + y + 1.);
 
         let static_geometry = StaticGeometry::new(grid, &|x, y| 0.1 * (x + y));
         DynamicGeometry::new(static_geometry, &height)

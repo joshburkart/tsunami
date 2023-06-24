@@ -1,6 +1,7 @@
 #![deny(clippy::all)]
 
 mod examples;
+mod fields;
 mod geom;
 mod indexing;
 mod math;

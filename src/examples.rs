@@ -1,6 +1,6 @@
 use pyo3::prelude::*;
 
-use crate::{geom, physics, Float, Vector3};
+use crate::{fields, geom, physics, Float, Vector3};
 
 // TODO: Make this the only public module in order to surface and delete dead
 // code
@@ -15,7 +15,7 @@ pub fn advection_1d(num_x_cells: usize, num_z_cells: usize) -> physics::Solver {
     fn initial_height(x: Float, _y: Float) -> Float {
         (-((x - 0.7) / (0.05)).powi(2)).exp() + 0.1
     }
-    let initial_height = geom::HeightField::new(static_geometry.grid(), initial_height);
+    let initial_height = fields::HeightField::new(static_geometry.grid(), initial_height);
     let initial_dynamic_geometry = geom::DynamicGeometry::new(static_geometry, &initial_height);
 
     let problem = physics::Problem {
@@ -26,7 +26,7 @@ pub fn advection_1d(num_x_cells: usize, num_z_cells: usize) -> physics::Solver {
         y_boundary_condition: physics::HorizBoundaryCondition::HomogeneousNeumann,
     };
 
-    let velocity = geom::VelocityField::new(&initial_dynamic_geometry, |_, _, _| {
+    let velocity = fields::VelocityField::new(&initial_dynamic_geometry, |_, _, _| {
         Vector3::new(-0.03, 0., 0.)
     });
     physics::Solver::new(
@@ -45,7 +45,7 @@ pub fn singularity_1d(num_x_cells: usize, num_z_cells: usize) -> physics::Solver
     let grid = geom::Grid::new(x_axis, y_axis, num_z_cells);
     let static_geometry = geom::StaticGeometry::new(grid, &|_, _| 0.);
 
-    let initial_height = geom::HeightField::new(static_geometry.grid(), |_, _| 1.);
+    let initial_height = fields::HeightField::new(static_geometry.grid(), |_, _| 1.);
     let initial_dynamic_geometry = geom::DynamicGeometry::new(static_geometry, &initial_height);
 
     let problem = physics::Problem {
@@ -56,7 +56,7 @@ pub fn singularity_1d(num_x_cells: usize, num_z_cells: usize) -> physics::Solver
         y_boundary_condition: physics::HorizBoundaryCondition::HomogeneousNeumann,
     };
 
-    let velocity = geom::VelocityField::new(&initial_dynamic_geometry, |x, _, _| {
+    let velocity = fields::VelocityField::new(&initial_dynamic_geometry, |x, _, _| {
         Vector3::new(-(x / 0.5) * (-(x / 0.5).powi(2)).exp(), 0., 0.)
     });
     physics::Solver::new(
@@ -75,7 +75,7 @@ pub fn uniform(num_x_cells: usize, num_y_cells: usize, num_z_cells: usize) -> ph
     let grid = geom::Grid::new(x_axis, y_axis, num_z_cells);
     let static_geometry = geom::StaticGeometry::new(grid, &|_, _| 0.);
 
-    let initial_height = geom::HeightField::new(static_geometry.grid(), |_, _| 1.);
+    let initial_height = fields::HeightField::new(static_geometry.grid(), |_, _| 1.);
     let initial_dynamic_geometry = geom::DynamicGeometry::new(static_geometry, &initial_height);
 
     let problem = physics::Problem {
@@ -86,7 +86,7 @@ pub fn uniform(num_x_cells: usize, num_y_cells: usize, num_z_cells: usize) -> ph
         y_boundary_condition: physics::HorizBoundaryCondition::HomogeneousNeumann,
     };
 
-    let velocity = geom::VelocityField::new(&initial_dynamic_geometry, |_, _, _| {
+    let velocity = fields::VelocityField::new(&initial_dynamic_geometry, |_, _, _| {
         Vector3::new(0., 0., 0.)
     });
     physics::Solver::new(

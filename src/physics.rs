@@ -1,19 +1,19 @@
 use pyo3::prelude::*;
 
-use crate::{geom, indexing, math, Array1, Float, Vector2};
+use crate::{fields, geom, indexing, math, Array1, Float, Vector2};
 
 const MIN_HEIGHT: Float = 1e-14;
 
 #[derive(Clone)]
 pub struct Fields {
-    pub height: geom::HeightField,
-    pub velocity: geom::VelocityField,
-    pub pressure: geom::PressureField,
-    pub hydrostatic_pressure: geom::PressureField,
+    pub height: fields::HeightField,
+    pub velocity: fields::VelocityField,
+    pub pressure: fields::PressureField,
+    pub hydrostatic_pressure: fields::PressureField,
 }
 
 pub struct Problem {
-    pub rain_rate: Option<geom::HeightField>,
+    pub rain_rate: Option<fields::HeightField>,
 
     pub fluid_density: Float,
     pub grav_accel: Float,
@@ -39,8 +39,8 @@ impl Solver {
         problem: Problem,
         pressure_solver: PressureSolver,
         initial_dynamic_geometry: geom::DynamicGeometry,
-        initial_height: geom::HeightField,
-        initial_velocity: geom::VelocityField,
+        initial_height: fields::HeightField,
+        initial_velocity: fields::VelocityField,
     ) -> Self {
         let hydrostatic_pressure =
             compute_hydrostatic_pressure(&problem, &initial_dynamic_geometry);
@@ -199,9 +199,9 @@ impl Solver {
 
 pub fn compute_height_time_deriv(
     grid: &geom::Grid,
-    rain_rate: Option<&geom::HeightField>,
+    rain_rate: Option<&fields::HeightField>,
     fields: &Fields,
-) -> geom::HeightField {
+) -> fields::HeightField {
     use indexing::Index;
 
     // TODO: Make a struct for 2D velocity
@@ -272,10 +272,10 @@ impl PressureSolver {
         &self,
         problem: &Problem,
         dynamic_geometry: &geom::DynamicGeometry,
-        velocity: &geom::VelocityField,
-        hydrostatic_pressure: &geom::PressureField,
-        guess_pressure: &geom::PressureField,
-    ) -> geom::PressureField {
+        velocity: &fields::VelocityField,
+        hydrostatic_pressure: &fields::PressureField,
+        guess_pressure: &fields::PressureField,
+    ) -> fields::PressureField {
         let pressure_matrix = Self::make_pressure_matrix(dynamic_geometry);
         let pressure_rhs = Self::make_pressure_rhs_vector(
             problem,
@@ -323,7 +323,7 @@ impl PressureSolver {
             Ok(result) => result,
         };
 
-        geom::PressureField::unflatten(
+        fields::PressureField::unflatten(
             dynamic_geometry.grid().vertex_indexing(),
             &flattened_pressure,
         )
@@ -397,12 +397,12 @@ impl PressureSolver {
     fn make_pressure_rhs_vector(
         problem: &Problem,
         dynamic_geometry: &geom::DynamicGeometry,
-        hydrostatic_pressure: &geom::PressureField,
-        _velocity: &geom::VelocityField,
+        hydrostatic_pressure: &fields::PressureField,
+        _velocity: &fields::VelocityField,
     ) -> Array1 {
         let vertex_indexing = dynamic_geometry.grid().vertex_indexing();
 
-        let mut rhs = geom::PressureField::zeros(vertex_indexing);
+        let mut rhs = fields::PressureField::zeros(vertex_indexing);
         for vertex in indexing::iter_indices(vertex_indexing) {
             *rhs.vertex_value_mut(vertex) = {
                 use indexing::VertexClassification;
@@ -449,9 +449,9 @@ impl Default for PressureSolver {
 pub fn compute_hydrostatic_pressure(
     problem: &Problem,
     dynamic_geometry: &geom::DynamicGeometry,
-) -> geom::PressureField {
+) -> fields::PressureField {
     let mut hydrostatic_pressure =
-        geom::PressureField::zeros(dynamic_geometry.grid().vertex_indexing());
+        fields::PressureField::zeros(dynamic_geometry.grid().vertex_indexing());
     for vertex_footprint in
         indexing::iter_indices(dynamic_geometry.grid().vertex_footprint_indexing())
     {
@@ -486,7 +486,7 @@ mod tests {
         let grid = geom::Grid::new(x_axis, y_axis, 50);
         let static_geometry = geom::StaticGeometry::new(grid, &|_, _| 0.);
 
-        let height = geom::HeightField::new(static_geometry.grid(), |_, _| 10.);
+        let height = fields::HeightField::new(static_geometry.grid(), |_, _| 10.);
         let dynamic_geometry = geom::DynamicGeometry::new(static_geometry, &height);
 
         let problem = Problem {
@@ -501,7 +501,7 @@ mod tests {
         let pressure = PressureSolver::default().solve(
             &problem,
             &dynamic_geometry,
-            &geom::VelocityField::zeros(dynamic_geometry.grid().cell_indexing()),
+            &fields::VelocityField::zeros(dynamic_geometry.grid().cell_indexing()),
             &hydrostatic_pressure,
             &hydrostatic_pressure,
         );
@@ -517,7 +517,7 @@ mod tests {
         let static_geometry =
             geom::StaticGeometry::new(grid, &|x, _y| (x * 5. * std::f64::consts::PI).sin());
 
-        let height = geom::HeightField::new(static_geometry.grid(), |_, _| 10.);
+        let height = fields::HeightField::new(static_geometry.grid(), |_, _| 10.);
         let dynamic_geometry = geom::DynamicGeometry::new(static_geometry, &height);
 
         let problem = Problem {
@@ -561,21 +561,21 @@ mod tests {
         let grid = geom::Grid::new(x_axis, y_axis, 5);
         let static_geometry = geom::StaticGeometry::new(grid, &|_, _| 0.);
 
-        let height = geom::HeightField::new(static_geometry.grid(), |_, _| 3.);
+        let height = fields::HeightField::new(static_geometry.grid(), |_, _| 3.);
         let dynamic_geometry = geom::DynamicGeometry::new(static_geometry, &height);
 
         let fields = Fields {
             height: height.clone(),
-            velocity: geom::VelocityField::new(&dynamic_geometry, |_, _, _| Vector3::zeros()),
-            pressure: geom::PressureField::zeros(dynamic_geometry.grid().vertex_indexing()),
-            hydrostatic_pressure: geom::PressureField::zeros(
+            velocity: fields::VelocityField::new(&dynamic_geometry, |_, _, _| Vector3::zeros()),
+            pressure: fields::PressureField::zeros(dynamic_geometry.grid().vertex_indexing()),
+            hydrostatic_pressure: fields::PressureField::zeros(
                 dynamic_geometry.grid().vertex_indexing(),
             ),
         };
 
         // No rain.
         {
-            let rain_rate = geom::HeightField::new(dynamic_geometry.grid(), |_, _| 0.);
+            let rain_rate = fields::HeightField::new(dynamic_geometry.grid(), |_, _| 0.);
 
             let dhdt =
                 compute_height_time_deriv(&dynamic_geometry.grid(), Some(&rain_rate), &fields);
@@ -584,7 +584,7 @@ mod tests {
         }
         // Some rain.
         {
-            let rain_rate = geom::HeightField::new(dynamic_geometry.grid(), |_, _| 1.5e-2);
+            let rain_rate = fields::HeightField::new(dynamic_geometry.grid(), |_, _| 1.5e-2);
 
             let dhdt =
                 compute_height_time_deriv(&dynamic_geometry.grid(), Some(&rain_rate), &fields);
