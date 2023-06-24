@@ -3,6 +3,8 @@ use strum::{EnumCount, IntoEnumIterator};
 
 use crate::{Array1, Float};
 
+pub const NUM_CELL_VERTICES: usize = 6;
+
 #[derive(Copy, Clone, Debug, PartialEq, Eq, strum_macros::EnumIter, strum_macros::EnumCount)]
 pub enum Triangle {
     UpperLeft = 0,
@@ -417,7 +419,7 @@ impl CellFootprintIndexing {
                             ..footprint
                         })
                     } else {
-                        CellFootprintNeighbor::Boundary(Boundary::Upper)
+                        CellFootprintNeighbor::Boundary(HorizontalBoundary::Upper)
                     },
                 },
                 CellFootprintPair {
@@ -430,7 +432,7 @@ impl CellFootprintIndexing {
                             ..footprint
                         })
                     } else {
-                        CellFootprintNeighbor::Boundary(Boundary::Left)
+                        CellFootprintNeighbor::Boundary(HorizontalBoundary::Left)
                     },
                 },
                 CellFootprintPair {
@@ -453,7 +455,7 @@ impl CellFootprintIndexing {
                             ..footprint
                         })
                     } else {
-                        CellFootprintNeighbor::Boundary(Boundary::Lower)
+                        CellFootprintNeighbor::Boundary(HorizontalBoundary::Lower)
                     },
                 },
                 CellFootprintPair {
@@ -466,7 +468,7 @@ impl CellFootprintIndexing {
                             ..footprint
                         })
                     } else {
-                        CellFootprintNeighbor::Boundary(Boundary::Right)
+                        CellFootprintNeighbor::Boundary(HorizontalBoundary::Right)
                     },
                 },
                 CellFootprintPair {
@@ -635,7 +637,7 @@ impl Index for CellIndex {
 #[derive(Clone, Copy, Debug)]
 pub enum CellFootprintNeighbor {
     CellFootprint(CellFootprintIndex),
-    Boundary(Boundary),
+    Boundary(HorizontalBoundary),
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -665,11 +667,24 @@ pub struct CellFootprintPair {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub enum Boundary {
+pub enum HorizontalBoundary {
     Upper,
     Lower,
     Left,
     Right,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum VerticalBoundary {
+    Surface,
+    Floor,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum CellNeighbor {
+    Interior(CellIndex),
+    HorizontalBoundary(HorizontalBoundary),
+    VerticalBoundary(VerticalBoundary),
 }
 
 #[cfg(test)]

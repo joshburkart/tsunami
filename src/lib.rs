@@ -14,8 +14,11 @@ type Float = f64;
 
 type Vector2 = na::Vector2<Float>;
 type Vector3 = na::Vector3<Float>;
+type Matrix3 = na::Matrix3<Float>;
 type UnitVector2 = na::UnitVector2<Float>;
 type UnitVector3 = na::UnitVector3<Float>;
+type Point2 = na::Point2<Float>;
+type Point3 = na::Point3<Float>;
 
 type Array1 = nd::Array1<Float>;
 type Array2 = nd::Array2<Float>;
