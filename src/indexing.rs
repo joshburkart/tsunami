@@ -419,7 +419,7 @@ impl CellFootprintIndexing {
                             ..footprint
                         })
                     } else {
-                        CellFootprintNeighbor::Boundary(HorizontalBoundary::Upper)
+                        CellFootprintNeighbor::YBoundary(Boundary::Upper)
                     },
                 },
                 CellFootprintPair {
@@ -432,7 +432,7 @@ impl CellFootprintIndexing {
                             ..footprint
                         })
                     } else {
-                        CellFootprintNeighbor::Boundary(HorizontalBoundary::Left)
+                        CellFootprintNeighbor::XBoundary(Boundary::Lower)
                     },
                 },
                 CellFootprintPair {
@@ -455,7 +455,7 @@ impl CellFootprintIndexing {
                             ..footprint
                         })
                     } else {
-                        CellFootprintNeighbor::Boundary(HorizontalBoundary::Lower)
+                        CellFootprintNeighbor::YBoundary(Boundary::Lower)
                     },
                 },
                 CellFootprintPair {
@@ -468,7 +468,7 @@ impl CellFootprintIndexing {
                             ..footprint
                         })
                     } else {
-                        CellFootprintNeighbor::Boundary(HorizontalBoundary::Right)
+                        CellFootprintNeighbor::XBoundary(Boundary::Upper)
                     },
                 },
                 CellFootprintPair {
@@ -585,6 +585,28 @@ impl CellIndexing {
     pub fn column(&self, footprint: CellFootprintIndex) -> impl Iterator<Item = CellIndex> {
         (0..self.num_z_cells).map(move |z| CellIndex { footprint, z })
     }
+
+    pub fn classify_cell(&self, cell_index: CellIndex) -> CellClassification {
+        let CellIndex {
+            footprint: CellFootprintIndex { x, y, .. },
+            z,
+        } = cell_index;
+        if z == 0 {
+            CellClassification::ZBoundary(Boundary::Lower)
+        } else if z == self.num_z_cells() - 1 {
+            CellClassification::ZBoundary(Boundary::Upper)
+        } else if x == 0 {
+            CellClassification::XBoundary(Boundary::Lower)
+        } else if x == self.cell_footprint_indexing.num_x_cells() - 1 {
+            CellClassification::XBoundary(Boundary::Upper)
+        } else if y == 0 {
+            CellClassification::YBoundary(Boundary::Lower)
+        } else if y == self.cell_footprint_indexing.num_y_cells() - 1 {
+            CellClassification::YBoundary(Boundary::Upper)
+        } else {
+            CellClassification::Interior
+        }
+    }
 }
 impl Indexing for CellIndexing {
     type Index = CellIndex;
@@ -621,6 +643,17 @@ pub struct CellIndex {
     pub footprint: CellFootprintIndex,
     pub z: usize,
 }
+impl CellIndex {
+    pub fn flip(self) -> Self {
+        Self {
+            footprint: CellFootprintIndex {
+                triangle: self.footprint.triangle.flip(),
+                ..self.footprint
+            },
+            ..self
+        }
+    }
+}
 impl Index for CellIndex {
     type ArrayIndex = nd::Dim<[usize; 4]>;
 
@@ -635,9 +668,18 @@ impl Index for CellIndex {
 }
 
 #[derive(Clone, Copy, Debug)]
+pub enum CellClassification {
+    XBoundary(Boundary),
+    YBoundary(Boundary),
+    ZBoundary(Boundary),
+    Interior,
+}
+
+#[derive(Clone, Copy, Debug)]
 pub enum CellFootprintNeighbor {
     CellFootprint(CellFootprintIndex),
-    Boundary(HorizontalBoundary),
+    XBoundary(Boundary),
+    YBoundary(Boundary),
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -667,24 +709,17 @@ pub struct CellFootprintPair {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub enum HorizontalBoundary {
-    Upper,
+pub enum Boundary {
     Lower,
-    Left,
-    Right,
-}
-
-#[derive(Clone, Copy, Debug)]
-pub enum VerticalBoundary {
-    Surface,
-    Floor,
+    Upper,
 }
 
 #[derive(Clone, Copy, Debug)]
 pub enum CellNeighbor {
-    Interior(CellIndex),
-    HorizontalBoundary(HorizontalBoundary),
-    VerticalBoundary(VerticalBoundary),
+    Cell(CellIndex),
+    XBoundary(Boundary),
+    YBoundary(Boundary),
+    ZBoundary(Boundary),
 }
 
 #[cfg(test)]

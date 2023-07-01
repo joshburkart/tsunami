@@ -211,7 +211,7 @@ pub struct StaticGeometry {
     terrain: fields::Terrain,
 }
 impl StaticGeometry {
-    pub fn new<F: Fn(Float, Float) -> Float>(grid: Grid, terrain_func: &F) -> Self {
+    pub fn new<F: Fn(Float, Float) -> Float>(grid: Grid, terrain_func: F) -> Self {
         let terrain = fields::Terrain::new(&grid, terrain_func);
         Self { grid, terrain }
     }
@@ -297,7 +297,11 @@ pub struct ZLattice {
     spacings: Array2,
 }
 impl ZLattice {
-    pub fn new_lp(grid: &Grid, terrain: &fields::Terrain, height: &fields::HeightField) -> Self {
+    pub fn new_lp(
+        grid: &Grid,
+        terrain: &fields::Terrain,
+        height: &fields::HorizScalarField,
+    ) -> Self {
         Self::new_lp_first_pass(grid, terrain, height)
             .unwrap_or_else(|_| Self::new_lp_second_pass(grid, terrain, height))
     }
@@ -305,28 +309,31 @@ impl ZLattice {
     pub fn new_averaging(
         grid: &Grid,
         terrain: &fields::Terrain,
-        height: &fields::HeightField,
+        height: &fields::HorizScalarField,
     ) -> Self {
         let vertex_indexing = grid.vertex_indexing();
-        let mut lattice = Array3::zeros(vertex_indexing.shape());
-        let mut spacings = Array2::zeros(grid.vertex_footprint_indexing().shape());
+        let mut lattice = Array3::uninit(vertex_indexing.shape());
+        let mut spacings = Array2::uninit(grid.vertex_footprint_indexing().shape());
         let vertex_footprint_indexing = grid.vertex_footprint_indexing();
         for vertex_footprint_index in indexing::iter_indices(vertex_footprint_indexing) {
             let terrain_height = terrain.vertex_value(vertex_footprint_index);
             let height = mean(
                 vertex_footprint_index
                     .adjacent_cells(vertex_footprint_indexing)
-                    .map(|cell_footprint_index| height.center_value(cell_footprint_index)),
+                    .map(|cell_footprint_index| height.cell_footprint_value(cell_footprint_index)),
             )
             .unwrap();
             let spacing = height / grid.cell_indexing().num_z_cells() as Float;
-            spacings[vertex_footprint_index.to_array_index()] = spacing;
+            spacings[vertex_footprint_index.to_array_index()] = std::mem::MaybeUninit::new(spacing);
             for vertex_index in vertex_indexing.column(vertex_footprint_index) {
                 lattice[vertex_index.to_array_index()] =
-                    terrain_height + spacing * vertex_index.z as Float;
+                    std::mem::MaybeUninit::new(terrain_height + spacing * vertex_index.z as Float);
             }
         }
-        Self { lattice, spacings }
+        Self {
+            lattice: unsafe { lattice.assume_init() },
+            spacings: unsafe { spacings.assume_init() },
+        }
     }
 
     pub fn z_spacing(&self, vertex_footprint_index: indexing::VertexFootprintIndex) -> Float {
@@ -351,7 +358,7 @@ impl ZLattice {
     fn new_lp_first_pass(
         grid: &Grid,
         terrain: &fields::Terrain,
-        height: &fields::HeightField,
+        height: &fields::HorizScalarField,
     ) -> Result<Self, highs::HighsModelStatus> {
         let mut problem = highs::RowProblem::new();
 
@@ -364,7 +371,7 @@ impl ZLattice {
         // heights at each cell footprint's three vertices be equal to the
         // height at the cell footprint center.
         for cell_footprint_index in indexing::iter_indices(grid.cell_footprint_indexing()) {
-            let center_height = height.center_value(cell_footprint_index);
+            let center_height = height.cell_footprint_value(cell_footprint_index);
             problem.add_row(
                 center_height..center_height,
                 &cell_footprint_index
@@ -446,7 +453,7 @@ impl ZLattice {
     fn new_lp_second_pass(
         grid: &Grid,
         terrain: &fields::Terrain,
-        height: &fields::HeightField,
+        height: &fields::HorizScalarField,
     ) -> Self {
         let mut problem = highs::RowProblem::new();
 
@@ -460,7 +467,7 @@ impl ZLattice {
         // possible in an L1 sense to the height at the cell footprint center.
         for cell_footprint_index in indexing::iter_indices(grid.cell_footprint_indexing()) {
             // Delta = 1/3 * (z1 + z2 + z3) - h
-            let center_height = height.center_value(cell_footprint_index);
+            let center_height = height.cell_footprint_value(cell_footprint_index);
             let center_height_val = problem.add_column(0., center_height..center_height);
             let mut diff_height = cell_footprint_index
                 .vertices_right_handed()
@@ -551,17 +558,17 @@ pub struct DynamicGeometry {
     cells: nd::Array<Cell, <indexing::CellIndex as indexing::Index>::ArrayIndex>,
 }
 impl DynamicGeometry {
-    pub fn new(static_geometry: StaticGeometry, height: &fields::HeightField) -> Self {
+    pub fn new(static_geometry: StaticGeometry, height: &fields::HorizScalarField) -> Self {
         let z_lattice =
             ZLattice::new_averaging(static_geometry.grid(), static_geometry.terrain(), &height);
-        let mut cells = nd::Array::default(static_geometry.grid().cell_indexing().shape());
+        let mut cells = nd::Array::uninit(static_geometry.grid().cell_indexing().shape());
         for (cell_index, cell) in Self::iter_cells(&static_geometry, &z_lattice) {
-            cells[cell_index.to_array_index()] = cell;
+            cells[cell_index.to_array_index()] = std::mem::MaybeUninit::new(cell);
         }
         Self {
             static_geometry,
             z_lattice,
-            cells,
+            cells: unsafe { cells.assume_init() },
         }
     }
 
@@ -589,31 +596,32 @@ impl DynamicGeometry {
         &self,
         f: F,
     ) -> nd::Array4<V> {
-        let mut cells = nd::Array4::<V>::default(self.grid().cell_indexing().shape());
+        let mut cells = nd::Array4::<V>::uninit(self.grid().cell_indexing().shape());
         for cell_index in indexing::iter_indices(self.grid().cell_indexing()) {
             let centroid = self.cell(cell_index).centroid;
-            cells[cell_index.to_array_index()] = f(centroid.x, centroid.y, centroid.z);
+            cells[cell_index.to_array_index()] =
+                std::mem::MaybeUninit::new(f(centroid.x, centroid.y, centroid.z));
         }
-        cells
+        unsafe { cells.assume_init() }
     }
 
     pub fn make_vertex_array<V: Default, F: Fn(Float, Float, Float) -> V>(
         &self,
         f: F,
     ) -> nd::Array3<V> {
-        let mut vertices = nd::Array3::<V>::default(self.grid().vertex_indexing().shape());
+        let mut vertices = nd::Array3::<V>::uninit(self.grid().vertex_indexing().shape());
         for indexing::VertexIndex {
             footprint: indexing::VertexFootprintIndex { x, y },
             z,
         } in indexing::iter_indices(self.grid().vertex_indexing())
         {
-            vertices[[x, y, z]] = f(
+            vertices[[x, y, z]] = std::mem::MaybeUninit::new(f(
                 self.grid().x_axis.vertices[x],
                 self.grid().y_axis.vertices[y],
                 self.z_lattice.lattice[[x, y, z]],
-            );
+            ));
         }
-        vertices
+        unsafe { vertices.assume_init() }
     }
 
     fn iter_cells<'a>(
@@ -623,7 +631,7 @@ impl DynamicGeometry {
         let grid = static_geometry.grid();
         let cell_footprint_indexing = grid.cell_footprint_indexing();
         let cell_indexing = grid.cell_indexing();
-        indexing::iter_indices(static_geometry.grid().cell_footprint_indexing())
+        indexing::iter_indices(cell_footprint_indexing)
             .map(move |cell_footprint_index| {
                 let cell_footprint_pairs =
                     cell_footprint_indexing.compute_footprint_pairs(cell_footprint_index);
@@ -635,12 +643,13 @@ impl DynamicGeometry {
                         (
                             cell_index,
                             Cell {
+                                index: cell_index,
                                 volume: Self::compute_volume(
                                     static_geometry,
                                     z_lattice,
                                     cell_index,
                                 ),
-                                centroid: Self::compute_centroid(
+                                centroid: Self::compute_cell_centroid(
                                     z_lattice,
                                     cell_index,
                                     cell_footprint_centroid,
@@ -651,19 +660,7 @@ impl DynamicGeometry {
                                     cell_index,
                                     cell_footprint_pairs,
                                 ),
-                                classification: if 0 < cell_index.footprint.x
-                                    && cell_index.footprint.x
-                                        < cell_footprint_indexing.num_x_cells() - 1
-                                    && 0 < cell_index.footprint.y
-                                    && cell_index.footprint.y
-                                        < cell_footprint_indexing.num_y_cells() - 1
-                                    && 0 < cell_index.z
-                                    && cell_index.z < cell_indexing.num_z_cells() - 1
-                                {
-                                    CellClassification::Interior
-                                } else {
-                                    CellClassification::Boundary
-                                },
+                                classification: cell_indexing.classify_cell(cell_index),
                             },
                         )
                     })
@@ -686,7 +683,32 @@ impl DynamicGeometry {
             / 3.
     }
 
-    fn compute_centroid(
+    fn compute_face_centroid(
+        static_geometry: &StaticGeometry,
+        z_lattice: &ZLattice,
+        vertices: impl Iterator<Item = indexing::VertexIndex>,
+    ) -> Point3 {
+        let (value, count) = vertices.fold(
+            (Vector3::zeros(), 0),
+            |(sum, count), vertex_index: indexing::VertexIndex| {
+                (
+                    sum + Vector3::new(
+                        static_geometry.grid().x_axis().vertices()[vertex_index.footprint.x],
+                        static_geometry.grid().y_axis().vertices()[vertex_index.footprint.y],
+                        z_lattice.vertex_value(vertex_index),
+                    ),
+                    count + 1,
+                )
+            },
+        );
+        Point3::new(
+            value.x / count as Float,
+            value.y / count as Float,
+            value.z / count as Float,
+        )
+    }
+
+    fn compute_cell_centroid(
         z_lattice: &ZLattice,
         cell_index: indexing::CellIndex,
         cell_footprint_centroid: Point2,
@@ -722,49 +744,39 @@ impl DynamicGeometry {
         cell_footprint_pairs: [indexing::CellFootprintPair; 3],
     ) -> [CellFace; 5] {
         [
-            Self::compute_vertical_face(
+            Self::compute_vert_face(
                 static_geometry,
                 z_lattice,
                 cell_index,
                 cell_footprint_pairs[0],
             ),
-            Self::compute_vertical_face(
+            Self::compute_vert_face(
                 static_geometry,
                 z_lattice,
                 cell_index,
                 cell_footprint_pairs[1],
             ),
-            Self::compute_vertical_face(
+            Self::compute_vert_face(
                 static_geometry,
                 z_lattice,
                 cell_index,
                 cell_footprint_pairs[2],
             ),
-            Self::compute_horizontal_face(
-                static_geometry,
-                z_lattice,
-                cell_index,
-                HorizontalSide::Up,
-            ),
-            Self::compute_horizontal_face(
-                static_geometry,
-                z_lattice,
-                cell_index,
-                HorizontalSide::Down,
-            ),
+            Self::compute_horiz_face(static_geometry, z_lattice, cell_index, HorizSide::Up),
+            Self::compute_horiz_face(static_geometry, z_lattice, cell_index, HorizSide::Down),
         ]
     }
 
-    fn compute_horizontal_face(
+    fn compute_horiz_face(
         static_geometry: &StaticGeometry,
         z_lattice: &ZLattice,
         cell_index: indexing::CellIndex,
-        horizontal_side: HorizontalSide,
+        horiz_side: HorizSide,
     ) -> CellFace {
         let vertex_footprints = cell_index.footprint.vertices_right_handed();
-        let vertices_z = match horizontal_side {
-            HorizontalSide::Up => cell_index.z + 1,
-            HorizontalSide::Down => cell_index.z,
+        let vertices_z = match horiz_side {
+            HorizSide::Up => cell_index.z + 1,
+            HorizSide::Down => cell_index.z,
         };
         let vertices = [
             indexing::VertexIndex {
@@ -795,47 +807,71 @@ impl DynamicGeometry {
         let unnorm_normal = d12.cross(&d23);
         let (normal, norm) = UnitVector3::new_and_get(unnorm_normal);
         let area = norm / 2.;
-        let outward_normal = match horizontal_side {
-            HorizontalSide::Up => normal,
-            HorizontalSide::Down => -normal,
+        let outward_normal = match horiz_side {
+            HorizSide::Up => normal,
+            HorizSide::Down => -normal,
         };
 
-        let neighbor = match horizontal_side {
-            HorizontalSide::Up => {
+        let neighbor = match horiz_side {
+            HorizSide::Up => {
                 let z_plus_1 = cell_index.z + 1;
                 if z_plus_1 >= static_geometry.grid().cell_indexing().num_z_cells() {
-                    indexing::CellNeighbor::VerticalBoundary(indexing::VerticalBoundary::Surface)
+                    indexing::CellNeighbor::ZBoundary(indexing::Boundary::Lower)
                 } else {
-                    indexing::CellNeighbor::Interior(indexing::CellIndex {
+                    indexing::CellNeighbor::Cell(indexing::CellIndex {
                         z: z_plus_1,
                         ..cell_index
                     })
                 }
             }
-            HorizontalSide::Down => {
+            HorizSide::Down => {
                 if let Some(z_minus_1) = cell_index.z.checked_sub(1) {
-                    indexing::CellNeighbor::Interior(indexing::CellIndex {
+                    indexing::CellNeighbor::Cell(indexing::CellIndex {
                         z: z_minus_1,
                         ..cell_index
                     })
                 } else {
-                    indexing::CellNeighbor::VerticalBoundary(indexing::VerticalBoundary::Floor)
+                    indexing::CellNeighbor::ZBoundary(indexing::Boundary::Upper)
                 }
             }
         };
 
+        let vertices = {
+            let z = cell_index.z
+                + match horiz_side {
+                    HorizSide::Up => 1,
+                    HorizSide::Down => 0,
+                };
+            let vertex_footprints = cell_index.footprint.vertices_right_handed();
+            [
+                indexing::VertexIndex {
+                    footprint: vertex_footprints[0],
+                    z,
+                },
+                indexing::VertexIndex {
+                    footprint: vertex_footprints[1],
+                    z,
+                },
+                indexing::VertexIndex {
+                    footprint: vertex_footprints[2],
+                    z,
+                },
+            ]
+        };
+        let centroid =
+            Self::compute_face_centroid(static_geometry, z_lattice, vertices.iter().copied());
         CellFace {
-            data: CellFaceData::Horizontal(CellHorizontalFace {
-                cell_index,
+            data: CellFaceData::Horiz(CellHorizFace {
                 area,
                 outward_normal,
-                direction: horizontal_side,
                 neighbor,
+                vertices,
+                centroid,
             }),
         }
     }
 
-    fn compute_vertical_face(
+    fn compute_vert_face(
         static_geometry: &StaticGeometry,
         z_lattice: &ZLattice,
         cell_index: indexing::CellIndex,
@@ -871,11 +907,33 @@ impl DynamicGeometry {
             0.5 * cell_footprint_edge.length * (vert_length_1 + vert_length_2)
         };
 
+        let vertices = [
+            indexing::VertexIndex {
+                footprint: cell_footprint_edge.vertex_footprints[0],
+                z: cell_index.z,
+            },
+            indexing::VertexIndex {
+                footprint: cell_footprint_edge.vertex_footprints[0],
+                z: cell_index.z + 1,
+            },
+            indexing::VertexIndex {
+                footprint: cell_footprint_edge.vertex_footprints[1],
+                z: cell_index.z,
+            },
+            indexing::VertexIndex {
+                footprint: cell_footprint_edge.vertex_footprints[1],
+                z: cell_index.z + 1,
+            },
+        ];
+        let centroid =
+            Self::compute_face_centroid(static_geometry, z_lattice, vertices.iter().copied());
         CellFace {
-            data: CellFaceData::Vertical(CellVerticalFace {
+            data: CellFaceData::Vert(CellVertFace {
                 area,
                 cell_index,
                 cell_footprint_edge,
+                vertices,
+                centroid,
             }),
         }
     }
@@ -890,33 +948,11 @@ impl DynamicGeometry {
 
 #[derive(Clone, Debug)]
 pub struct Cell {
+    pub index: indexing::CellIndex,
     pub volume: Float,
     pub centroid: Point3,
     pub faces: [CellFace; 5],
-    pub classification: CellClassification,
-}
-// Needed so we can have `nd::Array`s of `Cell`s.
-impl Default for Cell {
-    fn default() -> Self {
-        Self {
-            volume: Default::default(),
-            centroid: Default::default(),
-            faces: [
-                Default::default(),
-                Default::default(),
-                Default::default(),
-                Default::default(),
-                Default::default(),
-            ],
-            classification: CellClassification::Interior,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug)]
-pub enum CellClassification {
-    Boundary,
-    Interior,
+    pub classification: indexing::CellClassification,
 }
 
 #[derive(Clone, Debug)]
@@ -928,148 +964,96 @@ pub struct CellFootprintEdge {
 }
 
 #[derive(Clone, Debug)]
-struct CellVerticalFace {
+struct CellVertFace {
     pub cell_index: indexing::CellIndex,
     pub area: Float,
     cell_footprint_edge: CellFootprintEdge,
+    vertices: [indexing::VertexIndex; 4],
+    centroid: Point3,
 }
 
 #[derive(Clone, Debug)]
-struct CellHorizontalFace {
-    pub cell_index: indexing::CellIndex,
+struct CellHorizFace {
     pub area: Float,
     outward_normal: UnitVector3,
-    pub direction: HorizontalSide,
     pub neighbor: indexing::CellNeighbor,
+    vertices: [indexing::VertexIndex; 3],
+    centroid: Point3,
 }
 
 #[derive(Clone, Copy, Debug)]
-enum HorizontalSide {
+enum HorizSide {
     Up,
     Down,
 }
 
 #[derive(Clone, Debug)]
 enum CellFaceData {
-    Vertical(CellVerticalFace),
-    Horizontal(CellHorizontalFace),
+    Vert(CellVertFace),
+    Horiz(CellHorizFace),
 }
 #[derive(Clone, Debug)]
 pub struct CellFace {
     data: CellFaceData,
 }
-// Needed so we can have `nd::Array`s of `Cell`s.
-impl Default for CellFace {
-    fn default() -> Self {
-        CellFace {
-            data: CellFaceData::Horizontal(CellHorizontalFace {
-                cell_index: indexing::CellIndex {
-                    footprint: indexing::CellFootprintIndex {
-                        x: 0,
-                        y: 0,
-                        triangle: indexing::Triangle::LowerRight,
-                    },
-                    z: 0,
-                },
-                area: 0.,
-                outward_normal: Vector3::x_axis(),
-                direction: HorizontalSide::Up,
-                neighbor: indexing::CellNeighbor::HorizontalBoundary(
-                    indexing::HorizontalBoundary::Left,
-                ),
-            }),
-        }
-    }
-}
 impl CellFace {
     pub fn area(&self) -> Float {
         match &self.data {
-            CellFaceData::Vertical(vertical_face) => vertical_face.area,
-            CellFaceData::Horizontal(horizontal_face) => horizontal_face.area,
+            CellFaceData::Vert(vert_face) => vert_face.area,
+            CellFaceData::Horiz(horiz_face) => horiz_face.area,
         }
     }
 
     pub fn neighbor(&self) -> indexing::CellNeighbor {
         match &self.data {
-            CellFaceData::Vertical(vertical_face) => match vertical_face
-                .cell_footprint_edge
-                .cell_footprint_pair
-                .neighbor
-            {
-                indexing::CellFootprintNeighbor::CellFootprint(footprint) => {
-                    indexing::CellNeighbor::Interior(indexing::CellIndex {
-                        footprint,
-                        z: vertical_face.cell_index.z,
-                    })
+            CellFaceData::Vert(vert_face) => {
+                match vert_face.cell_footprint_edge.cell_footprint_pair.neighbor {
+                    indexing::CellFootprintNeighbor::CellFootprint(footprint) => {
+                        indexing::CellNeighbor::Cell(indexing::CellIndex {
+                            footprint,
+                            z: vert_face.cell_index.z,
+                        })
+                    }
+                    indexing::CellFootprintNeighbor::XBoundary(boundary) => {
+                        indexing::CellNeighbor::XBoundary(boundary)
+                    }
+                    indexing::CellFootprintNeighbor::YBoundary(boundary) => {
+                        indexing::CellNeighbor::YBoundary(boundary)
+                    }
                 }
-                indexing::CellFootprintNeighbor::Boundary(boundary) => {
-                    indexing::CellNeighbor::HorizontalBoundary(boundary)
-                }
-            },
-            CellFaceData::Horizontal(horizontal_face) => horizontal_face.neighbor,
+            }
+            CellFaceData::Horiz(horiz_face) => horiz_face.neighbor,
         }
     }
 
     pub fn outward_normal(&self) -> UnitVector3 {
         match &self.data {
-            CellFaceData::Vertical(vertical_face) => {
-                let normal_2d = vertical_face.cell_footprint_edge.outward_normal;
+            CellFaceData::Vert(vert_face) => {
+                let normal_2d = vert_face.cell_footprint_edge.outward_normal;
                 UnitVector3::new_unchecked(Vector3::new(normal_2d.x, normal_2d.y, 0.))
             }
-            CellFaceData::Horizontal(horizontal_face) => horizontal_face.outward_normal,
+            CellFaceData::Horiz(horiz_face) => horiz_face.outward_normal,
+        }
+    }
+
+    pub fn centroid(&self) -> Point3 {
+        match &self.data {
+            CellFaceData::Vert(vert_face) => vert_face.centroid,
+            CellFaceData::Horiz(horiz_face) => horiz_face.centroid,
         }
     }
 
     pub fn vertices(&self) -> CellFaceVertices {
         match &self.data {
-            CellFaceData::Vertical(vertical_face) => CellFaceVertices::Vertical([
-                indexing::VertexIndex {
-                    footprint: vertical_face.cell_footprint_edge.vertex_footprints[0],
-                    z: vertical_face.cell_index.z,
-                },
-                indexing::VertexIndex {
-                    footprint: vertical_face.cell_footprint_edge.vertex_footprints[0],
-                    z: vertical_face.cell_index.z + 1,
-                },
-                indexing::VertexIndex {
-                    footprint: vertical_face.cell_footprint_edge.vertex_footprints[1],
-                    z: vertical_face.cell_index.z,
-                },
-                indexing::VertexIndex {
-                    footprint: vertical_face.cell_footprint_edge.vertex_footprints[1],
-                    z: vertical_face.cell_index.z + 1,
-                },
-            ]),
-            CellFaceData::Horizontal(horizontal_face) => {
-                let z = horizontal_face.cell_index.z
-                    + match horizontal_face.direction {
-                        HorizontalSide::Up => 1,
-                        HorizontalSide::Down => 0,
-                    };
-                let vertex_footprints =
-                    horizontal_face.cell_index.footprint.vertices_right_handed();
-                CellFaceVertices::Horizontal([
-                    indexing::VertexIndex {
-                        footprint: vertex_footprints[0],
-                        z,
-                    },
-                    indexing::VertexIndex {
-                        footprint: vertex_footprints[1],
-                        z,
-                    },
-                    indexing::VertexIndex {
-                        footprint: vertex_footprints[2],
-                        z,
-                    },
-                ])
-            }
+            CellFaceData::Vert(vert_face) => CellFaceVertices::Vert(&vert_face.vertices),
+            CellFaceData::Horiz(horiz_face) => CellFaceVertices::Horiz(&horiz_face.vertices),
         }
     }
 }
 
-pub enum CellFaceVertices {
-    Vertical([indexing::VertexIndex; 4]),
-    Horizontal([indexing::VertexIndex; 3]),
+pub enum CellFaceVertices<'a> {
+    Vert(&'a [indexing::VertexIndex; 4]),
+    Horiz(&'a [indexing::VertexIndex; 3]),
 }
 
 /// Compute the mean of an iterator over numbers
@@ -1087,12 +1071,11 @@ mod test {
     use approx::assert_relative_eq;
 
     use super::*;
-    use crate::Matrix3;
 
     #[test]
     fn test_construct_z_lattice_zero_height() {
         let grid = Grid::new(Axis::new(0., 1., 29), Axis::new(0., 1., 32), 10);
-        let height = fields::HeightField::new(&grid, |_, _| 0.);
+        let height = fields::HorizScalarField::new(&grid, |_, _| 0.);
         let static_geometry = StaticGeometry::new(grid, &|x, y| 10. * x * y);
         let dynamic_geometry = DynamicGeometry::new(static_geometry, &height);
 
@@ -1121,7 +1104,7 @@ mod test {
     #[test]
     fn test_construct_z_lattice_flat() {
         let grid = Grid::new(Axis::new(0., 1., 29), Axis::new(0., 1., 32), 10);
-        let height = fields::HeightField::new(&grid, |_, _| 7.3);
+        let height = fields::HorizScalarField::new(&grid, |_, _| 7.3);
 
         let static_geometry = StaticGeometry::new(grid, &|_, _| 0.);
         let dynamic_geometry = DynamicGeometry::new(static_geometry, &height);
@@ -1154,7 +1137,7 @@ mod test {
             epsilon = 1e-8
         );
         assert_relative_eq!(cell.centroid.z, 7.3 / 10. * 0.5);
-        let expected_horizontal_centroid = cell_index
+        let expected_horiz_centroid = cell_index
             .footprint
             .vertices_right_handed()
             .into_iter()
@@ -1166,18 +1149,19 @@ mod test {
             })
             .sum::<Vector2>()
             / 3.;
-        assert_relative_eq!(expected_horizontal_centroid.x, cell.centroid.x);
-        assert_relative_eq!(expected_horizontal_centroid.y, cell.centroid.y);
+        assert_relative_eq!(expected_horiz_centroid.x, cell.centroid.x);
+        assert_relative_eq!(expected_horiz_centroid.y, cell.centroid.y);
     }
 
     #[test]
     fn test_construct_z_lattice_grade() {
         let grid = Grid::new(Axis::new(0., 1., 60), Axis::new(0., 1., 31), 10);
         let terrain = fields::Terrain::new(&grid, &|_, _| 0.);
-        let mut height = fields::HeightField::new(&grid, |_, _| 0.);
+        let mut height = fields::HorizScalarField::new(&grid, |_, _| 0.);
         for cell_footprint_index in indexing::iter_indices(grid.cell_footprint_indexing()) {
             let centroid = grid.compute_cell_footprint_centroid(cell_footprint_index);
-            *height.center_value_mut(cell_footprint_index) = 1. + centroid[0] + 2. * centroid[1];
+            *height.cell_footprint_value_mut(cell_footprint_index) =
+                1. + centroid[0] + 2. * centroid[1];
         }
 
         let z_lattice = ZLattice::new_averaging(&grid, &terrain, &height);
@@ -1215,190 +1199,6 @@ mod test {
     #[test]
     fn test_mean() {
         assert_relative_eq!(mean([0., 5., 10.].into_iter()).unwrap(), 5.);
-    }
-
-    #[test]
-    fn test_compute_shear_flat_geometry() {
-        let dynamic_geometry = make_flat_geometry();
-
-        // Zero velocity.
-        {
-            let velocity = fields::VelocityField::zeros(dynamic_geometry.grid().cell_indexing());
-            let shear = velocity.compute_shear(&dynamic_geometry);
-            approx::assert_abs_diff_eq!(
-                shear,
-                fields::ShearField::zeros(dynamic_geometry.grid().cell_indexing()),
-                epsilon = 1e-5
-            );
-        }
-
-        // Constant velocity.
-        {
-            let velocity =
-                fields::VelocityField::new(&dynamic_geometry, |_, _, _| Vector3::new(2., -1., 7.));
-            let shear = velocity.compute_shear(&dynamic_geometry);
-            approx::assert_abs_diff_eq!(
-                shear,
-                fields::ShearField::zeros(dynamic_geometry.grid().cell_indexing()),
-                epsilon = 1e-5
-            );
-        }
-
-        // Linearly increasing velocity.
-        {
-            let velocity = fields::VelocityField::new(&dynamic_geometry, |x, _, _| {
-                Vector3::new(2. * x, 0., 0.)
-            });
-            let shear = velocity.compute_shear(&dynamic_geometry);
-            let expected_shear = fields::ShearField::new(&dynamic_geometry, |_, _, _| {
-                Matrix3::new(2., 0., 0., 0., 0., 0., 0., 0., 0.)
-            });
-
-            for cell_index in indexing::iter_indices(dynamic_geometry.grid().cell_indexing()) {
-                if let CellClassification::Interior =
-                    dynamic_geometry.cell(cell_index).classification
-                {
-                    approx::assert_abs_diff_eq!(
-                        shear.cell_value(cell_index),
-                        expected_shear.cell_value(cell_index),
-                        epsilon = 1e-5
-                    );
-                }
-            }
-        }
-    }
-    #[test]
-    fn test_compute_laplacian_flat_geometry() {
-        let dynamic_geometry = make_flat_geometry();
-
-        // Zero velocity.
-        {
-            let velocity = fields::VelocityField::zeros(dynamic_geometry.grid().cell_indexing());
-            let laplacian = velocity.compute_laplacian(&dynamic_geometry);
-            approx::assert_abs_diff_eq!(
-                laplacian,
-                fields::VelocityField::zeros(dynamic_geometry.grid().cell_indexing()),
-                epsilon = 1e-5
-            );
-        }
-
-        // Constant velocity.
-        {
-            let velocity =
-                fields::VelocityField::new(&dynamic_geometry, |_, _, _| Vector3::new(2., -1., 7.));
-            let laplacian = velocity.compute_laplacian(&dynamic_geometry);
-            approx::assert_abs_diff_eq!(
-                laplacian,
-                fields::VelocityField::zeros(dynamic_geometry.grid().cell_indexing()),
-                epsilon = 1e-5
-            );
-        }
-
-        // Linearly increasing velocity.
-        {
-            let velocity = fields::VelocityField::new(&dynamic_geometry, |x, y, z| {
-                Vector3::new(2. * x - z, -z, y)
-            });
-            let laplacian = velocity.compute_laplacian(&dynamic_geometry);
-            let expected_laplacian =
-                fields::VelocityField::zeros(dynamic_geometry.grid().cell_indexing());
-
-            for cell_index in [
-                indexing::CellIndex {
-                    footprint: indexing::CellFootprintIndex {
-                        x: 2,
-                        y: 2,
-                        triangle: indexing::Triangle::LowerRight,
-                    },
-                    z: 2,
-                },
-                indexing::CellIndex {
-                    footprint: indexing::CellFootprintIndex {
-                        x: 2,
-                        y: 2,
-                        triangle: indexing::Triangle::UpperLeft,
-                    },
-                    z: 3,
-                },
-            ] {
-                if let CellClassification::Interior =
-                    dynamic_geometry.cell(cell_index).classification
-                {
-                    approx::assert_abs_diff_eq!(
-                        laplacian.cell_value(cell_index),
-                        expected_laplacian.cell_value(cell_index),
-                        epsilon = 1e-5
-                    );
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn test_compute_gradient_flat_geometry() {
-        test_compute_gradient_impl(&make_flat_geometry());
-    }
-
-    #[test]
-    fn test_compute_gradient_ramp_geometry() {
-        test_compute_gradient_impl(&make_ramp_geometry(false));
-        test_compute_gradient_impl(&make_ramp_geometry(true));
-    }
-
-    fn test_compute_gradient_impl(dynamic_geometry: &DynamicGeometry) {
-        // Zero pressure.
-        {
-            let pressure = fields::PressureField::zeros(dynamic_geometry.grid().vertex_indexing());
-            let gradient = pressure.compute_gradient(&dynamic_geometry);
-            approx::assert_abs_diff_eq!(
-                gradient,
-                fields::VelocityField::zeros(dynamic_geometry.grid().cell_indexing()),
-                epsilon = 1e-5
-            );
-        }
-
-        // Constant pressure.
-        {
-            let pressure = fields::PressureField::new(&dynamic_geometry, |_, _, _| 1.9);
-            let gradient = pressure.compute_gradient(&dynamic_geometry);
-            approx::assert_abs_diff_eq!(
-                gradient,
-                fields::VelocityField::zeros(dynamic_geometry.grid().cell_indexing()),
-                epsilon = 1e-5
-            );
-        }
-
-        // Linearly rising pressure.
-        {
-            let pressure = fields::PressureField::new(&dynamic_geometry, |_, _, z| 2. * z);
-            let gradient = pressure.compute_gradient(&dynamic_geometry);
-            approx::assert_abs_diff_eq!(
-                gradient,
-                fields::VelocityField::new(&dynamic_geometry, |_, _, _| Vector3::new(0., 0., 2.)),
-                epsilon = 1e-1
-            );
-        }
-    }
-
-    fn make_flat_geometry() -> DynamicGeometry {
-        let grid = Grid::new(Axis::new(0., 1., 8), Axis::new(0., 1., 8), 8);
-        let height = fields::HeightField::new(&grid, |_, _| 7.3);
-
-        let static_geometry = StaticGeometry::new(grid, &|_, _| 0.);
-        DynamicGeometry::new(static_geometry, &height)
-    }
-
-    fn make_ramp_geometry(swap_xy: bool) -> DynamicGeometry {
-        let mut x_axis = Axis::new(0., 1., 300);
-        let mut y_axis = Axis::new(0., 0.001, 1);
-        if swap_xy {
-            (x_axis, y_axis) = (y_axis, x_axis);
-        }
-        let grid = Grid::new(x_axis, y_axis, 100);
-        let height = fields::HeightField::new(&grid, |x, y| 7.3 * x + y + 1.);
-
-        let static_geometry = StaticGeometry::new(grid, &|x, y| 0.1 * (x + y));
-        DynamicGeometry::new(static_geometry, &height)
     }
 
     // #[test]
