@@ -35,9 +35,58 @@ pub trait Index: Copy + std::fmt::Debug + PartialEq + Eq {
     fn to_array_index(self) -> Self::ArrayIndex;
 }
 
-pub fn iter_indices<I: Indexing>(indexing: &I) -> impl Iterator<Item = I::Index> + '_ {
-    (0..indexing.len()).map(|flat_index| indexing.unflatten(flat_index))
+pub trait IntoIndexIterator {
+    type IntoIter;
+    type Item;
+
+    fn iter(self) -> Self::IntoIter;
 }
+
+pub struct IndexIterator<'a, I: Indexing> {
+    pos: usize,
+    indexing: &'a I,
+}
+
+impl<'a, I: Indexing> Iterator for IndexIterator<'a, I> {
+    type Item = I::Index;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.pos < self.indexing.len() {
+            let index = self.indexing.unflatten(self.pos);
+            self.pos += 1;
+            Some(index)
+        } else {
+            None
+        }
+    }
+}
+
+impl<'a, I: Indexing> IntoIndexIterator for &'a I {
+    type IntoIter = IndexIterator<'a, I>;
+    type Item = I::Index;
+
+    fn iter(self) -> Self::IntoIter {
+        IndexIterator {
+            pos: 0,
+            indexing: self,
+        }
+    }
+}
+
+// pub trait IterIndices: Indexing {
+//     type Index: Copy + std::fmt::Debug + PartialEq + Eq;
+
+//     fn iter_indices(&self) -> Self::Iterator;
+// }
+
+// impl<I: Indexing> IterIndices for I {
+//     type Index = <I as Indexing>::Index;
+//     type Iterator = impl Iterator;
+
+//     fn iter_indices(&self) -> Self::Iterator {
+//         (0..self.len()).map(self.unflatten)
+//     }
+// }
 
 pub fn flatten_array<I: Indexing>(
     indexing: &I,
@@ -1036,7 +1085,7 @@ mod test {
     }
 
     fn test_indexing_impl<I: Indexing>(indexing: &I) {
-        for (expected_flat_index, index) in iter_indices(indexing).enumerate() {
+        for (expected_flat_index, index) in indexing.iter().enumerate() {
             let flat_index = indexing.flatten(index);
             assert_eq!(expected_flat_index, flat_index);
         }

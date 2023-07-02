@@ -14,7 +14,7 @@ pub enum LinearSolveError {
     SingularMatrix,
 }
 
-/// The Gauss-Seidel method to solve a diagonally dominant linear system
+/// Use the Gauss-Seidel method to solve a diagonally dominant linear system
 ///
 /// Ripped off from `sprs`, which in turn was ripped off from:
 /// https://en.wikipedia.org/wiki/Gauss%E2%80%93Seidel_method#Algorithm

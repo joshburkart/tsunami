@@ -5,7 +5,7 @@ use pyo3::prelude::*;
 
 use crate::{
     fields,
-    indexing::{self, Index, Indexing},
+    indexing::{self, Index, Indexing, IntoIndexIterator},
     Array1, Array2, Array3, Float, Point2, Point3, UnitVector2, UnitVector3, Vector2, Vector3,
 };
 
@@ -78,7 +78,7 @@ impl Grid {
 
     pub fn make_cell_footprint_array<F: Fn(Float, Float) -> Float>(&self, f: F) -> Array3 {
         let mut centers = Array3::zeros(self.cell_footprint_indexing().shape());
-        for cell_footprint_index in indexing::iter_indices(self.cell_footprint_indexing()) {
+        for cell_footprint_index in self.cell_footprint_indexing().iter() {
             let centroid = self.compute_cell_footprint_centroid(cell_footprint_index);
             centers[cell_footprint_index.to_array_index()] = f(centroid[0], centroid[1]);
         }
@@ -87,7 +87,7 @@ impl Grid {
 
     pub fn make_vertex_footprint_array<F: Fn(Float, Float) -> Float>(&self, f: F) -> Array2 {
         let mut vertices = Array2::zeros(self.vertex_footprint_indexing().shape());
-        for vertex_footprint_index in indexing::iter_indices(self.vertex_footprint_indexing()) {
+        for vertex_footprint_index in self.vertex_footprint_indexing().iter() {
             vertices[vertex_footprint_index.to_array_index()] = f(
                 self.x_axis.vertices()[vertex_footprint_index.x],
                 self.y_axis.vertices()[vertex_footprint_index.y],
@@ -315,7 +315,7 @@ impl ZLattice {
         let mut lattice = Array3::uninit(vertex_indexing.shape());
         let mut spacings = Array2::uninit(grid.vertex_footprint_indexing().shape());
         let vertex_footprint_indexing = grid.vertex_footprint_indexing();
-        for vertex_footprint_index in indexing::iter_indices(vertex_footprint_indexing) {
+        for vertex_footprint_index in vertex_footprint_indexing.iter() {
             let terrain_height = terrain.vertex_value(vertex_footprint_index);
             let height = mean(
                 vertex_footprint_index
@@ -370,7 +370,7 @@ impl ZLattice {
         // Define the principal constraints, which specify that the average of the
         // heights at each cell footprint's three vertices be equal to the
         // height at the cell footprint center.
-        for cell_footprint_index in indexing::iter_indices(grid.cell_footprint_indexing()) {
+        for cell_footprint_index in grid.cell_footprint_indexing().iter() {
             let center_height = height.cell_footprint_value(cell_footprint_index);
             problem.add_row(
                 center_height..center_height,
@@ -419,7 +419,7 @@ impl ZLattice {
 
         // Add slack variables and associated constraints to effect an absolute value
         // objective function on the mesh Laplacian.
-        for vertex_footprint_index in indexing::iter_indices(grid.vertex_footprint_indexing()) {
+        for vertex_footprint_index in grid.vertex_footprint_indexing().iter() {
             let slack_variable = problem.add_column(1., (0.)..Float::INFINITY);
             let laplacian = compute_laplacian(vertex_footprint_index);
 
@@ -465,7 +465,7 @@ impl ZLattice {
         // Define the optimization objective, which specifies that the average of the
         // heights at each cell footprint's three vertices be as close as
         // possible in an L1 sense to the height at the cell footprint center.
-        for cell_footprint_index in indexing::iter_indices(grid.cell_footprint_indexing()) {
+        for cell_footprint_index in grid.cell_footprint_indexing().iter() {
             // Delta = 1/3 * (z1 + z2 + z3) - h
             let center_height = height.cell_footprint_value(cell_footprint_index);
             let center_height_val = problem.add_column(0., center_height..center_height);
@@ -597,7 +597,7 @@ impl DynamicGeometry {
         f: F,
     ) -> nd::Array4<V> {
         let mut cells = nd::Array4::<V>::uninit(self.grid().cell_indexing().shape());
-        for cell_index in indexing::iter_indices(self.grid().cell_indexing()) {
+        for cell_index in self.grid().cell_indexing().iter() {
             let centroid = self.cell(cell_index).centroid;
             cells[cell_index.to_array_index()] =
                 std::mem::MaybeUninit::new(f(centroid.x, centroid.y, centroid.z));
@@ -613,7 +613,7 @@ impl DynamicGeometry {
         for indexing::VertexIndex {
             footprint: indexing::VertexFootprintIndex { x, y },
             z,
-        } in indexing::iter_indices(self.grid().vertex_indexing())
+        } in self.grid().vertex_indexing().iter()
         {
             vertices[[x, y, z]] = std::mem::MaybeUninit::new(f(
                 self.grid().x_axis.vertices[x],
@@ -631,7 +631,8 @@ impl DynamicGeometry {
         let grid = static_geometry.grid();
         let cell_footprint_indexing = grid.cell_footprint_indexing();
         let cell_indexing = grid.cell_indexing();
-        indexing::iter_indices(cell_footprint_indexing)
+        cell_footprint_indexing
+            .iter()
             .map(move |cell_footprint_index| {
                 let cell_footprint_pairs =
                     cell_footprint_indexing.compute_footprint_pairs(cell_footprint_index);
@@ -1158,7 +1159,7 @@ mod test {
         let grid = Grid::new(Axis::new(0., 1., 60), Axis::new(0., 1., 31), 10);
         let terrain = fields::Terrain::new(&grid, &|_, _| 0.);
         let mut height = fields::HorizScalarField::new(&grid, |_, _| 0.);
-        for cell_footprint_index in indexing::iter_indices(grid.cell_footprint_indexing()) {
+        for cell_footprint_index in grid.cell_footprint_indexing().iter() {
             let centroid = grid.compute_cell_footprint_centroid(cell_footprint_index);
             *height.cell_footprint_value_mut(cell_footprint_index) =
                 1. + centroid[0] + 2. * centroid[1];

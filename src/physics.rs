@@ -1,6 +1,10 @@
 use pyo3::prelude::*;
 
-use crate::{fields, geom, indexing, math, Array1, Float};
+use crate::{
+    fields, geom,
+    indexing::{self, IntoIndexIterator},
+    linalg, Array1, Float,
+};
 
 const MIN_HEIGHT: Float = 1e-14;
 
@@ -17,8 +21,9 @@ pub struct Problem {
 
     pub fluid_density: Float,
     pub grav_accel: Float,
+    pub kinematic_viscosity: Float,
 
-    pub velocity_boundary_conditions: fields::HorizBoundaryConditions,
+    pub velocity_boundary_conditions: fields::BoundaryConditions,
     pub height_boundary_conditions: fields::HorizBoundaryConditions,
 }
 impl Default for Problem {
@@ -27,7 +32,14 @@ impl Default for Problem {
             rain_rate: None,
             fluid_density: 1000.,
             grav_accel: 9.8,
-            velocity_boundary_conditions: fields::HorizBoundaryConditions::hom_neumann(),
+            kinematic_viscosity: 1e-6,
+            velocity_boundary_conditions: fields::BoundaryConditions {
+                horiz: fields::HorizBoundaryConditions::hom_neumann(),
+                z: fields::BoundaryConditionPair {
+                    lower: fields::BoundaryCondition::HomDirichlet,
+                    upper: fields::BoundaryCondition::HomNeumann,
+                },
+            },
             height_boundary_conditions: fields::HorizBoundaryConditions::hom_neumann(),
         }
     }
@@ -92,16 +104,17 @@ impl Solver {
             self.dynamic_geometry.as_ref().unwrap().grid(),
             self.problem.rain_rate.as_ref(),
             &self.fields,
-            self.problem.velocity_boundary_conditions,
+            self.problem.velocity_boundary_conditions.horiz,
             self.problem.height_boundary_conditions,
         );
-        for cell_footprint_index in indexing::iter_indices(
-            self.dynamic_geometry
-                .as_ref()
-                .unwrap()
-                .grid()
-                .cell_footprint_indexing(),
-        ) {
+        for cell_footprint_index in self
+            .dynamic_geometry
+            .as_ref()
+            .unwrap()
+            .grid()
+            .cell_footprint_indexing()
+            .iter()
+        {
             let new_center = (self
                 .fields
                 .height
@@ -118,6 +131,7 @@ impl Solver {
             self.dynamic_geometry.take().unwrap().into_static_geometry(),
             &self.fields.height,
         ));
+        let dynamic_geometry = self.dynamic_geometry.as_ref().unwrap();
 
         // Interpolate velocity to new height map.
         // fields.velocity =
@@ -126,17 +140,34 @@ impl Solver {
 
         // Compute new pressure field.
         self.fields.hydrostatic_pressure =
-            compute_hydrostatic_pressure(&self.problem, self.dynamic_geometry.as_ref().unwrap());
+            compute_hydrostatic_pressure(&self.problem, dynamic_geometry);
         self.fields.pressure = self.pressure_solver.solve(
             &self.problem,
-            self.dynamic_geometry.as_ref().unwrap(),
+            dynamic_geometry,
             &self.fields.velocity,
             &self.fields.hydrostatic_pressure,
             &self.fields.pressure,
         );
 
         // Perform velocity update.
-        // TODO
+        let shear = self
+            .fields
+            .velocity
+            .compute_gradient(dynamic_geometry, &self.problem.velocity_boundary_conditions);
+        let mut dvdt =
+            self.fields.pressure.compute_gradient(&dynamic_geometry) / self.problem.fluid_density;
+        dvdt -= crate::Vector3::new(0., 0., self.problem.grav_accel);
+        dvdt += &(self.problem.kinematic_viscosity
+            * &self.fields.velocity.compute_laplacian(
+                &dynamic_geometry,
+                &shear,
+                &self.problem.velocity_boundary_conditions,
+            ));
+        dvdt -= &self
+            .fields
+            .velocity
+            .advect_upwind(dynamic_geometry, &self.problem.velocity_boundary_conditions);
+        self.fields.velocity += &(dt * &dvdt);
     }
 }
 #[pymethods]
@@ -147,20 +178,27 @@ impl Solver {
     }
 
     #[getter]
-    pub fn z_lattice<'py>(&self, py: Python<'py>) -> &'py numpy::PyArray3<Float> {
+    #[pyo3(name = "z_lattice")]
+    pub fn z_lattice_py<'py>(&self, py: Python<'py>) -> &'py numpy::PyArray3<Float> {
         self.dynamic_geometry.as_ref().unwrap().z_lattice_py(py)
     }
 
     #[getter]
     #[pyo3(name = "pressure")]
     pub fn pressure_py<'py>(&self, py: Python<'py>) -> &'py numpy::PyArray3<Float> {
-        self.fields.pressure.pressure_py(py)
+        self.fields.pressure.values_py(py)
+    }
+
+    #[getter]
+    #[pyo3(name = "velocity")]
+    pub fn velocity_py<'py>(&self, py: Python<'py>) -> &'py numpy::PyArray5<Float> {
+        self.fields.velocity.values_py(py)
     }
 
     #[getter]
     #[pyo3(name = "hydrostatic_pressure")]
     pub fn hydrostatic_pressure_py<'py>(&self, py: Python<'py>) -> &'py numpy::PyArray3<Float> {
-        self.fields.hydrostatic_pressure.pressure_py(py)
+        self.fields.hydrostatic_pressure.values_py(py)
     }
 
     #[pyo3(name = "step")]
@@ -227,7 +265,7 @@ pub fn compute_height_time_deriv(
     );
 
     if let Some(rain_rate) = rain_rate {
-        for cell_footprint_index in indexing::iter_indices(grid.cell_footprint_indexing()) {
+        for cell_footprint_index in grid.cell_footprint_indexing().iter() {
             *dhdt.cell_footprint_value_mut(cell_footprint_index) +=
                 rain_rate.cell_footprint_value(cell_footprint_index);
         }
@@ -265,7 +303,7 @@ impl PressureSolver {
             PressureSolver::GaussSeidel {
                 max_iters,
                 rel_error_tol,
-            } => math::solve_linear_system_gauss_seidel(
+            } => linalg::solve_linear_system_gauss_seidel(
                 pressure_matrix.view(),
                 guess_pressure.flatten(dynamic_geometry.grid().vertex_indexing()),
                 pressure_rhs,
@@ -273,11 +311,11 @@ impl PressureSolver {
                 rel_error_tol,
             ),
             PressureSolver::Direct => {
-                math::solve_linear_system_direct(pressure_matrix.to_dense(), pressure_rhs)
+                linalg::solve_linear_system_direct(pressure_matrix.to_dense(), pressure_rhs)
             }
         };
         let flattened_pressure = match flattened_pressure {
-            Err(math::LinearSolveError::NotDiagonallyDominant {
+            Err(linalg::LinearSolveError::NotDiagonallyDominant {
                 row_index,
                 abs_diag,
                 sum_abs_row,
@@ -380,7 +418,7 @@ impl PressureSolver {
         let vertex_indexing = dynamic_geometry.grid().vertex_indexing();
 
         let mut rhs = fields::ScalarField::zeros(vertex_indexing);
-        for vertex in indexing::iter_indices(vertex_indexing) {
+        for vertex in vertex_indexing.iter() {
             *rhs.vertex_value_mut(vertex) = {
                 use indexing::VertexClassification;
 
@@ -418,7 +456,7 @@ impl Default for PressureSolver {
     fn default() -> Self {
         Self::GaussSeidel {
             max_iters: 1000,
-            rel_error_tol: 1e-3,
+            rel_error_tol: 1e-2,
         }
     }
 }
@@ -429,9 +467,7 @@ pub fn compute_hydrostatic_pressure(
 ) -> fields::ScalarField {
     let mut hydrostatic_pressure =
         fields::ScalarField::zeros(dynamic_geometry.grid().vertex_indexing());
-    for vertex_footprint in
-        indexing::iter_indices(dynamic_geometry.grid().vertex_footprint_indexing())
-    {
+    for vertex_footprint in dynamic_geometry.grid().vertex_footprint_indexing().iter() {
         let surface_z = dynamic_geometry
             .z_lattice()
             .vertex_value(indexing::VertexIndex {
@@ -494,9 +530,7 @@ mod tests {
         let problem = Problem::default();
 
         let pressure = compute_hydrostatic_pressure(&problem, &dynamic_geometry);
-        for vertex_footprint in
-            indexing::iter_indices(dynamic_geometry.grid().vertex_footprint_indexing())
-        {
+        for vertex_footprint in dynamic_geometry.grid().vertex_footprint_indexing().iter() {
             approx::assert_abs_diff_eq!(
                 pressure.vertex_value(indexing::VertexIndex {
                     footprint: vertex_footprint,

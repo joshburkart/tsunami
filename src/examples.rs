@@ -7,20 +7,20 @@ use crate::{fields, geom, physics, Vector3};
 
 #[pyfunction]
 pub fn advection_1d(num_x_cells: usize, num_z_cells: usize) -> physics::Solver {
-    let x_axis = geom::Axis::new(0., 1., num_x_cells);
+    let x_axis = geom::Axis::new(0., 5., num_x_cells);
     let y_axis = geom::Axis::new(0., 0.01, 2);
     let grid = geom::Grid::new(x_axis, y_axis, num_z_cells);
     let static_geometry = geom::StaticGeometry::new(grid, &|_, _| 0.);
 
     let initial_height = fields::HorizScalarField::new(static_geometry.grid(), |x, _| {
-        (-((x - 0.7) / (0.05)).powi(2)).exp() + 0.1
+        0.1 * (-((x - 2.) / (0.5)).powi(2)).exp() + 1.
     });
     let initial_dynamic_geometry = geom::DynamicGeometry::new(static_geometry, &initial_height);
 
     let problem = physics::Problem::default();
 
     let velocity = fields::VectorField::new(&initial_dynamic_geometry, |_, _, _| {
-        Vector3::new(-0.03, 0., 0.)
+        Vector3::new(0., 0., 0.)
     });
     physics::Solver::new(
         problem,

@@ -4,7 +4,7 @@ mod examples;
 mod fields;
 mod geom;
 mod indexing;
-mod math;
+mod linalg;
 mod physics;
 
 use nalgebra as na;
@@ -24,6 +24,7 @@ type Point3 = na::Point3<Float>;
 type Array1 = nd::Array1<Float>;
 type Array2 = nd::Array2<Float>;
 type Array3 = nd::Array3<Float>;
+type Array5 = nd::Array5<Float>;
 
 #[pymodule]
 fn riversim(_py: Python<'_>, m: &PyModule) -> PyResult<()> {
