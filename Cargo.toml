@@ -13,6 +13,7 @@ itertools = "0.10.5"
 nalgebra = "0.32.2"
 ndarray = {version = "0.15.4", features = ["approx-0_5"]}
 ndarray-linalg = {version = "0.16.0", features = ["openblas-system"]}
+num-traits = "0.2.15"
 numpy = "0.18.0"
 pyo3 = {version = "0.18.3", features = ["extension-module"]}
 sprs = "0.11.1"

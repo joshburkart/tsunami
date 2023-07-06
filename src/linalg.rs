@@ -62,7 +62,7 @@ pub fn solve_linear_system_gauss_seidel(
                 }
             }
             let diag = diag.expect("Gauss-Seidel requires a non-zero diagonal");
-            if diag.abs() + 1e-8 < sum_abs_row {
+            if (diag.abs() - sum_abs_row) / diag.abs() < -1e-6 {
                 return Err(LinearSolveError::NotDiagonallyDominant {
                     row_index,
                     abs_diag: diag.abs(),

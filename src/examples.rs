@@ -13,7 +13,8 @@ pub fn advection_1d(num_x_cells: usize, num_z_cells: usize) -> physics::Solver {
     let static_geometry = geom::StaticGeometry::new(grid, &|_, _| 0.);
 
     let initial_height = fields::HorizScalarField::new(static_geometry.grid(), |x, _| {
-        0.1 * (-((x - 2.) / (0.5)).powi(2)).exp() + 1.
+        0.1 * (x * std::f64::consts::PI / 5.).cos() + 1.
+        // 0.1 * (-((x - 0.2) / (0.5)).powi(2)).exp() + 1.
     });
     let initial_dynamic_geometry = geom::DynamicGeometry::new(static_geometry, &initial_height);
 
@@ -24,7 +25,7 @@ pub fn advection_1d(num_x_cells: usize, num_z_cells: usize) -> physics::Solver {
     });
     physics::Solver::new(
         problem,
-        physics::PressureSolver::default(),
+        physics::PressureSolver::Direct,
         initial_dynamic_geometry,
         initial_height,
         velocity,

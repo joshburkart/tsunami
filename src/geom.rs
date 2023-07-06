@@ -76,8 +76,11 @@ impl Grid {
             .cell_footprint_indexing()
     }
 
-    pub fn make_cell_footprint_array<F: Fn(Float, Float) -> Float>(&self, f: F) -> Array3 {
-        let mut centers = Array3::zeros(self.cell_footprint_indexing().shape());
+    pub fn make_cell_footprint_array<V: fields::Value, F: Fn(Float, Float) -> V>(
+        &self,
+        f: F,
+    ) -> nd::Array3<V> {
+        let mut centers = nd::Array3::zeros(self.cell_footprint_indexing().shape());
         for cell_footprint_index in self.cell_footprint_indexing().iter() {
             let centroid = self.compute_cell_footprint_centroid(cell_footprint_index);
             centers[cell_footprint_index.to_array_index()] = f(centroid[0], centroid[1]);
@@ -592,10 +595,7 @@ impl DynamicGeometry {
         &self.cells[index.to_array_index()]
     }
 
-    pub fn make_cell_array<V: Default, F: Fn(Float, Float, Float) -> V>(
-        &self,
-        f: F,
-    ) -> nd::Array4<V> {
+    pub fn make_cell_array<V, F: Fn(Float, Float, Float) -> V>(&self, f: F) -> nd::Array4<V> {
         let mut cells = nd::Array4::<V>::uninit(self.grid().cell_indexing().shape());
         for cell_index in self.grid().cell_indexing().iter() {
             let centroid = self.cell(cell_index).centroid;
@@ -660,6 +660,18 @@ impl DynamicGeometry {
                                     z_lattice,
                                     cell_index,
                                     cell_footprint_pairs,
+                                ),
+                                lower_z_face: Self::compute_horiz_face(
+                                    static_geometry,
+                                    z_lattice,
+                                    cell_index,
+                                    HorizSide::Down,
+                                ),
+                                upper_z_face: Self::compute_horiz_face(
+                                    static_geometry,
+                                    z_lattice,
+                                    cell_index,
+                                    HorizSide::Up,
                                 ),
                                 classification: cell_indexing.classify_cell(cell_index),
                             },
@@ -817,7 +829,7 @@ impl DynamicGeometry {
             HorizSide::Up => {
                 let z_plus_1 = cell_index.z + 1;
                 if z_plus_1 >= static_geometry.grid().cell_indexing().num_z_cells() {
-                    indexing::CellNeighbor::ZBoundary(indexing::Boundary::Lower)
+                    indexing::CellNeighbor::ZBoundary(indexing::Boundary::Upper)
                 } else {
                     indexing::CellNeighbor::Cell(indexing::CellIndex {
                         z: z_plus_1,
@@ -832,7 +844,7 @@ impl DynamicGeometry {
                         ..cell_index
                     })
                 } else {
-                    indexing::CellNeighbor::ZBoundary(indexing::Boundary::Upper)
+                    indexing::CellNeighbor::ZBoundary(indexing::Boundary::Lower)
                 }
             }
         };
@@ -953,6 +965,8 @@ pub struct Cell {
     pub volume: Float,
     pub centroid: Point3,
     pub faces: [CellFace; 5],
+    pub lower_z_face: CellFace,
+    pub upper_z_face: CellFace,
     pub classification: indexing::CellClassification,
 }
 
