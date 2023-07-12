@@ -1,5 +1,5 @@
 use crate::{
-    fields::{BoundaryCondition, BoundaryConditions, Field, Value},
+    fields::{BoundaryCondition, BoundaryConditions, Value, VolField},
     geom,
     indexing::{self, IntoIndexIterator},
     Float, Point3, UnitVector3,
@@ -27,9 +27,9 @@ pub fn compute_field_differential<V: Value, DV: Value, D: DifferentialOpComputer
     dynamic_geometry: &geom::DynamicGeometry,
     boundary_conditions: &BoundaryConditions<V>,
     computer: D,
-) -> Field<DV> {
+) -> VolField<DV> {
     let cell_indexing = dynamic_geometry.grid().cell_indexing();
-    let mut differential_field = Field::<DV>::zeros(cell_indexing);
+    let mut differential_field = VolField::<DV>::zeros(cell_indexing);
     for cell_index in cell_indexing.iter() {
         *differential_field.cell_value_mut(cell_index) =
             compute_cell_differential(dynamic_geometry, &computer, cell_index, boundary_conditions);

@@ -631,8 +631,14 @@ impl CellIndexing {
         self.num_z_cells
     }
 
-    pub fn column(&self, footprint: CellFootprintIndex) -> impl Iterator<Item = CellIndex> {
-        (0..self.num_z_cells).map(move |z| CellIndex { footprint, z })
+    pub fn column(
+        &self,
+        cell_footprint_index: CellFootprintIndex,
+    ) -> impl Iterator<Item = CellIndex> {
+        (0..self.num_z_cells).map(move |z| CellIndex {
+            footprint: cell_footprint_index,
+            z,
+        })
     }
 
     pub fn classify_cell(&self, cell_index: CellIndex) -> CellClassification {

@@ -12,20 +12,21 @@ pub fn advection_1d(num_x_cells: usize, num_z_cells: usize) -> physics::Solver {
     let grid = geom::Grid::new(x_axis, y_axis, num_z_cells);
     let static_geometry = geom::StaticGeometry::new(grid, &|_, _| 0.);
 
-    let initial_height = fields::HorizScalarField::new(static_geometry.grid(), |x, _| {
-        0.1 * (x * std::f64::consts::PI / 5.).cos() + 1.
-        // 0.1 * (-((x - 0.2) / (0.5)).powi(2)).exp() + 1.
+    let initial_height = fields::AreaScalarField::new(static_geometry.grid(), |x, _| {
+        // 0.1 * (x * std::f64::consts::PI / 5.).cos() + 1.
+        0.3 * (-((x - 2.5) / (0.9)).powi(2)).exp() + 0.8
     });
     let initial_dynamic_geometry = geom::DynamicGeometry::new(static_geometry, &initial_height);
 
-    let problem = physics::Problem::default();
+    let mut problem = physics::Problem::default();
+    problem.kinematic_viscosity = 1e-4;
 
-    let velocity = fields::VectorField::new(&initial_dynamic_geometry, |_, _, _| {
+    let velocity = fields::VolVectorField::new(&initial_dynamic_geometry, |_, _, _| {
         Vector3::new(0., 0., 0.)
     });
     physics::Solver::new(
         problem,
-        physics::PressureSolver::Direct,
+        physics::PressureSolver::default(),
         initial_dynamic_geometry,
         initial_height,
         velocity,
@@ -39,12 +40,12 @@ pub fn singularity_1d(num_x_cells: usize, num_z_cells: usize) -> physics::Solver
     let grid = geom::Grid::new(x_axis, y_axis, num_z_cells);
     let static_geometry = geom::StaticGeometry::new(grid, &|_, _| 0.);
 
-    let initial_height = fields::HorizScalarField::new(static_geometry.grid(), |_, _| 1.);
+    let initial_height = fields::AreaScalarField::new(static_geometry.grid(), |_, _| 1.);
     let initial_dynamic_geometry = geom::DynamicGeometry::new(static_geometry, &initial_height);
 
     let problem = physics::Problem::default();
 
-    let velocity = fields::VectorField::new(&initial_dynamic_geometry, |x, _, _| {
+    let velocity = fields::VolVectorField::new(&initial_dynamic_geometry, |x, _, _| {
         Vector3::new(-(x / 0.5) * (-(x / 0.5).powi(2)).exp(), 0., 0.)
     });
     physics::Solver::new(
@@ -63,12 +64,12 @@ pub fn uniform(num_x_cells: usize, num_y_cells: usize, num_z_cells: usize) -> ph
     let grid = geom::Grid::new(x_axis, y_axis, num_z_cells);
     let static_geometry = geom::StaticGeometry::new(grid, &|_, _| 0.);
 
-    let initial_height = fields::HorizScalarField::new(static_geometry.grid(), |_, _| 1.);
+    let initial_height = fields::AreaScalarField::new(static_geometry.grid(), |_, _| 1.);
     let initial_dynamic_geometry = geom::DynamicGeometry::new(static_geometry, &initial_height);
 
     let problem = physics::Problem::default();
 
-    let velocity = fields::VectorField::new(&initial_dynamic_geometry, |_, _, _| {
+    let velocity = fields::VolVectorField::new(&initial_dynamic_geometry, |_, _, _| {
         Vector3::new(0., 0., 0.)
     });
     physics::Solver::new(
@@ -88,7 +89,7 @@ mod test {
     fn test_advection_1d() {
         let mut solver = advection_1d(30, 3);
         for _ in 0..10 {
-            solver.step(0.01);
+            solver.step(0.001);
         }
     }
 

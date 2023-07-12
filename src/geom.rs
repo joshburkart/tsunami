@@ -303,7 +303,7 @@ impl ZLattice {
     pub fn new_lp(
         grid: &Grid,
         terrain: &fields::Terrain,
-        height: &fields::HorizScalarField,
+        height: &fields::AreaScalarField,
     ) -> Self {
         Self::new_lp_first_pass(grid, terrain, height)
             .unwrap_or_else(|_| Self::new_lp_second_pass(grid, terrain, height))
@@ -312,7 +312,7 @@ impl ZLattice {
     pub fn new_averaging(
         grid: &Grid,
         terrain: &fields::Terrain,
-        height: &fields::HorizScalarField,
+        height: &fields::AreaScalarField,
     ) -> Self {
         let vertex_indexing = grid.vertex_indexing();
         let mut lattice = Array3::uninit(vertex_indexing.shape());
@@ -361,7 +361,7 @@ impl ZLattice {
     fn new_lp_first_pass(
         grid: &Grid,
         terrain: &fields::Terrain,
-        height: &fields::HorizScalarField,
+        height: &fields::AreaScalarField,
     ) -> Result<Self, highs::HighsModelStatus> {
         let mut problem = highs::RowProblem::new();
 
@@ -456,7 +456,7 @@ impl ZLattice {
     fn new_lp_second_pass(
         grid: &Grid,
         terrain: &fields::Terrain,
-        height: &fields::HorizScalarField,
+        height: &fields::AreaScalarField,
     ) -> Self {
         let mut problem = highs::RowProblem::new();
 
@@ -561,7 +561,7 @@ pub struct DynamicGeometry {
     cells: nd::Array<Cell, <indexing::CellIndex as indexing::Index>::ArrayIndex>,
 }
 impl DynamicGeometry {
-    pub fn new(static_geometry: StaticGeometry, height: &fields::HorizScalarField) -> Self {
+    pub fn new(static_geometry: StaticGeometry, height: &fields::AreaScalarField) -> Self {
         let z_lattice =
             ZLattice::new_averaging(static_geometry.grid(), static_geometry.terrain(), &height);
         let mut cells = nd::Array::uninit(static_geometry.grid().cell_indexing().shape());
@@ -1090,7 +1090,7 @@ mod test {
     #[test]
     fn test_construct_z_lattice_zero_height() {
         let grid = Grid::new(Axis::new(0., 1., 29), Axis::new(0., 1., 32), 10);
-        let height = fields::HorizScalarField::new(&grid, |_, _| 0.);
+        let height = fields::AreaScalarField::new(&grid, |_, _| 0.);
         let static_geometry = StaticGeometry::new(grid, &|x, y| 10. * x * y);
         let dynamic_geometry = DynamicGeometry::new(static_geometry, &height);
 
@@ -1119,7 +1119,7 @@ mod test {
     #[test]
     fn test_construct_z_lattice_flat() {
         let grid = Grid::new(Axis::new(0., 1., 29), Axis::new(0., 1., 32), 10);
-        let height = fields::HorizScalarField::new(&grid, |_, _| 7.3);
+        let height = fields::AreaScalarField::new(&grid, |_, _| 7.3);
 
         let static_geometry = StaticGeometry::new(grid, &|_, _| 0.);
         let dynamic_geometry = DynamicGeometry::new(static_geometry, &height);
@@ -1172,7 +1172,7 @@ mod test {
     fn test_construct_z_lattice_grade() {
         let grid = Grid::new(Axis::new(0., 1., 60), Axis::new(0., 1., 31), 10);
         let terrain = fields::Terrain::new(&grid, &|_, _| 0.);
-        let mut height = fields::HorizScalarField::new(&grid, |_, _| 0.);
+        let mut height = fields::AreaScalarField::new(&grid, |_, _| 0.);
         for cell_footprint_index in grid.cell_footprint_indexing().iter() {
             let centroid = grid.compute_cell_footprint_centroid(cell_footprint_index);
             *height.cell_footprint_value_mut(cell_footprint_index) =

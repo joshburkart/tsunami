@@ -78,7 +78,8 @@ impl<V: Value> VertBoundaryFieldPair<V> {
 pub enum VertBoundaryField<V: Value> {
     HomDirichlet,
     HomNeumann,
-    InhomNeumann(HorizField<V>),
+    InhomNeumann(AreaField<V>),
+    Kinematic(AreaScalarField),
 }
 impl<V: Value> VertBoundaryField<V> {
     pub fn boundary_condition(
@@ -91,6 +92,9 @@ impl<V: Value> VertBoundaryField<V> {
             VertBoundaryField::InhomNeumann(horiz_field) => BoundaryCondition::InhomNeumann(
                 horiz_field.cell_footprint_value(cell_footprint_index),
             ),
+            VertBoundaryField::Kinematic(dhdt) => {
+                BoundaryCondition::Kinematic(dhdt.cell_footprint_value(cell_footprint_index))
+            }
         }
     }
 }
@@ -99,6 +103,7 @@ pub enum BoundaryCondition<V: Value> {
     HomDirichlet,
     HomNeumann,
     InhomNeumann(V),
+    Kinematic(Float),
 }
 
 pub trait Value:
@@ -114,6 +119,7 @@ pub trait Value:
     + std::ops::Sub<Self, Output = Self>
     + std::ops::AddAssign<Self>
     + std::ops::SubAssign<Self>
+    + std::ops::Neg<Output = Self>
 {
 }
 impl Value for Float {}
@@ -122,11 +128,11 @@ impl Value for Vector3 {}
 impl Value for Matrix3 {}
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct Field<V: Value> {
+pub struct VolField<V: Value> {
     /// Indexed by [`indexing::CellIndexing`]
     cells: nd::Array4<V>,
 }
-impl<V: Value> Field<V> {
+impl<V: Value> VolField<V> {
     pub fn new<F: Fn(Float, Float, Float) -> V>(
         dynamic_geometry: &geom::DynamicGeometry,
         f: F,
@@ -150,14 +156,14 @@ impl<V: Value> Field<V> {
         &mut self.cells[cell_index.to_array_index()]
     }
 
-    pub fn map<OV: Value, F: Fn(&V) -> OV>(&self, f: F) -> Field<OV> {
-        Field {
+    pub fn map<OV: Value, F: Fn(&V) -> OV>(&self, f: F) -> VolField<OV> {
+        VolField {
             cells: self.cells.map(f),
         }
     }
 }
-impl<V: Value> std::ops::Div<Float> for Field<V> {
-    type Output = Field<V>;
+impl<V: Value> std::ops::Div<Float> for VolField<V> {
+    type Output = VolField<V>;
 
     fn div(self, rhs: Float) -> Self::Output {
         Self {
@@ -165,43 +171,59 @@ impl<V: Value> std::ops::Div<Float> for Field<V> {
         }
     }
 }
-impl<V: Value> std::ops::Mul<&Field<V>> for Float {
-    type Output = Field<V>;
+impl<V: Value> std::ops::Div<Float> for &VolField<V> {
+    type Output = VolField<V>;
 
-    fn mul(self, rhs: &Field<V>) -> Self::Output {
+    fn div(self, rhs: Float) -> Self::Output {
+        VolField {
+            cells: &self.cells / rhs,
+        }
+    }
+}
+impl<V: Value> std::ops::Mul<&VolField<V>> for Float {
+    type Output = VolField<V>;
+
+    fn mul(self, rhs: &VolField<V>) -> Self::Output {
         let mut cells = rhs.cells.clone();
         for cell in &mut cells {
             *cell *= self;
         }
-        Field { cells }
+        VolField { cells }
     }
 }
-impl<V: Value> std::ops::SubAssign<V> for Field<V> {
+impl<V: Value> std::ops::SubAssign<V> for VolField<V> {
     fn sub_assign(&mut self, rhs: V) {
         for cell_value in &mut self.cells {
             *cell_value -= rhs;
         }
     }
 }
-impl<V: Value> std::ops::AddAssign<&Field<V>> for Field<V> {
-    fn add_assign(&mut self, rhs: &Field<V>) {
+impl<V: Value> std::ops::AddAssign<&VolField<V>> for VolField<V> {
+    fn add_assign(&mut self, rhs: &VolField<V>) {
         self.cells += &rhs.cells;
     }
 }
-impl<V: Value> std::ops::SubAssign<&Field<V>> for Field<V> {
-    fn sub_assign(&mut self, rhs: &Field<V>) {
+impl<V: Value> std::ops::SubAssign<&VolField<V>> for VolField<V> {
+    fn sub_assign(&mut self, rhs: &VolField<V>) {
         self.cells -= &rhs.cells;
     }
 }
-impl<V: Value> std::ops::MulAssign<Float> for Field<V> {
+impl<V: Value> std::ops::MulAssign<Float> for VolField<V> {
     fn mul_assign(&mut self, rhs: Float) {
         for cell_value in &mut self.cells {
             *cell_value *= rhs;
         }
     }
 }
+impl<V: Value> std::ops::Neg for VolField<V> {
+    type Output = Self;
+
+    fn neg(self) -> Self::Output {
+        Self { cells: -self.cells }
+    }
+}
 #[cfg(test)]
-impl<V: Value> approx::AbsDiffEq for Field<V>
+impl<V: Value> approx::AbsDiffEq for VolField<V>
 where
     V: approx::AbsDiffEq<V, Epsilon = Float>,
 {
@@ -216,15 +238,15 @@ where
     }
 }
 
-pub type ScalarField = Field<Float>;
-impl ScalarField {
+pub type VolScalarField = VolField<Float>;
+impl VolScalarField {
     pub fn gradient(
         &self,
         dynamic_geometry: &geom::DynamicGeometry,
         boundary_conditions: &BoundaryConditions<Float>,
-    ) -> VectorField {
+    ) -> VolVectorField {
         struct GradientComputer<'a> {
-            scalar_field: &'a ScalarField,
+            scalar_field: &'a VolScalarField,
         }
         impl derivs::DifferentialOpComputer<Float, Vector3> for GradientComputer<'_> {
             fn compute_interior_face_value(
@@ -262,6 +284,7 @@ impl ScalarField {
                                     + self.scalar_field.cell_value(block_paired_cell.index))
                                 + displ.norm() * boundary_deriv)
                     }
+                    BoundaryCondition::Kinematic(_) => unimplemented!(),
                 }
             }
         }
@@ -286,15 +309,15 @@ impl ScalarField {
     }
 }
 
-pub type VectorField = Field<Vector3>;
-impl VectorField {
+pub type VolVectorField = VolField<Vector3>;
+impl VolVectorField {
     pub fn gradient(
         &self,
         dynamic_geometry: &geom::DynamicGeometry,
         boundary_conditions: &BoundaryConditions<Vector3>,
-    ) -> TensorField {
+    ) -> VolTensorField {
         struct GradientComputer<'a> {
-            vector_field: &'a VectorField,
+            vector_field: &'a VolVectorField,
         }
         impl derivs::DifferentialOpComputer<Vector3, Matrix3> for GradientComputer<'_> {
             fn compute_interior_face_value(
@@ -327,6 +350,12 @@ impl VectorField {
                             .transpose()
                     }
                     BoundaryCondition::InhomNeumann(_) => unimplemented!(),
+                    BoundaryCondition::Kinematic(dhdt) => {
+                        let cell_value = self.vector_field.cell_value(cell.index);
+                        let face_value =
+                            compute_kinematic_face_velocity_value(cell_value, dhdt, outward_normal);
+                        outward_normal.into_inner() * face_value.transpose()
+                    }
                 }
             }
         }
@@ -341,12 +370,12 @@ impl VectorField {
     pub fn laplacian(
         &self,
         dynamic_geometry: &geom::DynamicGeometry,
-        gradient: &TensorField,
+        gradient: &VolTensorField,
         boundary_conditions: &BoundaryConditions<Vector3>,
     ) -> Self {
         struct LaplacianComputer<'a> {
-            vector_field: &'a VectorField,
-            gradient_field: &'a TensorField,
+            vector_field: &'a VolVectorField,
+            gradient_field: &'a VolTensorField,
         }
 
         impl derivs::DifferentialOpComputer<Vector3, Vector3> for LaplacianComputer<'_> {
@@ -372,21 +401,32 @@ impl VectorField {
                 &self,
                 cell: &geom::Cell,
                 block_paired_cell: &geom::Cell,
-                _outward_normal: UnitVector3,
+                outward_normal: UnitVector3,
                 face_centroid: Point3,
                 boundary_condition: BoundaryCondition<Vector3>,
             ) -> Vector3 {
                 match boundary_condition {
                     BoundaryCondition::HomDirichlet => {
                         // TODO: 0.25?
-                        -0.5 * (self.vector_field.cell_value(cell.index)
-                            + self.vector_field.cell_value(block_paired_cell.index))
+                        let cell_value = 0.5
+                            * (self.vector_field.cell_value(cell.index)
+                                + self.vector_field.cell_value(block_paired_cell.index));
+                        -cell_value
                             / (face_centroid.coords
                                 - 0.5 * (cell.centroid.coords + block_paired_cell.centroid.coords))
                                 .norm()
                     }
                     BoundaryCondition::HomNeumann => Vector3::zeros(),
                     BoundaryCondition::InhomNeumann(_) => unimplemented!(),
+                    BoundaryCondition::Kinematic(dhdt) => {
+                        let cell_value = self.vector_field.cell_value(cell.index);
+                        let face_value =
+                            compute_kinematic_face_velocity_value(cell_value, dhdt, outward_normal);
+                        (face_value - cell_value)
+                            / (face_centroid.coords
+                                - 0.5 * (cell.centroid.coords + block_paired_cell.centroid.coords))
+                                .norm()
+                    }
                 }
             }
         }
@@ -407,7 +447,7 @@ impl VectorField {
         boundary_conditions: &BoundaryConditions<Vector3>,
     ) -> Self {
         struct AdvectionComputer<'a> {
-            velocity: &'a VectorField,
+            velocity: &'a VolVectorField,
         }
         impl derivs::DifferentialOpComputer<Vector3, Vector3> for AdvectionComputer<'_> {
             fn compute_interior_face_value(
@@ -446,6 +486,10 @@ impl VectorField {
                             + self.velocity.cell_value(block_paired_cell.index))
                     }
                     BoundaryCondition::InhomNeumann(_) => unimplemented!(),
+                    BoundaryCondition::Kinematic(dhdt) => {
+                        let cell_value = self.velocity.cell_value(cell.index);
+                        compute_kinematic_face_velocity_value(cell_value, dhdt, outward_normal)
+                    }
                 };
 
                 face_velocity.dot(&outward_normal) * face_velocity
@@ -459,8 +503,8 @@ impl VectorField {
         )
     }
 
-    pub fn column_average(&self) -> HorizVectorField {
-        HorizVectorField {
+    pub fn column_average(&self) -> AreaVectorField {
+        AreaVectorField {
             cell_footprints: self
                 .cells
                 .mapv(|velocity| na::Vector2::new(velocity.x, velocity.y))
@@ -487,15 +531,15 @@ impl VectorField {
     }
 }
 
-pub type TensorField = Field<Matrix3>;
-impl TensorField {
+pub type VolTensorField = VolField<Matrix3>;
+impl VolTensorField {
     pub fn divergence(
         &self,
         dynamic_geometry: &geom::DynamicGeometry,
         boundary_conditions: &BoundaryConditions<Matrix3>,
-    ) -> VectorField {
+    ) -> VolVectorField {
         struct DivergenceComputer<'a> {
-            tensor_field: &'a TensorField,
+            tensor_field: &'a VolTensorField,
         }
 
         impl derivs::DifferentialOpComputer<Matrix3, Vector3> for DivergenceComputer<'_> {
@@ -526,6 +570,7 @@ impl TensorField {
                         .tr_mul(&outward_normal)
                     }
                     BoundaryCondition::InhomNeumann(_) => unimplemented!(),
+                    BoundaryCondition::Kinematic(_) => unimplemented!(),
                 }
             }
         }
@@ -539,11 +584,11 @@ impl TensorField {
 }
 
 #[derive(Clone, PartialEq, Debug)]
-pub struct HorizField<V: Value> {
+pub struct AreaField<V: Value> {
     /// Indexed by [`indexing::CellFootprintIndexing`]
     cell_footprints: nd::Array3<V>,
 }
-impl<V: Value> HorizField<V> {
+impl<V: Value> AreaField<V> {
     pub fn zeros(cell_footprint_indexing: &indexing::CellFootprintIndexing) -> Self {
         Self {
             cell_footprints: nd::Array3::zeros(cell_footprint_indexing.shape()),
@@ -573,7 +618,7 @@ impl<V: Value> HorizField<V> {
     }
 }
 #[cfg(test)]
-impl<V: Value> approx::AbsDiffEq for HorizField<V>
+impl<V: Value> approx::AbsDiffEq for AreaField<V>
 where
     V: approx::AbsDiffEq<V, Epsilon = Float>,
 {
@@ -591,7 +636,7 @@ where
         )
     }
 }
-pub type HorizScalarField = HorizField<Float>;
+pub type AreaScalarField = AreaField<Float>;
 
 #[pyclass]
 #[derive(Clone)]
@@ -616,10 +661,10 @@ impl Terrain {
     }
 }
 
-pub struct HorizVectorField {
+pub struct AreaVectorField {
     cell_footprints: nd::Array3<Vector2>,
 }
-impl HorizVectorField {
+impl AreaVectorField {
     pub fn zeros(cell_footprint_indexing: &indexing::CellFootprintIndexing) -> Self {
         Self {
             cell_footprints: nd::Array3::default(cell_footprint_indexing.shape()),
@@ -642,13 +687,13 @@ impl HorizVectorField {
 
     pub fn advect_upwind(
         &self,
-        scalar_field: &HorizScalarField,
+        scalar_field: &AreaScalarField,
         grid: &geom::Grid,
         velocity_boundary_conditions: HorizBoundaryConditions<Vector2>,
         scalar_boundary_conditions: HorizBoundaryConditions<Float>,
-    ) -> HorizScalarField {
+    ) -> AreaScalarField {
         let cell_footprint_indexing = grid.cell_footprint_indexing();
-        let mut advected = HorizScalarField::zeros(cell_footprint_indexing);
+        let mut advected = AreaScalarField::zeros(cell_footprint_indexing);
         for cell_footprint_index in cell_footprint_indexing.iter() {
             let velocity = self.cell_footprint_value(cell_footprint_index);
             let scalar = scalar_field.cell_footprint_value(cell_footprint_index);
@@ -670,11 +715,13 @@ impl HorizVectorField {
                             BoundaryCondition::HomDirichlet => Vector2::zeros(),
                             BoundaryCondition::HomNeumann => velocity,
                             BoundaryCondition::InhomNeumann(_) => unimplemented!(),
+                            BoundaryCondition::Kinematic(_) => unimplemented!(),
                         },
                         indexing::Boundary::Upper => match velocity_boundary_conditions.x.upper {
                             BoundaryCondition::HomDirichlet => Vector2::zeros(),
                             BoundaryCondition::HomNeumann => velocity,
                             BoundaryCondition::InhomNeumann(_) => unimplemented!(),
+                            BoundaryCondition::Kinematic(_) => unimplemented!(),
                         },
                     },
                     indexing::CellFootprintNeighbor::YBoundary(boundary) => match boundary {
@@ -682,11 +729,13 @@ impl HorizVectorField {
                             BoundaryCondition::HomDirichlet => Vector2::zeros(),
                             BoundaryCondition::HomNeumann => velocity,
                             BoundaryCondition::InhomNeumann(_) => unimplemented!(),
+                            BoundaryCondition::Kinematic(_) => unimplemented!(),
                         },
                         indexing::Boundary::Upper => match velocity_boundary_conditions.y.upper {
                             BoundaryCondition::HomDirichlet => Vector2::zeros(),
                             BoundaryCondition::HomNeumann => velocity,
                             BoundaryCondition::InhomNeumann(_) => unimplemented!(),
+                            BoundaryCondition::Kinematic(_) => unimplemented!(),
                         },
                     },
                 };
@@ -703,11 +752,13 @@ impl HorizVectorField {
                                 BoundaryCondition::HomDirichlet => 0.,
                                 BoundaryCondition::HomNeumann => scalar,
                                 BoundaryCondition::InhomNeumann(_) => unimplemented!(),
+                                BoundaryCondition::Kinematic(_) => unimplemented!(),
                             },
                             indexing::Boundary::Upper => match scalar_boundary_conditions.x.upper {
                                 BoundaryCondition::HomDirichlet => 0.,
                                 BoundaryCondition::HomNeumann => scalar,
                                 BoundaryCondition::InhomNeumann(_) => unimplemented!(),
+                                BoundaryCondition::Kinematic(_) => unimplemented!(),
                             },
                         },
                         indexing::CellFootprintNeighbor::YBoundary(boundary) => match boundary {
@@ -715,11 +766,13 @@ impl HorizVectorField {
                                 BoundaryCondition::HomDirichlet => 0.,
                                 BoundaryCondition::HomNeumann => scalar,
                                 BoundaryCondition::InhomNeumann(_) => unimplemented!(),
+                                BoundaryCondition::Kinematic(_) => unimplemented!(),
                             },
                             indexing::Boundary::Upper => match scalar_boundary_conditions.y.upper {
                                 BoundaryCondition::HomDirichlet => 0.,
                                 BoundaryCondition::HomNeumann => scalar,
                                 BoundaryCondition::InhomNeumann(_) => unimplemented!(),
+                                BoundaryCondition::Kinematic(_) => unimplemented!(),
                             },
                         },
                     }
@@ -737,6 +790,22 @@ impl HorizVectorField {
     }
 }
 
+/// Compute the face value of the velocity at a boundary specifying the
+/// kinematic boundary condition.
+fn compute_kinematic_face_velocity_value(
+    velocity_cell_value: Vector3,
+    dhdt: Float,
+    outward_normal: UnitVector3,
+) -> Vector3 {
+    // u'.n = z.n * dh/dt
+    // u' - (u'.n) n = u - (u.n) n
+    // u' - (z.n * dh/dt) n = u - (u.n) n
+    // u' = u + (z.n * dh/dt - u.n) n
+    velocity_cell_value
+        + (-outward_normal.dot(&velocity_cell_value) + dhdt * outward_normal.z)
+            * outward_normal.into_inner()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -752,7 +821,7 @@ mod tests {
                 horiz: HorizBoundaryConditions::hom_neumann(),
                 z: VertBoundaryFieldPair::hom_neumann(),
             };
-            let velocity = VectorField::zeros(cell_indexing);
+            let velocity = VolVectorField::zeros(cell_indexing);
 
             let advection = velocity.advect_upwind(&dynamic_geometry, &boundary_conditions);
 
@@ -776,12 +845,12 @@ mod tests {
                 z: VertBoundaryFieldPair::hom_neumann(),
             };
             let velocity =
-                VectorField::new(&dynamic_geometry, |x, _, _| Vector3::new(bump(x), 0., 0.));
+                VolVectorField::new(&dynamic_geometry, |x, _, _| Vector3::new(bump(x), 0., 0.));
 
             let advection = velocity.advect_upwind(&dynamic_geometry, &vel_boundary_conditions);
 
             let expected_advection = {
-                let mut outer_product = TensorField::zeros(cell_indexing);
+                let mut outer_product = VolTensorField::zeros(cell_indexing);
                 for cell_index in cell_indexing.iter() {
                     let velocity_value = velocity.cell_value(cell_index);
                     *outer_product.cell_value_mut(cell_index) =
@@ -811,15 +880,19 @@ mod tests {
                 horiz: HorizBoundaryConditions::hom_neumann(),
                 z: VertBoundaryFieldPair::hom_neumann(),
             };
-            let velocity = VectorField::zeros(cell_indexing);
+            let velocity = VolVectorField::zeros(cell_indexing);
 
             let shear = velocity.gradient(&dynamic_geometry, &boundary_conditions);
             let laplacian = velocity.laplacian(&dynamic_geometry, &shear, &boundary_conditions);
 
-            approx::assert_abs_diff_eq!(shear, TensorField::zeros(cell_indexing), epsilon = 1e-5);
+            approx::assert_abs_diff_eq!(
+                shear,
+                VolTensorField::zeros(cell_indexing),
+                epsilon = 1e-5
+            );
             approx::assert_abs_diff_eq!(
                 laplacian,
-                VectorField::zeros(cell_indexing),
+                VolVectorField::zeros(cell_indexing),
                 epsilon = 1e-5
             );
         }
@@ -830,15 +903,20 @@ mod tests {
                 horiz: HorizBoundaryConditions::hom_neumann(),
                 z: VertBoundaryFieldPair::hom_neumann(),
             };
-            let velocity = VectorField::new(&dynamic_geometry, |_, _, _| Vector3::new(2., -1., 7.));
+            let velocity =
+                VolVectorField::new(&dynamic_geometry, |_, _, _| Vector3::new(2., -1., 7.));
 
             let shear = velocity.gradient(&dynamic_geometry, &boundary_conditions);
             let laplacian = velocity.laplacian(&dynamic_geometry, &shear, &boundary_conditions);
 
-            approx::assert_abs_diff_eq!(shear, TensorField::zeros(cell_indexing), epsilon = 1e-5);
+            approx::assert_abs_diff_eq!(
+                shear,
+                VolTensorField::zeros(cell_indexing),
+                epsilon = 1e-5
+            );
             approx::assert_abs_diff_eq!(
                 laplacian,
-                VectorField::zeros(cell_indexing),
+                VolVectorField::zeros(cell_indexing),
                 epsilon = 1e-5
             );
         }
@@ -849,14 +927,14 @@ mod tests {
                 horiz: HorizBoundaryConditions::hom_dirichlet(),
                 z: VertBoundaryFieldPair::hom_neumann(),
             };
-            let velocity = VectorField::new(&dynamic_geometry, |x, y, _| {
+            let velocity = VolVectorField::new(&dynamic_geometry, |x, y, _| {
                 Vector3::new(bump(x) * bump(y), -2. * bump(x) * bump(y), 0.)
             });
 
             let shear = velocity.gradient(&dynamic_geometry, &boundary_conditions);
             let laplacian = velocity.laplacian(&dynamic_geometry, &shear, &boundary_conditions);
 
-            let expected_shear = TensorField::new(&dynamic_geometry, |x, y, _| {
+            let expected_shear = VolTensorField::new(&dynamic_geometry, |x, y, _| {
                 Matrix3::new(
                     bump_deriv(x) * bump(y),
                     -2. * bump_deriv(x) * bump(y),
@@ -869,7 +947,7 @@ mod tests {
                     0.,
                 )
             });
-            let expected_laplacian = VectorField::new(&dynamic_geometry, |x, y, _| {
+            let expected_laplacian = VolVectorField::new(&dynamic_geometry, |x, y, _| {
                 Vector3::new(
                     bump_2nd_deriv(x) * bump(y) + bump(x) * bump_2nd_deriv(y),
                     -2. * bump(x) * bump_2nd_deriv(y) - 2. * bump_2nd_deriv(x) * bump(y),
@@ -935,13 +1013,13 @@ mod tests {
                 z: VertBoundaryFieldPair::hom_neumann(),
             };
 
-            let velocity = VectorField::new(&dynamic_geometry, |x, y, _| {
+            let velocity = VolVectorField::new(&dynamic_geometry, |x, y, _| {
                 Vector3::new(hill(x), 1.5 * hill(y), 0.)
             });
             let shear = velocity.gradient(&dynamic_geometry, &boundary_conditions);
             let laplacian = velocity.laplacian(&dynamic_geometry, &shear, &boundary_conditions);
 
-            let expected_shear = TensorField::new(&dynamic_geometry, |x, y, _| {
+            let expected_shear = VolTensorField::new(&dynamic_geometry, |x, y, _| {
                 Matrix3::new(
                     hill_deriv(x),
                     0.,
@@ -954,7 +1032,7 @@ mod tests {
                     0.,
                 )
             });
-            let expected_laplacian = VectorField::new(&dynamic_geometry, |x, y, _| {
+            let expected_laplacian = VolVectorField::new(&dynamic_geometry, |x, y, _| {
                 Vector3::new(hill_2nd_deriv(x), 1.5 * hill_2nd_deriv(y), 0.)
             });
             for cell_index in cell_indexing.iter() {
@@ -1039,7 +1117,7 @@ mod tests {
             geom::Axis::new(0., 1., num_y_cells),
             num_z_cells,
         );
-        let height = HorizScalarField::new(&grid, |_, _| max_z);
+        let height = AreaScalarField::new(&grid, |_, _| max_z);
 
         let static_geometry = geom::StaticGeometry::new(grid, &|_, _| 0.);
         geom::DynamicGeometry::new(static_geometry, &height)
@@ -1052,7 +1130,7 @@ mod tests {
             (x_axis, y_axis) = (y_axis, x_axis);
         }
         let grid = geom::Grid::new(x_axis, y_axis, 100);
-        let height = HorizScalarField::new(&grid, |x, y| 7.3 * x + y + 1.);
+        let height = AreaScalarField::new(&grid, |x, y| 7.3 * x + y + 1.);
 
         let static_geometry = geom::StaticGeometry::new(grid, &|x, y| 0.1 * (x + y));
         geom::DynamicGeometry::new(static_geometry, &height)
