@@ -1,8 +1,6 @@
 use ndarray as nd;
 use strum::{EnumCount, IntoEnumIterator};
 
-use crate::{Array1, Float};
-
 pub const NUM_CELL_VERTICES: usize = 6;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, strum_macros::EnumIter, strum_macros::EnumCount)]
@@ -71,45 +69,6 @@ impl<'a, I: Indexing> IntoIndexIterator for &'a I {
             indexing: self,
         }
     }
-}
-
-// pub trait IterIndices: Indexing {
-//     type Index: Copy + std::fmt::Debug + PartialEq + Eq;
-
-//     fn iter_indices(&self) -> Self::Iterator;
-// }
-
-// impl<I: Indexing> IterIndices for I {
-//     type Index = <I as Indexing>::Index;
-//     type Iterator = impl Iterator;
-
-//     fn iter_indices(&self) -> Self::Iterator {
-//         (0..self.len()).map(self.unflatten)
-//     }
-// }
-
-pub fn flatten_array<I: Indexing>(
-    indexing: &I,
-    array: &nd::Array<Float, <I::Index as Index>::ArrayIndex>,
-) -> Array1 {
-    let mut flattened = Array1::zeros(indexing.len());
-    for (flat_index, value) in flattened.iter_mut().enumerate() {
-        let index = indexing.unflatten(flat_index);
-        *value = array[index.to_array_index()];
-    }
-    flattened
-}
-
-pub fn unflatten_array<I: Indexing>(
-    indexing: &I,
-    flattened: &Array1,
-) -> nd::Array<Float, <I::Index as Index>::ArrayIndex> {
-    let mut unflattened = nd::Array::zeros(indexing.shape());
-    for (flat_index, value) in flattened.iter().copied().enumerate() {
-        let index = indexing.unflatten(flat_index);
-        unflattened[index.to_array_index()] = value;
-    }
-    unflattened
 }
 
 #[derive(Clone)]

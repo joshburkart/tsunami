@@ -12,47 +12,58 @@ impl ImplicitValue for Vector3 {}
 pub struct ImplicitVolField<V: ImplicitValue> {
     _phantom: std::marker::PhantomData<V>,
 }
+impl ImplicitVolField<Float> {
+    pub fn laplacian(
+        self,
+        explicit_grad: Option<&fields::VolVectorField>,
+    ) -> SemiImplicitScalarLaplacianField {
+        todo!()
+    }
+}
 
 pub struct CellCoef {
     cell_index: indexing::CellIndex,
     /// The coefficient, or [`None`] to indicate `1.`.
     coef: Option<Float>,
 }
-pub struct Subsystem<V: ImplicitValue, I: Iterator<Item = CellCoef>> {
-    coef_iter: I,
-    /// The right-hand side set of values, or [`None`] to indicate `0.`s.
-    rhs: Option<V>,
-}
 
 pub trait ImplicitTerm {
     type ImplicitValue: ImplicitValue;
-    type CellCoefIter: Iterator<Item = CellCoef>;
 
-    fn compute_subsystem(
+    /// Generate the subsystem of an overall field equation linear system
+    /// corresponding to a particular cell.
+    ///
+    /// A closure to call to add a new column coefficient will be supplied via
+    /// the `add_cell_coef` argument.
+    ///
+    /// # Returns
+    ///
+    /// Any constant value for the subsystem, i.e. the `b` in `Ax + b = 0`, or
+    /// `None` to indicate `0.`.
+    fn gen_subsystem<F: FnMut(CellCoef)>(
         &self,
+        add_cell_coef: &mut F,
         cell_index: indexing::CellIndex,
         dynamic_geometry: &geom::DynamicGeometry,
         boundary_conditions: &fields::BoundaryConditions<Self::ImplicitValue>,
-    ) -> Subsystem<Self::ImplicitValue, Self::CellCoefIter>;
+    ) -> Option<Self::ImplicitValue>;
 }
 
 impl<V: ImplicitValue> ImplicitTerm for ImplicitVolField<V> {
-    type CellCoefIter = std::iter::Once<CellCoef>;
     type ImplicitValue = V;
 
-    fn compute_subsystem(
+    fn gen_subsystem<F: FnMut(CellCoef)>(
         &self,
+        add_cell_coef: &mut F,
         cell_index: indexing::CellIndex,
         _dynamic_geometry: &geom::DynamicGeometry,
         _boundary_conditions: &fields::BoundaryConditions<Self::ImplicitValue>,
-    ) -> Subsystem<Self::ImplicitValue, Self::CellCoefIter> {
-        Subsystem {
-            coef_iter: std::iter::once(CellCoef {
-                cell_index,
-                coef: None,
-            }),
-            rhs: None,
-        }
+    ) -> Option<Self::ImplicitValue> {
+        add_cell_coef(CellCoef {
+            cell_index,
+            coef: None,
+        });
+        None
     }
 }
 
@@ -61,40 +72,33 @@ pub struct ImplicitScalarProduct<T: ImplicitTerm> {
     term: T,
 }
 impl<T: ImplicitTerm> ImplicitTerm for ImplicitScalarProduct<T> {
-    type CellCoefIter = ImplicitScalarProductCellCoefIter<T::CellCoefIter>;
     type ImplicitValue = T::ImplicitValue;
 
-    fn compute_subsystem(
+    fn gen_subsystem<F: FnMut(CellCoef)>(
         &self,
+        add_cell_coef: &mut F,
         cell_index: indexing::CellIndex,
         dynamic_geometry: &geom::DynamicGeometry,
         boundary_conditions: &fields::BoundaryConditions<T::ImplicitValue>,
-    ) -> Subsystem<Self::ImplicitValue, Self::CellCoefIter> {
-        let factor_submatrix =
-            self.term
-                .compute_subsystem(cell_index, dynamic_geometry, boundary_conditions);
-        Subsystem {
-            coef_iter: ImplicitScalarProductCellCoefIter {
-                term_coef_iter: factor_submatrix.coef_iter,
-                scalar: self.scalar,
-            },
-            rhs: factor_submatrix.rhs.map(|rhs| rhs * self.scalar),
-        }
-    }
-}
+    ) -> Option<Self::ImplicitValue> {
+        let mut add_cell_coef_wrapper = |cell_coef: CellCoef| {
+            add_cell_coef(CellCoef {
+                cell_index: cell_coef.cell_index,
+                coef: cell_coef
+                    .coef
+                    .map(|coef| coef * self.scalar)
+                    .or(Some(self.scalar)),
+            })
+        };
 
-pub struct ImplicitScalarProductCellCoefIter<I: Iterator<Item = CellCoef>> {
-    term_coef_iter: I,
-    scalar: Float,
-}
-impl<I: Iterator<Item = CellCoef>> Iterator for ImplicitScalarProductCellCoefIter<I> {
-    type Item = CellCoef;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.term_coef_iter.next().map(|cell_coef| CellCoef {
-            coef: Some(cell_coef.coef.unwrap_or(1.) * self.scalar),
-            ..cell_coef
-        })
+        self.term
+            .gen_subsystem(
+                &mut add_cell_coef_wrapper,
+                cell_index,
+                dynamic_geometry,
+                boundary_conditions,
+            )
+            .map(|rhs| rhs * self.scalar)
     }
 }
 
@@ -105,85 +109,76 @@ pub struct ImplicitTermSum<T1: ImplicitTerm, T2: ImplicitTerm> {
 impl<V: ImplicitValue, T1: ImplicitTerm<ImplicitValue = V>, T2: ImplicitTerm<ImplicitValue = V>>
     ImplicitTerm for ImplicitTermSum<T1, T2>
 {
-    type CellCoefIter = std::iter::Chain<T1::CellCoefIter, T2::CellCoefIter>;
     type ImplicitValue = <T1::ImplicitValue as std::ops::Add<T2::ImplicitValue>>::Output;
 
-    fn compute_subsystem(
+    fn gen_subsystem<F: FnMut(CellCoef)>(
         &self,
+        add_cell_coef: &mut F,
         cell_index: indexing::CellIndex,
         dynamic_geometry: &geom::DynamicGeometry,
         boundary_conditions: &fields::BoundaryConditions<V>,
-    ) -> Subsystem<V, Self::CellCoefIter> {
-        let Subsystem {
-            coef_iter: coef_iter_1,
-            rhs: rhs_1,
-        } = self
-            .term_1
-            .compute_subsystem(cell_index, dynamic_geometry, boundary_conditions);
-        let Subsystem {
-            coef_iter: coef_iter_2,
-            rhs: rhs_2,
-        } = self
-            .term_2
-            .compute_subsystem(cell_index, dynamic_geometry, boundary_conditions);
-
-        let coef_iter = coef_iter_1.chain(coef_iter_2);
-        let rhs = Some(
+    ) -> Option<V> {
+        let rhs_1 = self.term_1.gen_subsystem(
+            add_cell_coef,
+            cell_index,
+            dynamic_geometry,
+            boundary_conditions,
+        );
+        let rhs_2 = self.term_2.gen_subsystem(
+            add_cell_coef,
+            cell_index,
+            dynamic_geometry,
+            boundary_conditions,
+        );
+        Some(
             rhs_1.unwrap_or(<T1::ImplicitValue as num_traits::Zero>::zero())
                 + rhs_2.unwrap_or(<T2::ImplicitValue as num_traits::Zero>::zero()),
-        );
-
-        Subsystem { coef_iter, rhs }
+        )
     }
 }
 
 impl<'a, V: ImplicitValue> ImplicitTerm for &'a fields::VolField<V> {
-    type CellCoefIter = std::iter::Empty<CellCoef>;
     type ImplicitValue = V;
 
-    fn compute_subsystem(
+    fn gen_subsystem<F: FnMut(CellCoef)>(
         &self,
+        _add_cell_coef: &mut F,
         cell_index: indexing::CellIndex,
         _dynamic_geometry: &geom::DynamicGeometry,
         _boundary_conditions: &fields::BoundaryConditions<V>,
-    ) -> Subsystem<V, Self::CellCoefIter> {
-        Subsystem {
-            coef_iter: std::iter::empty(),
-            rhs: Some(-self.cell_value(cell_index)),
-        }
+    ) -> Option<V> {
+        Some(self.cell_value(cell_index))
     }
 }
 
-impl ImplicitTerm for Float {
-    type CellCoefIter = std::iter::Empty<CellCoef>;
-    type ImplicitValue = Self;
+impl<V: ImplicitValue> ImplicitTerm for V {
+    type ImplicitValue = V;
 
-    fn compute_subsystem(
+    fn gen_subsystem<F: FnMut(CellCoef)>(
         &self,
+        _add_cell_coef: &mut F,
         _cell_index: indexing::CellIndex,
         _dynamic_geometry: &geom::DynamicGeometry,
         _boundary_conditions: &fields::BoundaryConditions<Self::ImplicitValue>,
-    ) -> Subsystem<Self::ImplicitValue, Self::CellCoefIter> {
-        Subsystem {
-            coef_iter: std::iter::empty(),
-            rhs: Some(*self),
-        }
+    ) -> Option<Self::ImplicitValue> {
+        Some(*self)
     }
 }
-impl ImplicitTerm for Vector3 {
-    type CellCoefIter = std::iter::Empty<CellCoef>;
-    type ImplicitValue = Self;
 
-    fn compute_subsystem(
+pub struct SemiImplicitScalarLaplacianField<'a> {
+    explicit_gradient: Option<&'a fields::VolVectorField>,
+}
+impl<'a> ImplicitTerm for SemiImplicitScalarLaplacianField<'a> {
+    type ImplicitValue = Float;
+
+    fn gen_subsystem<F: FnMut(CellCoef)>(
         &self,
-        _cell_index: indexing::CellIndex,
-        _dynamic_geometry: &geom::DynamicGeometry,
-        _boundary_conditions: &fields::BoundaryConditions<Self::ImplicitValue>,
-    ) -> Subsystem<Self::ImplicitValue, Self::CellCoefIter> {
-        Subsystem {
-            coef_iter: std::iter::empty(),
-            rhs: Some(-*self),
-        }
+        add_cell_coef: &mut F,
+        cell_index: indexing::CellIndex,
+        dynamic_geometry: &geom::DynamicGeometry,
+        boundary_conditions: &fields::BoundaryConditions<Self::ImplicitValue>,
+    ) -> Option<Self::ImplicitValue> {
+        todo!()
     }
 }
 
@@ -308,23 +303,12 @@ impl ImplicitSolver {
         let matrix_size = cell_indexing.len() * value_size;
 
         let mut matrix = sprs::TriMat::new((matrix_size, matrix_size));
-        let mut rhs = Array1::zeros(matrix_size);
-        for cell_index in cell_indexing.iter() {
-            let subsystem =
-                implicit_term.compute_subsystem(cell_index, dynamic_geometry, boundary_conditions);
-            let flat_index = cell_indexing.flatten(cell_index);
-
-            if let Some(subsystem_rhs) = subsystem.rhs {
-                subsystem_rhs.flatten(rhs.slice_mut(nd::s![
-                    flat_index * value_size..(flat_index + 1) * value_size
-                ]));
-            }
-
-            for CellCoef {
-                cell_index: col_cell_index,
-                coef,
-            } in subsystem.coef_iter
-            {
+        let mut lhs_constant = Array1::zeros(matrix_size);
+        for (flat_index, cell_index) in cell_indexing.iter().enumerate() {
+            let mut add_cell_coef = |CellCoef {
+                                         cell_index: col_cell_index,
+                                         coef,
+                                     }| {
                 let coef = coef.unwrap_or(1.);
                 let col_flat_index = cell_indexing.flatten(col_cell_index);
                 for i in 0..value_size {
@@ -334,15 +318,31 @@ impl ImplicitSolver {
                         coef,
                     );
                 }
+            };
+            let subsystem_lhs_constant = implicit_term.gen_subsystem(
+                &mut add_cell_coef,
+                cell_index,
+                dynamic_geometry,
+                boundary_conditions,
+            );
+            if let Some(subsystem_lhs_constant) = subsystem_lhs_constant {
+                subsystem_lhs_constant.flatten(lhs_constant.slice_mut(nd::s![
+                    flat_index * value_size..(flat_index + 1) * value_size
+                ]));
             }
         }
 
         let x = guess
             .map(|guess| guess.flatten(cell_indexing))
             .unwrap_or_else(|| Array1::zeros(matrix_size));
+        // Negate `lhs_constant` to produce `rhs`. Up to this point we've been assuming
+        // it's a root-finding problem of the form `Ax + lhs_constant = 0`, but
+        // the `LinearSolver` convention is `Ax = rhs`.
         Ok(fields::VolField::unflatten(
             cell_indexing,
-            &self.linear_solver.solve(matrix.to_csr().view(), x, rhs)?,
+            &self
+                .linear_solver
+                .solve(matrix.to_csr().view(), x, -lhs_constant)?,
         ))
     }
 }
