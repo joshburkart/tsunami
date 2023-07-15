@@ -591,8 +591,8 @@ impl DynamicGeometry {
         self.static_geometry
     }
 
-    pub fn cell(&self, index: indexing::CellIndex) -> &Cell {
-        &self.cells[index.to_array_index()]
+    pub fn cell(&self, cell_index: indexing::CellIndex) -> &Cell {
+        &self.cells[cell_index.to_array_index()]
     }
 
     pub fn make_cell_array<V, F: Fn(Float, Float, Float) -> V>(&self, f: F) -> nd::Array4<V> {

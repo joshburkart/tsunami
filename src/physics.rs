@@ -1,7 +1,7 @@
 use pyo3::prelude::*;
 
 use crate::{
-    fields, geom,
+    fields, geom, implicit,
     indexing::{self, Indexing, IntoIndexIterator},
     linalg, Array1, Float, Vector2, Vector3,
 };
@@ -362,14 +362,67 @@ pub fn compute_height_time_deriv(
     dhdt
 }
 
-// TODO: Add non-orthogonal corrector
-#[derive(Debug)]
-pub enum PressureSolver {
-    GaussSeidel {
-        max_iters: usize,
-        rel_error_tol: Float,
-    },
-    Direct,
+// #[derive(Debug)]
+// pub struct VelocitySolver {
+//     linear_solver: linalg::LinearSolver,
+// }
+// impl VelocitySolver {
+//     pub fn solve(
+//         &self,
+//         problem: &Problem,
+//         dynamic_geometry: &geom::DynamicGeometry,
+//         boundary_conditions: &fields::BoundaryConditions<Vector3>,
+//         prev_velocity: &fields::VolVectorField,
+//         prev_pressure_grad: &fields::VolVectorField,
+//         dt: Float,
+//     ) -> fields::VolVectorField {
+//         use implicit::SolveEq;
+
+//         let prev_u = prev_velocity;
+//         let prev_grad_p = prev_pressure_grad;
+//         let nu = problem.kinematic_viscosity;
+//         let rho = problem.density;
+//         let g = Vector3::new(0., 0., -problem.grav_accel);
+
+//         let u = implicit::ImplicitVolField::<Float>::new(dynamic_geometry,
+// boundary_conditions);         let eq =
+//             (u - prev_u) / dt + prev_u.advect(u) - nu * u.laplacian() ==
+// -prev_grad_p / rho + g;         self.linear_solver.solve_eq(eq, u)
+//     }
+// }
+
+// #[derive(Debug)]
+// pub struct NewPressureSolver {
+//     linear_solver: linalg::LinearSolver,
+// }
+// impl NewPressureSolver {
+//     pub fn solve(
+//         &self,
+//         problem: &Problem,
+//         dynamic_geometry: &geom::DynamicGeometry,
+//         boundary_conditions: &fields::BoundaryConditions<Vector3>,
+//         prev_velocity: &fields::VolVectorField,
+//         prev_pressure_grad: &fields::VolVectorField,
+//         dt: Float,
+//     ) -> fields::VolVectorField {
+//         use implicit::SolveEq;
+
+//         let prev_u = prev_velocity;
+//         let rho = problem.density;
+//         let g = Vector3::new(0., 0., -problem.grav_accel);
+
+//         let p = implicit::ImplicitVolField::<Float>::new(dynamic_geometry,
+// boundary_conditions);
+
+//         let rhs_field = shear.map(|shear| -rho *
+// (shear.component_mul(&shear.transpose())).sum());         let eq =
+// p.laplacian() == rhs_field;         self.linear_solver.solve_eq(eq, p)
+//     }
+// }
+
+#[derive(Debug, Default)]
+pub struct PressureSolver {
+    linear_solver: linalg::LinearSolver,
 }
 impl PressureSolver {
     pub fn solve(
@@ -391,21 +444,12 @@ impl PressureSolver {
             shear,
         );
 
-        let flattened_pressure = match *self {
-            PressureSolver::GaussSeidel {
-                max_iters,
-                rel_error_tol,
-            } => linalg::solve_linear_system_gauss_seidel(
-                pressure_matrix.view(),
-                guess_pressure.flatten(dynamic_geometry.grid().cell_indexing()),
-                pressure_rhs,
-                max_iters,
-                rel_error_tol,
-            ),
-            PressureSolver::Direct => {
-                linalg::solve_linear_system_direct(pressure_matrix.to_dense(), pressure_rhs)
-            }
-        };
+        let flattened_pressure = self.linear_solver.solve(
+            pressure_matrix.view(),
+            guess_pressure.flatten(dynamic_geometry.grid().cell_indexing()),
+            pressure_rhs,
+        );
+
         let flattened_pressure = match flattened_pressure {
             Err(linalg::LinearSolveError::NotDiagonallyDominant {
                 row_index,
@@ -477,8 +521,8 @@ impl PressureSolver {
         prev_pressure_grad: Option<&fields::VolVectorField>,
         shear: &fields::VolTensorField,
     ) -> (sprs::CsMat<Float>, Array1) {
-        let mut rhs_field = shear.map(|shear| -(shear.component_mul(&shear.transpose())).sum());
-        rhs_field *= problem.density;
+        let rhs_field =
+            shear.map(|shear| -problem.density * (shear.component_mul(&shear.transpose())).sum());
 
         let cell_indexing = dynamic_geometry.grid().cell_indexing();
         let mut matrix = sprs::TriMat::new((cell_indexing.len(), cell_indexing.len()));
@@ -617,14 +661,6 @@ impl PressureSolver {
             // }
         }
         (matrix.to_csr(), rhs)
-    }
-}
-impl Default for PressureSolver {
-    fn default() -> Self {
-        Self::GaussSeidel {
-            max_iters: 30000,
-            rel_error_tol: 1e-1,
-        }
     }
 }
 

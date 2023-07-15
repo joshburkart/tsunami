@@ -1,6 +1,39 @@
 use crate::{Array1, Array2, Float};
 
 #[derive(Debug)]
+pub enum LinearSolver {
+    GaussSeidel {
+        max_iters: usize,
+        rel_error_tol: Float,
+    },
+    Direct,
+}
+impl Default for LinearSolver {
+    fn default() -> Self {
+        Self::GaussSeidel {
+            max_iters: 30000,
+            rel_error_tol: 1e-1,
+        }
+    }
+}
+impl LinearSolver {
+    pub fn solve(
+        &self,
+        matrix: sprs::CsMatView<Float>,
+        x: Array1,
+        rhs: Array1,
+    ) -> Result<Array1, LinearSolveError> {
+        match self {
+            LinearSolver::GaussSeidel {
+                max_iters,
+                rel_error_tol,
+            } => solve_linear_system_gauss_seidel(matrix, x, rhs, *max_iters, *rel_error_tol),
+            LinearSolver::Direct => solve_linear_system_direct(matrix.to_dense(), rhs),
+        }
+    }
+}
+
+#[derive(Debug)]
 pub enum LinearSolveError {
     NotDiagonallyDominant {
         row_index: usize,
@@ -23,7 +56,7 @@ pub fn solve_linear_system_gauss_seidel(
     mut x: Array1,
     rhs: Array1,
     max_iters: usize,
-    error_tolerance: Float,
+    rel_error_tol: Float,
 ) -> Result<Array1, LinearSolveError> {
     assert!(matrix.rows() == matrix.cols());
     assert!(matrix.rows() == x.shape()[0]);
@@ -42,7 +75,7 @@ pub fn solve_linear_system_gauss_seidel(
 
     let mut error = compute_error(&x);
     for _ in 0..max_iters {
-        if error < error_tolerance {
+        if error < rel_error_tol {
             return Ok(x);
         }
 

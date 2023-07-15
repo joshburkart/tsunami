@@ -4,6 +4,7 @@ mod derivs;
 mod examples;
 mod fields;
 mod geom;
+mod implicit;
 mod indexing;
 mod linalg;
 mod physics;

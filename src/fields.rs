@@ -121,11 +121,84 @@ pub trait Value:
     + std::ops::SubAssign<Self>
     + std::ops::Neg<Output = Self>
 {
+    fn size() -> usize;
+
+    fn flatten(&self, flattened: nd::ArrayViewMut1<'_, Float>);
+    fn unflatten(flattened: nd::ArrayView1<'_, Float>) -> Self;
 }
-impl Value for Float {}
-impl Value for Vector2 {}
-impl Value for Vector3 {}
-impl Value for Matrix3 {}
+impl Value for Float {
+    fn size() -> usize {
+        1
+    }
+
+    fn flatten(&self, mut flattened: nd::ArrayViewMut1<'_, Float>) {
+        flattened[0] = *self;
+    }
+
+    fn unflatten(flattened: nd::ArrayView1<'_, Float>) -> Self {
+        flattened[0]
+    }
+}
+impl Value for Vector2 {
+    fn size() -> usize {
+        2
+    }
+
+    fn flatten(&self, mut flattened: nd::ArrayViewMut1<'_, Float>) {
+        flattened[0] = self.x;
+        flattened[1] = self.y;
+    }
+
+    fn unflatten(flattened: nd::ArrayView1<'_, Float>) -> Self {
+        Self::new(flattened[0], flattened[1])
+    }
+}
+impl Value for Vector3 {
+    fn size() -> usize {
+        3
+    }
+
+    fn flatten(&self, mut flattened: nd::ArrayViewMut1<'_, Float>) {
+        flattened[0] = self.x;
+        flattened[1] = self.y;
+        flattened[2] = self.z;
+    }
+
+    fn unflatten(flattened: nd::ArrayView1<'_, Float>) -> Self {
+        Self::new(flattened[0], flattened[1], flattened[2])
+    }
+}
+impl Value for Matrix3 {
+    fn size() -> usize {
+        9
+    }
+
+    fn flatten(&self, mut flattened: nd::ArrayViewMut1<'_, Float>) {
+        flattened[0] = self[(0, 0)];
+        flattened[1] = self[(0, 1)];
+        flattened[2] = self[(0, 2)];
+        flattened[3] = self[(1, 0)];
+        flattened[4] = self[(1, 1)];
+        flattened[5] = self[(1, 2)];
+        flattened[6] = self[(2, 0)];
+        flattened[7] = self[(2, 1)];
+        flattened[8] = self[(2, 2)];
+    }
+
+    fn unflatten(flattened: nd::ArrayView1<'_, Float>) -> Self {
+        Self::new(
+            flattened[0],
+            flattened[1],
+            flattened[2],
+            flattened[3],
+            flattened[4],
+            flattened[5],
+            flattened[6],
+            flattened[7],
+            flattened[8],
+        )
+    }
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct VolField<V: Value> {
@@ -160,6 +233,26 @@ impl<V: Value> VolField<V> {
         VolField {
             cells: self.cells.map(f),
         }
+    }
+
+    pub fn flatten(&self, cell_indexing: &indexing::CellIndexing) -> Array1 {
+        let mut flattened = Array1::zeros(cell_indexing.len() * V::size());
+        for (flat_index, cell_index) in cell_indexing.iter().enumerate() {
+            self.cells[cell_index.to_array_index()].flatten(
+                flattened.slice_mut(nd::s![flat_index * V::size()..(flat_index + 1) * V::size()]),
+            );
+        }
+        flattened
+    }
+
+    pub fn unflatten(cell_indexing: &indexing::CellIndexing, flattened: &Array1) -> Self {
+        let mut cells = nd::Array4::zeros(cell_indexing.shape());
+        for (flat_index, cell_index) in cell_indexing.iter().enumerate() {
+            cells[cell_index.to_array_index()] = V::unflatten(
+                flattened.slice(nd::s![flat_index * V::size()..(flat_index + 1) * V::size()]),
+            );
+        }
+        Self { cells }
     }
 }
 impl<V: Value> std::ops::Div<Float> for VolField<V> {
@@ -293,15 +386,6 @@ impl VolScalarField {
             boundary_conditions,
             GradientComputer { scalar_field: self },
         )
-    }
-
-    pub fn flatten(&self, cell_indexing: &indexing::CellIndexing) -> Array1 {
-        indexing::flatten_array(cell_indexing, &self.cells)
-    }
-
-    pub fn unflatten(cell_indexing: &indexing::CellIndexing, flattened: &Array1) -> Self {
-        let cells = indexing::unflatten_array(cell_indexing, flattened);
-        Self { cells }
     }
 
     pub fn values_py<'py>(&self, py: Python<'py>) -> &'py numpy::PyArray4<Float> {
