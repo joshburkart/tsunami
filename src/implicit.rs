@@ -8,6 +8,8 @@ pub trait ImplicitValue: fields::Value {}
 impl ImplicitValue for Float {}
 impl ImplicitValue for Vector3 {}
 
+const EPSILON: Float = 1e-10;
+
 #[derive(Clone, Copy, Default)]
 pub struct ImplicitVolField<V: ImplicitValue> {
     _phantom: std::marker::PhantomData<V>,
@@ -17,7 +19,7 @@ impl ImplicitVolField<Float> {
         self,
         explicit_grad: Option<&fields::VolVectorField>,
     ) -> SemiImplicitScalarLaplacianField {
-        todo!()
+        SemiImplicitScalarLaplacianField { explicit_grad }
     }
 }
 
@@ -166,7 +168,7 @@ impl<V: ImplicitValue> ImplicitTerm for V {
 }
 
 pub struct SemiImplicitScalarLaplacianField<'a> {
-    explicit_gradient: Option<&'a fields::VolVectorField>,
+    explicit_grad: Option<&'a fields::VolVectorField>,
 }
 impl<'a> ImplicitTerm for SemiImplicitScalarLaplacianField<'a> {
     type ImplicitValue = Float;
@@ -178,7 +180,97 @@ impl<'a> ImplicitTerm for SemiImplicitScalarLaplacianField<'a> {
         dynamic_geometry: &geom::DynamicGeometry,
         boundary_conditions: &fields::BoundaryConditions<Self::ImplicitValue>,
     ) -> Option<Self::ImplicitValue> {
-        todo!()
+        let cell = dynamic_geometry.cell(cell_index);
+
+        let mut cell_coef = 0.;
+        let mut lhs_constant = None;
+        for face in &cell.faces {
+            let mut handle_boundary_face =
+                |block_paired_cell: &geom::Cell, boundary_condition| match boundary_condition {
+                    fields::BoundaryCondition::HomDirichlet => {
+                        let displ = face.centroid().coords
+                            - 0.5 * (cell.centroid.coords + block_paired_cell.centroid.coords);
+                        let c_corr = 1. / face.outward_normal().dot(&displ);
+                        let coef = -0.5 * c_corr * face.area() / (cell.volume + EPSILON);
+                        add_cell_coef(CellCoef {
+                            cell_index: block_paired_cell.index,
+                            coef: Some(coef),
+                        });
+                        cell_coef += coef;
+                    }
+                    fields::BoundaryCondition::HomNeumann => {}
+                    fields::BoundaryCondition::InhomNeumann(boundary_value) => {
+                        // TODO: Account for block paired cell if an inhomogeneous Neumann BC is
+                        // used for X or Y boundaries.
+                        lhs_constant = Some(boundary_value * face.area() / cell.volume);
+                    }
+                    fields::BoundaryCondition::Kinematic(_) => unimplemented!(),
+                };
+            match face.neighbor() {
+                indexing::CellNeighbor::Cell(neighbor_cell_index) => {
+                    let neighbor_cell = dynamic_geometry.cell(neighbor_cell_index);
+                    let displ = neighbor_cell.centroid - cell.centroid;
+                    let c_corr = 1. / face.outward_normal().dot(&displ);
+                    let coef = c_corr * face.area() / cell.volume;
+                    cell_coef -= coef;
+                    add_cell_coef(CellCoef {
+                        cell_index: neighbor_cell_index,
+                        coef: Some(coef),
+                    });
+
+                    if let Some(explicit_grad) = self.explicit_grad {
+                        let explicit_grad_at_face = 0.5
+                            * (explicit_grad.cell_value(cell_index)
+                                + explicit_grad.cell_value(neighbor_cell_index));
+                        let explicit_correction = (face.outward_normal().into_inner()
+                            - c_corr * displ)
+                            .dot(&explicit_grad_at_face);
+                        lhs_constant = Some(explicit_correction * face.area() / cell.volume);
+                    }
+                }
+                indexing::CellNeighbor::XBoundary(boundary) => match boundary {
+                    indexing::Boundary::Lower => handle_boundary_face(
+                        dynamic_geometry.cell(cell_index.flip()),
+                        boundary_conditions.horiz.x.lower,
+                    ),
+                    indexing::Boundary::Upper => handle_boundary_face(
+                        dynamic_geometry.cell(cell_index.flip()),
+                        boundary_conditions.horiz.x.upper,
+                    ),
+                },
+                indexing::CellNeighbor::YBoundary(boundary) => match boundary {
+                    indexing::Boundary::Lower => handle_boundary_face(
+                        dynamic_geometry.cell(cell_index.flip()),
+                        boundary_conditions.horiz.y.lower,
+                    ),
+                    indexing::Boundary::Upper => handle_boundary_face(
+                        dynamic_geometry.cell(cell_index.flip()),
+                        boundary_conditions.horiz.y.upper,
+                    ),
+                },
+                indexing::CellNeighbor::ZBoundary(boundary) => match boundary {
+                    indexing::Boundary::Lower => handle_boundary_face(
+                        cell,
+                        boundary_conditions
+                            .z
+                            .lower
+                            .boundary_condition(cell_index.footprint),
+                    ),
+                    indexing::Boundary::Upper => handle_boundary_face(
+                        cell,
+                        boundary_conditions
+                            .z
+                            .upper
+                            .boundary_condition(cell_index.footprint),
+                    ),
+                },
+            }
+        }
+        add_cell_coef(CellCoef {
+            cell_index,
+            coef: Some(cell_coef),
+        });
+        lhs_constant
     }
 }
 
@@ -278,8 +370,39 @@ mod op_impls {
             }
         }
     }
+    impl<'a> ops::Sub<&'a fields::VolField<Float>> for SemiImplicitScalarLaplacianField<'a> {
+        type Output = ImplicitTermSum<
+            SemiImplicitScalarLaplacianField<'a>,
+            ImplicitScalarProduct<&'a fields::VolField<Float>>,
+        >;
+
+        fn sub(self, rhs: &'a fields::VolField<Float>) -> Self::Output {
+            ImplicitTermSum {
+                term_1: self,
+                term_2: ImplicitScalarProduct {
+                    scalar: -1.,
+                    term: rhs,
+                },
+            }
+        }
+    }
+    impl<'a, V: ImplicitValue> ops::Sub<&'a fields::VolField<V>> for ImplicitVolField<V> {
+        type Output =
+            ImplicitTermSum<ImplicitVolField<V>, ImplicitScalarProduct<&'a fields::VolField<V>>>;
+
+        fn sub(self, rhs: &'a fields::VolField<V>) -> Self::Output {
+            ImplicitTermSum {
+                term_1: self,
+                term_2: ImplicitScalarProduct {
+                    scalar: -1.,
+                    term: rhs,
+                },
+            }
+        }
+    }
 }
 
+#[derive(Debug, Default)]
 pub struct ImplicitSolver {
     linear_solver: linalg::LinearSolver,
 }

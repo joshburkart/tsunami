@@ -3,10 +3,8 @@ use pyo3::prelude::*;
 use crate::{
     fields, geom, implicit,
     indexing::{self, Indexing, IntoIndexIterator},
-    linalg, Array1, Float, Vector2, Vector3,
+    linalg, Float, Vector2, Vector3,
 };
-
-const MIN_HEIGHT: Float = 1e-14;
 
 #[derive(Clone)]
 pub struct Fields {
@@ -79,7 +77,6 @@ impl Solver {
             &pressure_boundary_conditions,
             &initial_velocity.gradient(&initial_dynamic_geometry, &velocity_boundary_conditions),
             &hydrostatic_column_pressure,
-            &hydrostatic_column_pressure,
             None,
         );
         let pressure_grad =
@@ -89,7 +86,6 @@ impl Solver {
             &initial_dynamic_geometry,
             &pressure_boundary_conditions,
             &initial_velocity.gradient(&initial_dynamic_geometry, &velocity_boundary_conditions),
-            &hydrostatic_column_pressure,
             &hydrostatic_column_pressure,
             Some(&pressure_grad),
         );
@@ -197,7 +193,6 @@ impl Solver {
             &pressure_boundary_conditions,
             // &fields::VolTensorField::zeros(dynamic_geometry.grid().cell_indexing()),
             &shear, // TODO
-            &self.fields.hydrostatic_column_pressure,
             &self.fields.pressure,
             Some(&self.fields.pressure_grad),
         );
@@ -391,38 +386,9 @@ pub fn compute_height_time_deriv(
 //     }
 // }
 
-// #[derive(Debug)]
-// pub struct NewPressureSolver {
-//     linear_solver: linalg::LinearSolver,
-// }
-// impl NewPressureSolver {
-//     pub fn solve(
-//         &self,
-//         problem: &Problem,
-//         dynamic_geometry: &geom::DynamicGeometry,
-//         boundary_conditions: &fields::BoundaryConditions<Vector3>,
-//         prev_velocity: &fields::VolVectorField,
-//         prev_pressure_grad: &fields::VolVectorField,
-//         dt: Float,
-//     ) -> fields::VolVectorField {
-//         use implicit::SolveEq;
-
-//         let prev_u = prev_velocity;
-//         let rho = problem.density;
-//         let g = Vector3::new(0., 0., -problem.grav_accel);
-
-//         let p = implicit::ImplicitVolField::<Float>::new(dynamic_geometry,
-// boundary_conditions);
-
-//         let rhs_field = shear.map(|shear| -rho *
-// (shear.component_mul(&shear.transpose())).sum());         let eq =
-// p.laplacian() == rhs_field;         self.linear_solver.solve_eq(eq, p)
-//     }
-// }
-
 #[derive(Debug, Default)]
 pub struct PressureSolver {
-    linear_solver: linalg::LinearSolver,
+    implicit_solver: implicit::ImplicitSolver,
 }
 impl PressureSolver {
     pub fn solve(
@@ -431,26 +397,20 @@ impl PressureSolver {
         dynamic_geometry: &geom::DynamicGeometry,
         boundary_conditions: &fields::BoundaryConditions<Float>,
         shear: &fields::VolTensorField,
-        hydrostatic_column_pressure: &fields::VolScalarField,
         guess_pressure: &fields::VolScalarField,
         prev_pressure_grad: Option<&fields::VolVectorField>,
     ) -> fields::VolScalarField {
-        let (pressure_matrix, pressure_rhs) = Self::make_pressure_system(
-            problem,
+        let p = implicit::ImplicitVolField::default();
+        let s =
+            shear.map(|shear| -problem.density * (shear.component_mul(&shear.transpose())).sum());
+        let pressure_system = p.laplacian(prev_pressure_grad) - &s;
+
+        match self.implicit_solver.solve(
+            pressure_system,
             dynamic_geometry,
             boundary_conditions,
-            hydrostatic_column_pressure,
-            prev_pressure_grad,
-            shear,
-        );
-
-        let flattened_pressure = self.linear_solver.solve(
-            pressure_matrix.view(),
-            guess_pressure.flatten(dynamic_geometry.grid().cell_indexing()),
-            pressure_rhs,
-        );
-
-        let flattened_pressure = match flattened_pressure {
+            Some(guess_pressure),
+        ) {
             Err(linalg::LinearSolveError::NotDiagonallyDominant {
                 row_index,
                 abs_diag,
@@ -465,7 +425,7 @@ impl PressureSolver {
             }
             Err(error) => panic!("Failed to solve pressure equations: {error:?}"),
             Ok(result) => result,
-        };
+        }
 
         // for cell_index in [
         //     indexing::CellIndex {
@@ -506,161 +466,6 @@ impl PressureSolver {
         //         flattened_pressure[dynamic_geometry.grid().cell_indexing().
         // flatten(cell_index)]     );
         // }
-
-        fields::VolScalarField::unflatten(
-            dynamic_geometry.grid().cell_indexing(),
-            &flattened_pressure,
-        )
-    }
-
-    fn make_pressure_system(
-        problem: &Problem,
-        dynamic_geometry: &geom::DynamicGeometry,
-        boundary_conditions: &fields::BoundaryConditions<Float>,
-        hydrostatic_column_pressure: &fields::VolScalarField,
-        prev_pressure_grad: Option<&fields::VolVectorField>,
-        shear: &fields::VolTensorField,
-    ) -> (sprs::CsMat<Float>, Array1) {
-        let rhs_field =
-            shear.map(|shear| -problem.density * (shear.component_mul(&shear.transpose())).sum());
-
-        let cell_indexing = dynamic_geometry.grid().cell_indexing();
-        let mut matrix = sprs::TriMat::new((cell_indexing.len(), cell_indexing.len()));
-        let mut rhs = Array1::zeros(cell_indexing.len());
-
-        for flat_index in 0..cell_indexing.len() {
-            let cell_index = cell_indexing.unflatten(flat_index);
-            let cell = dynamic_geometry.cell(cell_index);
-
-            // if let indexing::CellIndex {
-            //     footprint:
-            //         indexing::CellFootprintIndex {
-            //             x: 5,
-            //             y: 0,
-            //             triangle: indexing::Triangle::LowerRight,
-            //         },
-            //     z: 0,
-            // } = cell_index
-            // {
-            //     println!("");
-            // }
-
-            let mut add_coef = |col_cell_index, value| {
-                // if let indexing::CellIndex {
-                //     footprint:
-                //         indexing::CellFootprintIndex {
-                //             x: 5,
-                //             y: 0,
-                //             triangle: indexing::Triangle::LowerRight,
-                //         },
-                //     z: 0,
-                // } = cell_index
-                // {
-                //     println!("  {col_cell_index:?}: {value}");
-                // }
-                matrix.add_triplet(flat_index, cell_indexing.flatten(col_cell_index), value)
-            };
-
-            if cell.volume / dynamic_geometry.grid().footprint_area() < MIN_HEIGHT {
-                add_coef(cell_index, 1.);
-                rhs[flat_index] = hydrostatic_column_pressure.cell_value(cell_index);
-                continue;
-            }
-
-            let mut cell_coef = 0.;
-            for face in &cell.faces {
-                let mut handle_boundary_face =
-                    |block_paired_cell: &geom::Cell, boundary_condition| match boundary_condition {
-                        fields::BoundaryCondition::HomDirichlet => {
-                            let displ = face.centroid().coords
-                                - 0.5 * (cell.centroid.coords + block_paired_cell.centroid.coords);
-                            let c_corr = 1. / face.outward_normal().dot(&displ);
-                            let coef = -0.5 * c_corr * face.area() / cell.volume;
-                            add_coef(block_paired_cell.index, coef);
-                            cell_coef += coef;
-                        }
-                        fields::BoundaryCondition::HomNeumann => {}
-                        fields::BoundaryCondition::InhomNeumann(boundary_value) => {
-                            // TODO: Account for block paired cell if an inhomogeneous Neumann BC is
-                            // used for X or Y boundaries.
-                            rhs[flat_index] -= boundary_value * face.area() / cell.volume;
-                        }
-                        fields::BoundaryCondition::Kinematic(_) => unimplemented!(),
-                    };
-                match face.neighbor() {
-                    indexing::CellNeighbor::Cell(neighbor_cell_index) => {
-                        let neighbor_cell = dynamic_geometry.cell(neighbor_cell_index);
-                        let displ = neighbor_cell.centroid - cell.centroid;
-                        let c_corr = 1. / face.outward_normal().dot(&displ);
-                        let coef = c_corr * face.area() / cell.volume;
-                        cell_coef -= coef;
-                        add_coef(neighbor_cell_index, coef);
-
-                        if let Some(prev_pressure_grad) = prev_pressure_grad {
-                            let prev_pressure_grad_at_face = 0.5
-                                * (prev_pressure_grad.cell_value(cell_index)
-                                    + prev_pressure_grad.cell_value(neighbor_cell_index));
-                            let explicit_term = (face.outward_normal().into_inner()
-                                - c_corr * displ)
-                                .dot(&prev_pressure_grad_at_face);
-                            rhs[flat_index] -= explicit_term * face.area() / cell.volume;
-                        }
-                    }
-                    indexing::CellNeighbor::XBoundary(boundary) => match boundary {
-                        indexing::Boundary::Lower => handle_boundary_face(
-                            dynamic_geometry.cell(cell_index.flip()),
-                            boundary_conditions.horiz.x.lower,
-                        ),
-                        indexing::Boundary::Upper => handle_boundary_face(
-                            dynamic_geometry.cell(cell_index.flip()),
-                            boundary_conditions.horiz.x.upper,
-                        ),
-                    },
-                    indexing::CellNeighbor::YBoundary(boundary) => match boundary {
-                        indexing::Boundary::Lower => handle_boundary_face(
-                            dynamic_geometry.cell(cell_index.flip()),
-                            boundary_conditions.horiz.y.lower,
-                        ),
-                        indexing::Boundary::Upper => handle_boundary_face(
-                            dynamic_geometry.cell(cell_index.flip()),
-                            boundary_conditions.horiz.y.upper,
-                        ),
-                    },
-                    indexing::CellNeighbor::ZBoundary(boundary) => match boundary {
-                        indexing::Boundary::Lower => handle_boundary_face(
-                            cell,
-                            boundary_conditions
-                                .z
-                                .lower
-                                .boundary_condition(cell_index.footprint),
-                        ),
-                        indexing::Boundary::Upper => handle_boundary_face(
-                            cell,
-                            boundary_conditions
-                                .z
-                                .upper
-                                .boundary_condition(cell_index.footprint),
-                        ),
-                    },
-                }
-            }
-            add_coef(cell_index, cell_coef);
-            rhs[flat_index] += rhs_field.cell_value(cell_index);
-
-            // if let indexing::CellIndex {
-            //     footprint:
-            //         indexing::CellFootprintIndex {
-            //             x: 5,
-            //             y: 0,
-            //             triangle: indexing::Triangle::LowerRight,
-            //         },
-            //     z: 0,
-            // } = cell_index
-            // {
-            //     println!("  rhs: {}", rhs[flat_index]);
-            // }
-        }
-        (matrix.to_csr(), rhs)
     }
 }
 
@@ -756,7 +561,6 @@ mod tests {
             &dynamic_geometry,
             &compute_pressure_boundary_conditions(&problem, &dynamic_geometry),
             &fields::VolTensorField::zeros(dynamic_geometry.grid().cell_indexing()),
-            &hydrostatic_column_pressure,
             &hydrostatic_column_pressure,
             None,
         );
