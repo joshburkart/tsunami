@@ -6,27 +6,30 @@ use crate::{fields, geom, physics, Vector3};
 // code
 
 #[pyfunction]
-pub fn advection_1d(num_x_cells: usize, num_z_cells: usize) -> physics::Solver {
+pub fn bump_1d(num_x_cells: usize, num_z_cells: usize) -> physics::Solver {
     let x_axis = geom::Axis::new(0., 5., num_x_cells);
     let y_axis = geom::Axis::new(0., 0.01, 2);
     let grid = geom::Grid::new(x_axis, y_axis, num_z_cells);
-    let static_geometry = geom::StaticGeometry::new(grid, &|_, _| 0.);
+    let static_geometry = geom::StaticGeometry::new(grid, |x, _| {
+        0.1 * (x * std::f64::consts::PI / 200.).cos().powi(2)
+    });
 
     let initial_height = fields::AreaScalarField::new(static_geometry.grid(), |x, _| {
         // 0.1 * (x * std::f64::consts::PI / 5.).cos() + 1.
-        0.3 * (-((x - 2.5) / (0.9)).powi(2)).exp() + 0.8
+        0.15 * (-((x - 2.5) / (0.3)).powi(2)).exp() + 0.8
     });
     let initial_dynamic_geometry = geom::DynamicGeometry::new(static_geometry, &initial_height);
 
     let mut problem = physics::Problem::default();
-    problem.kinematic_viscosity = 1e-4;
+    problem.kinematic_viscosity = 5e-5;
 
     let velocity = fields::VolVectorField::new(&initial_dynamic_geometry, |_, _, _| {
         Vector3::new(0., 0., 0.)
     });
+    let pressure_solver = problem.make_pressure_solver();
     physics::Solver::new(
         problem,
-        physics::PressureSolver::default(),
+        pressure_solver,
         initial_dynamic_geometry,
         initial_height,
         velocity,
@@ -48,9 +51,10 @@ pub fn singularity_1d(num_x_cells: usize, num_z_cells: usize) -> physics::Solver
     let velocity = fields::VolVectorField::new(&initial_dynamic_geometry, |x, _, _| {
         Vector3::new(-(x / 0.5) * (-(x / 0.5).powi(2)).exp(), 0., 0.)
     });
+    let pressure_solver = problem.make_pressure_solver();
     physics::Solver::new(
         problem,
-        physics::PressureSolver::default(),
+        pressure_solver,
         initial_dynamic_geometry,
         initial_height,
         velocity,
@@ -72,9 +76,10 @@ pub fn uniform(num_x_cells: usize, num_y_cells: usize, num_z_cells: usize) -> ph
     let velocity = fields::VolVectorField::new(&initial_dynamic_geometry, |_, _, _| {
         Vector3::new(0., 0., 0.)
     });
+    let pressure_solver = problem.make_pressure_solver();
     physics::Solver::new(
         problem,
-        physics::PressureSolver::default(),
+        pressure_solver,
         initial_dynamic_geometry,
         initial_height,
         velocity,
@@ -86,8 +91,8 @@ mod test {
     use super::*;
 
     #[test]
-    fn test_advection_1d() {
-        let mut solver = advection_1d(30, 3);
+    fn test_bump_1d() {
+        let mut solver = bump_1d(30, 3);
         for _ in 0..10 {
             solver.step(0.001);
         }

@@ -316,18 +316,90 @@ impl<V: Value> std::ops::Neg for VolField<V> {
     }
 }
 #[cfg(test)]
-impl<V: Value> approx::AbsDiffEq for VolField<V>
+pub struct AllCloseAssertion<'a, 'b, 'c, V>
 where
-    V: approx::AbsDiffEq<V, Epsilon = Float>,
+    V: Value
+        + std::fmt::Display
+        + approx::AbsDiffEq<V, Epsilon = Float>
+        + approx::RelativeEq<V, Epsilon = Float>,
 {
-    type Epsilon = Float;
+    left: &'a VolField<V>,
+    right: &'b VolField<V>,
 
-    fn default_epsilon() -> Self::Epsilon {
-        1e-5
+    dynamic_geometry: &'c geom::DynamicGeometry,
+
+    rel_tol: Option<Float>,
+    abs_tol: Option<Float>,
+}
+#[cfg(test)]
+impl<'a, 'b, 'c, V> AllCloseAssertion<'a, 'b, 'c, V>
+where
+    V: Value
+        + std::fmt::Display
+        + approx::AbsDiffEq<V, Epsilon = Float>
+        + approx::RelativeEq<V, Epsilon = Float>,
+{
+    pub fn rel_tol(&mut self, rel_tol: Option<Float>) -> &mut Self {
+        self.rel_tol = rel_tol;
+        self
     }
 
-    fn abs_diff_eq(&self, other: &Self, epsilon: Self::Epsilon) -> bool {
-        <nd::Array4<V> as approx::AbsDiffEq<_>>::abs_diff_eq(&self.cells, &other.cells, epsilon)
+    pub fn abs_tol(&mut self, abs_tol: Option<Float>) -> &mut Self {
+        self.abs_tol = abs_tol;
+        self
+    }
+}
+
+#[cfg(test)]
+impl<'a, 'b, 'c, V> Drop for AllCloseAssertion<'a, 'b, 'c, V>
+where
+    V: Value
+        + std::fmt::Display
+        + approx::AbsDiffEq<V, Epsilon = Float>
+        + approx::RelativeEq<V, Epsilon = Float>,
+{
+    #[track_caller]
+    fn drop(&mut self) {
+        if self.rel_tol.is_none() && self.abs_tol.is_none() {
+            panic!("At least one tolerance must be specified");
+        }
+        for cell_index in self.dynamic_geometry.grid().cell_indexing().iter() {
+            let mut checker = approx::Relative::default();
+            if let Some(rel_tol) = self.rel_tol {
+                checker = checker.max_relative(rel_tol);
+            }
+            if let Some(abs_tol) = self.abs_tol {
+                checker = checker.epsilon(abs_tol);
+            }
+            let left = self.left.cell_value(cell_index);
+            let right = self.right.cell_value(cell_index);
+            if !checker.eq(&left, &right) {
+                panic!("At {cell_index:?}, left = {left}, right = {right}");
+            }
+        }
+    }
+}
+#[cfg(test)]
+impl<
+    V: Value
+        + std::fmt::Display
+        + approx::AbsDiffEq<V, Epsilon = Float>
+        + approx::RelativeEq<V, Epsilon = Float>,
+> VolField<V>
+{
+    #[track_caller]
+    pub fn assert_all_close<'a, 'b, 'c>(
+        &'a self,
+        other: &'b Self,
+        dynamic_geometry: &'c geom::DynamicGeometry,
+    ) -> AllCloseAssertion<'a, 'b, 'c, V> {
+        AllCloseAssertion {
+            left: self,
+            right: other,
+            dynamic_geometry,
+            rel_tol: Some(1e-7),
+            abs_tol: Some(0.),
+        }
     }
 }
 
@@ -448,6 +520,55 @@ impl VolVectorField {
             dynamic_geometry,
             boundary_conditions,
             GradientComputer { vector_field: self },
+        )
+    }
+
+    pub fn divergence(
+        &self,
+        dynamic_geometry: &geom::DynamicGeometry,
+        boundary_conditions: &BoundaryConditions<Vector3>,
+    ) -> VolScalarField {
+        struct DivergenceComputer<'a> {
+            vector_field: &'a VolVectorField,
+        }
+
+        impl derivs::DifferentialOpComputer<Vector3, Float> for DivergenceComputer<'_> {
+            fn compute_interior_face_value(
+                &self,
+                cell: &geom::Cell,
+                neighbor_cell: &geom::Cell,
+                outward_normal: UnitVector3,
+            ) -> Float {
+                0.5 * (self.vector_field.cell_value(cell.index)
+                    + self.vector_field.cell_value(neighbor_cell.index))
+                .dot(&outward_normal)
+            }
+
+            fn compute_boundary_face_value(
+                &self,
+                cell: &geom::Cell,
+                block_paired_cell: &geom::Cell,
+                outward_normal: UnitVector3,
+                _face_centroid: Point3,
+                boundary_condition: BoundaryCondition<Vector3>,
+            ) -> Float {
+                match boundary_condition {
+                    BoundaryCondition::HomDirichlet => 0.,
+                    BoundaryCondition::HomNeumann => {
+                        0.5 * (self.vector_field.cell_value(cell.index)
+                            + self.vector_field.cell_value(block_paired_cell.index))
+                        .dot(&outward_normal)
+                    }
+                    BoundaryCondition::InhomNeumann(_) => unimplemented!(),
+                    BoundaryCondition::Kinematic(_) => unimplemented!(),
+                }
+            }
+        }
+
+        derivs::compute_field_differential(
+            dynamic_geometry,
+            boundary_conditions,
+            DivergenceComputer { vector_field: self },
         )
     }
 
@@ -909,7 +1030,9 @@ mod tests {
 
             let advection = velocity.advect_upwind(&dynamic_geometry, &boundary_conditions);
 
-            approx::assert_abs_diff_eq!(advection, velocity, epsilon = 1e-5);
+            advection
+                .assert_all_close(&velocity, &dynamic_geometry)
+                .abs_tol(Some(1e-5));
         }
 
         // Varying velocity, homogeneous Dirichlet boundary conditions.
@@ -967,18 +1090,18 @@ mod tests {
             let velocity = VolVectorField::zeros(cell_indexing);
 
             let shear = velocity.gradient(&dynamic_geometry, &boundary_conditions);
+            let divergence = velocity.divergence(&dynamic_geometry, &boundary_conditions);
             let laplacian = velocity.laplacian(&dynamic_geometry, &shear, &boundary_conditions);
 
-            approx::assert_abs_diff_eq!(
-                shear,
-                VolTensorField::zeros(cell_indexing),
-                epsilon = 1e-5
-            );
-            approx::assert_abs_diff_eq!(
-                laplacian,
-                VolVectorField::zeros(cell_indexing),
-                epsilon = 1e-5
-            );
+            shear
+                .assert_all_close(&VolTensorField::zeros(cell_indexing), &dynamic_geometry)
+                .abs_tol(Some(1e-5));
+            divergence
+                .assert_all_close(&VolScalarField::zeros(cell_indexing), &dynamic_geometry)
+                .abs_tol(Some(1e-5));
+            laplacian
+                .assert_all_close(&VolVectorField::zeros(cell_indexing), &dynamic_geometry)
+                .abs_tol(Some(1e-5));
         }
 
         // Constant velocity.
@@ -991,18 +1114,18 @@ mod tests {
                 VolVectorField::new(&dynamic_geometry, |_, _, _| Vector3::new(2., -1., 7.));
 
             let shear = velocity.gradient(&dynamic_geometry, &boundary_conditions);
+            let divergence = velocity.divergence(&dynamic_geometry, &boundary_conditions);
             let laplacian = velocity.laplacian(&dynamic_geometry, &shear, &boundary_conditions);
 
-            approx::assert_abs_diff_eq!(
-                shear,
-                VolTensorField::zeros(cell_indexing),
-                epsilon = 1e-5
-            );
-            approx::assert_abs_diff_eq!(
-                laplacian,
-                VolVectorField::zeros(cell_indexing),
-                epsilon = 1e-5
-            );
+            shear
+                .assert_all_close(&VolTensorField::zeros(cell_indexing), &dynamic_geometry)
+                .abs_tol(Some(1e-5));
+            divergence
+                .assert_all_close(&VolScalarField::zeros(cell_indexing), &dynamic_geometry)
+                .abs_tol(Some(1e-5));
+            laplacian
+                .assert_all_close(&VolVectorField::zeros(cell_indexing), &dynamic_geometry)
+                .abs_tol(Some(1e-5));
         }
 
         // Varying velocity with homogeneous Dirichlet boundary conditions.
@@ -1016,6 +1139,7 @@ mod tests {
             });
 
             let shear = velocity.gradient(&dynamic_geometry, &boundary_conditions);
+            let divergence = velocity.divergence(&dynamic_geometry, &boundary_conditions);
             let laplacian = velocity.laplacian(&dynamic_geometry, &shear, &boundary_conditions);
 
             let expected_shear = VolTensorField::new(&dynamic_geometry, |x, y, _| {
@@ -1030,6 +1154,9 @@ mod tests {
                     0.,
                     0.,
                 )
+            });
+            let expected_divergence = VolScalarField::new(&dynamic_geometry, |x, y, _| {
+                bump_deriv(x) * bump(y) + -2. * bump(x) * bump_deriv(y)
             });
             let expected_laplacian = VolVectorField::new(&dynamic_geometry, |x, y, _| {
                 Vector3::new(
@@ -1048,8 +1175,22 @@ mod tests {
                     epsilon = 0.1
                 ) {
                     panic!(
-                        "At cell index {cell_index:?}: shear:{shear_value}expected:
+                        "At cell index {cell_index:?}: shear: {shear_value} expected:
                         {expected_shear_value}"
+                    );
+                }
+
+                let divergence_value = divergence.cell_value(cell_index);
+                let expected_divergence_value = expected_divergence.cell_value(cell_index);
+                if !approx::relative_eq!(
+                    divergence_value,
+                    expected_divergence_value,
+                    max_relative = 0.1,
+                    epsilon = 0.1
+                ) {
+                    panic!(
+                        "At cell index {cell_index:?}: divergence: {divergence_value} expected: \
+                         {expected_divergence_value}"
                     );
                 }
 
@@ -1067,8 +1208,8 @@ mod tests {
                             max_relative = 0.2
                         ) {
                             panic!(
-                                "At cell index {cell_index:?}: \
-                                 laplacian:{laplacian_value}expected:
+                                "At cell index {cell_index:?}: laplacian: {laplacian_value} \
+                                 expected:
                                 {expected_laplacian_value}"
                             );
                         }
@@ -1080,8 +1221,8 @@ mod tests {
                             max_relative = 1.
                         ) {
                             println!(
-                                "At cell index {cell_index:?}: \
-                                 laplacian:{laplacian_value}expected:
+                                "At cell index {cell_index:?}: laplacian:
+                            {laplacian_value} expected:
                                 {expected_laplacian_value}"
                             );
                         }

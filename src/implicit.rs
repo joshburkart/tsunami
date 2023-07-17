@@ -402,22 +402,18 @@ mod op_impls {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct ImplicitSolver {
-    linear_solver: linalg::LinearSolver,
+    pub linear_solver: linalg::LinearSolver,
 }
 impl ImplicitSolver {
-    pub fn new(linear_solver: linalg::LinearSolver) -> Self {
-        Self { linear_solver }
-    }
-
     pub fn solve<T: ImplicitTerm>(
         &self,
         implicit_term: T,
         dynamic_geometry: &geom::DynamicGeometry,
         boundary_conditions: &fields::BoundaryConditions<T::ImplicitValue>,
         guess: Option<&fields::VolField<T::ImplicitValue>>,
-    ) -> Result<fields::VolField<T::ImplicitValue>, linalg::LinearSolveError> {
+    ) -> Result<fields::VolField<T::ImplicitValue>, ImplicitSolveError> {
         use fields::Value;
         use indexing::{Indexing, IntoIndexIterator};
 
@@ -465,15 +461,52 @@ impl ImplicitSolver {
             cell_indexing,
             &self
                 .linear_solver
-                .solve(matrix.to_csr().view(), x, -lhs_constant)?,
+                .solve(matrix.to_csr().view(), x, -lhs_constant)
+                .map_err(|err| match err {
+                    linalg::LinearSolveError::NotDiagonallyDominant {
+                        row_index,
+                        abs_diag,
+                        sum_abs_row,
+                    } => ImplicitSolveError::NotDiagonallyDominant {
+                        cell_index: cell_indexing.unflatten(row_index),
+                        abs_diag,
+                        sum_abs_row,
+                    },
+                    linalg::LinearSolveError::MaxItersReached {
+                        iters,
+                        rel_error,
+                        abs_error,
+                        rel_error_tol,
+                        abs_error_tol,
+                    } => ImplicitSolveError::MaxItersReached {
+                        iters,
+                        rel_error,
+                        abs_error,
+                        rel_error_tol,
+                        abs_error_tol,
+                    },
+                    linalg::LinearSolveError::SingularMatrix => ImplicitSolveError::SingularSystem,
+                })?,
         ))
     }
 }
 
-// let u = implicit::ImplicitVolField::<Float>::new(dynamic_geometry,
-// boundary_conditions);
-// let eq = (u - prev_u) / dt + u.advect_by(prev_u) - nu * u.laplacian() ==
-//      -prev_grad_p / rho + g;
+#[derive(Debug)]
+pub enum ImplicitSolveError {
+    NotDiagonallyDominant {
+        cell_index: indexing::CellIndex,
+        abs_diag: Float,
+        sum_abs_row: Float,
+    },
+    MaxItersReached {
+        rel_error: Option<Float>,
+        abs_error: Float,
+        rel_error_tol: Float,
+        abs_error_tol: Float,
+        iters: usize,
+    },
+    SingularSystem,
+}
 
 #[cfg(test)]
 mod tests {
@@ -500,11 +533,16 @@ mod tests {
         let implicit_field = ImplicitVolField::default();
 
         for solver in [
-            ImplicitSolver::new(linalg::LinearSolver::Direct),
-            ImplicitSolver::new(linalg::LinearSolver::GaussSeidel {
-                max_iters: 20,
-                rel_error_tol: 1e-7,
-            }),
+            ImplicitSolver {
+                linear_solver: linalg::LinearSolver::Direct,
+            },
+            ImplicitSolver {
+                linear_solver: linalg::LinearSolver::GaussSeidel {
+                    max_iters: 20,
+                    rel_error_tol: 1e-7,
+                    abs_error_tol: 1e-7,
+                },
+            },
         ] {
             {
                 let x_sol = solver
@@ -590,7 +628,7 @@ mod tests {
         }
     }
 
-    /// Test ensuring matrix terms sum appropriately.
+    /// Ensure matrix terms sum appropriately.
     #[test]
     fn test_matrices_sum() {
         let mut matrix = sprs::TriMat::<Float>::new((2, 2));

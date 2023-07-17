@@ -4,17 +4,10 @@ use crate::{Array1, Array2, Float};
 pub enum LinearSolver {
     GaussSeidel {
         max_iters: usize,
+        abs_error_tol: Float,
         rel_error_tol: Float,
     },
     Direct,
-}
-impl Default for LinearSolver {
-    fn default() -> Self {
-        Self::GaussSeidel {
-            max_iters: 30000,
-            rel_error_tol: 1e-1,
-        }
-    }
 }
 impl LinearSolver {
     pub fn solve(
@@ -27,7 +20,15 @@ impl LinearSolver {
             LinearSolver::GaussSeidel {
                 max_iters,
                 rel_error_tol,
-            } => solve_linear_system_gauss_seidel(matrix, x, rhs, *max_iters, *rel_error_tol),
+                abs_error_tol,
+            } => solve_linear_system_gauss_seidel(
+                matrix,
+                x,
+                rhs,
+                *max_iters,
+                *rel_error_tol,
+                *abs_error_tol,
+            ),
             LinearSolver::Direct => solve_linear_system_direct(matrix.to_dense(), rhs),
         }
     }
@@ -41,7 +42,10 @@ pub enum LinearSolveError {
         sum_abs_row: Float,
     },
     MaxItersReached {
-        error: Float,
+        rel_error: Option<Float>,
+        abs_error: Float,
+        rel_error_tol: Float,
+        abs_error_tol: Float,
         iters: usize,
     },
     SingularMatrix,
@@ -57,25 +61,34 @@ pub fn solve_linear_system_gauss_seidel(
     rhs: Array1,
     max_iters: usize,
     rel_error_tol: Float,
+    abs_error_tol: Float,
 ) -> Result<Array1, LinearSolveError> {
     assert!(matrix.rows() == matrix.cols());
     assert!(matrix.rows() == x.shape()[0]);
     assert!(matrix.is_csr());
 
-    let compute_error = |x: &Array1| {
+    let compute_rel_and_abs_error = |x: &Array1| {
         use ndarray_linalg::Norm;
 
+        let abs_error = (&matrix * x - &rhs).norm() / (x.len() as Float).sqrt();
         let rhs_norm = rhs.norm();
-        if rhs_norm < 1e-14 {
-            0.
-        } else {
-            (&matrix * x - &rhs).norm() / rhs_norm / (x.len() as Float).sqrt()
-        }
+        (
+            if rhs_norm < 1e-14 {
+                None
+            } else {
+                Some(abs_error / rhs_norm)
+            },
+            abs_error,
+        )
     };
 
-    let mut error = compute_error(&x);
+    let (mut rel_error, mut abs_error) = compute_rel_and_abs_error(&x);
     for _ in 0..max_iters {
-        if error < rel_error_tol {
+        if rel_error
+            .map(|rel_error| rel_error < rel_error_tol)
+            .unwrap_or(true)
+            && abs_error < abs_error_tol
+        {
             return Ok(x);
         }
 
@@ -106,10 +119,13 @@ pub fn solve_linear_system_gauss_seidel(
             x[[row_index]] = (current_rhs - sigma) / diag;
         }
 
-        error = compute_error(&x);
+        (rel_error, abs_error) = compute_rel_and_abs_error(&x);
     }
     Err(LinearSolveError::MaxItersReached {
-        error,
+        rel_error,
+        abs_error,
+        rel_error_tol,
+        abs_error_tol,
         iters: max_iters,
     })
 }

@@ -2,7 +2,7 @@ use pyo3::prelude::*;
 
 use crate::{
     fields, geom, implicit,
-    indexing::{self, Indexing, IntoIndexIterator},
+    indexing::{self, IntoIndexIterator},
     linalg, Float, Vector2, Vector3,
 };
 
@@ -44,6 +44,18 @@ impl Default for Problem {
         }
     }
 }
+impl Problem {
+    pub fn make_pressure_solver(&self) -> implicit::ImplicitSolver {
+        let rel_error_tol = 0.1;
+        implicit::ImplicitSolver {
+            linear_solver: linalg::LinearSolver::GaussSeidel {
+                max_iters: 100000,
+                abs_error_tol: rel_error_tol * self.density * self.grav_accel,
+                rel_error_tol,
+            },
+        }
+    }
+}
 
 #[pyclass]
 pub struct Solver {
@@ -51,18 +63,16 @@ pub struct Solver {
     dynamic_geometry: Option<geom::DynamicGeometry>,
     fields: Fields,
 
-    pressure_solver: PressureSolver,
+    pressure_solver: implicit::ImplicitSolver,
 }
 impl Solver {
     pub fn new(
         problem: Problem,
-        pressure_solver: PressureSolver,
+        pressure_solver: implicit::ImplicitSolver,
         initial_dynamic_geometry: geom::DynamicGeometry,
         initial_height: fields::AreaScalarField,
         initial_velocity: fields::VolVectorField,
     ) -> Self {
-        let hydrostatic_column_pressure =
-            compute_hydrostatic_column_pressure(&problem, &initial_dynamic_geometry);
         let pressure_boundary_conditions =
             compute_pressure_boundary_conditions(&problem, &initial_dynamic_geometry);
         let velocity_boundary_conditions = compute_velocity_boundary_conditions(
@@ -71,23 +81,20 @@ impl Solver {
                 initial_dynamic_geometry.grid().cell_footprint_indexing(),
             ),
         );
-        let pressure = pressure_solver.solve(
+
+        let hydrostatic_column_pressure =
+            compute_hydrostatic_column_pressure(&problem, &initial_dynamic_geometry);
+        let pressure = Self::compute_pressure(
             &problem,
             &initial_dynamic_geometry,
             &pressure_boundary_conditions,
+            &pressure_solver,
             &initial_velocity.gradient(&initial_dynamic_geometry, &velocity_boundary_conditions),
-            &hydrostatic_column_pressure,
-            None,
-        );
-        let pressure_grad =
-            pressure.gradient(&initial_dynamic_geometry, &pressure_boundary_conditions);
-        let pressure = pressure_solver.solve(
-            &problem,
-            &initial_dynamic_geometry,
-            &pressure_boundary_conditions,
-            &initial_velocity.gradient(&initial_dynamic_geometry, &velocity_boundary_conditions),
-            &hydrostatic_column_pressure,
-            Some(&pressure_grad),
+            Some(
+                &hydrostatic_column_pressure
+                    .gradient(&initial_dynamic_geometry, &pressure_boundary_conditions),
+            ),
+            Some(&hydrostatic_column_pressure),
         );
         let pressure_grad =
             pressure.gradient(&initial_dynamic_geometry, &pressure_boundary_conditions);
@@ -187,14 +194,15 @@ impl Solver {
             .fields
             .velocity
             .gradient(dynamic_geometry, &velocity_boundary_conditions);
-        self.fields.pressure = self.pressure_solver.solve(
+        self.fields.pressure = Self::compute_pressure(
             &self.problem,
             dynamic_geometry,
             &pressure_boundary_conditions,
-            // &fields::VolTensorField::zeros(dynamic_geometry.grid().cell_indexing()),
+            &self.pressure_solver,
             &shear, // TODO
-            &self.fields.pressure,
+            // &fields::VolTensorField::zeros(dynamic_geometry.grid().cell_indexing()),
             Some(&self.fields.pressure_grad),
+            Some(&self.fields.pressure),
         );
         self.fields.pressure_grad = self
             .fields
@@ -215,6 +223,30 @@ impl Solver {
             .velocity
             .advect_upwind(dynamic_geometry, &velocity_boundary_conditions);
         self.fields.velocity += &(dt * &dvdt);
+    }
+
+    fn compute_pressure(
+        problem: &Problem,
+        dynamic_geometry: &geom::DynamicGeometry,
+        boundary_conditions: &fields::BoundaryConditions<Float>,
+        implicit_solver: &implicit::ImplicitSolver,
+        shear: &fields::VolTensorField,
+        pressure_grad: Option<&fields::VolVectorField>,
+        prev_pressure: Option<&fields::VolScalarField>,
+    ) -> fields::VolScalarField {
+        let p = implicit::ImplicitVolField::default();
+        let s =
+            shear.map(|shear| -problem.density * (shear.component_mul(&shear.transpose())).sum());
+        let pressure_system = p.laplacian(pressure_grad) - &s;
+
+        implicit_solver
+            .solve(
+                pressure_system,
+                &dynamic_geometry,
+                &boundary_conditions,
+                prev_pressure,
+            )
+            .unwrap()
     }
 }
 #[pymethods]
@@ -386,89 +418,6 @@ pub fn compute_height_time_deriv(
 //     }
 // }
 
-#[derive(Debug, Default)]
-pub struct PressureSolver {
-    implicit_solver: implicit::ImplicitSolver,
-}
-impl PressureSolver {
-    pub fn solve(
-        &self,
-        problem: &Problem,
-        dynamic_geometry: &geom::DynamicGeometry,
-        boundary_conditions: &fields::BoundaryConditions<Float>,
-        shear: &fields::VolTensorField,
-        guess_pressure: &fields::VolScalarField,
-        prev_pressure_grad: Option<&fields::VolVectorField>,
-    ) -> fields::VolScalarField {
-        let p = implicit::ImplicitVolField::default();
-        let s =
-            shear.map(|shear| -problem.density * (shear.component_mul(&shear.transpose())).sum());
-        let pressure_system = p.laplacian(prev_pressure_grad) - &s;
-
-        match self.implicit_solver.solve(
-            pressure_system,
-            dynamic_geometry,
-            boundary_conditions,
-            Some(guess_pressure),
-        ) {
-            Err(linalg::LinearSolveError::NotDiagonallyDominant {
-                row_index,
-                abs_diag,
-                sum_abs_row,
-            }) => {
-                let cell = dynamic_geometry.grid().cell_indexing().unflatten(row_index);
-                panic!(
-                    "Pressure system was not diagonally dominant at cell {cell:?} ({:?}): |diag| \
-                     = {abs_diag:.4} vs. sum_j |M_ij| = {sum_abs_row:.4}",
-                    dynamic_geometry.grid().cell_indexing().classify_cell(cell)
-                )
-            }
-            Err(error) => panic!("Failed to solve pressure equations: {error:?}"),
-            Ok(result) => result,
-        }
-
-        // for cell_index in [
-        //     indexing::CellIndex {
-        //         footprint: indexing::CellFootprintIndex {
-        //             x: 5,
-        //             y: 0,
-        //             triangle: indexing::Triangle::LowerRight,
-        //         },
-        //         z: 0,
-        //     },
-        //     indexing::CellIndex {
-        //         footprint: indexing::CellFootprintIndex {
-        //             x: 5,
-        //             y: 0,
-        //             triangle: indexing::Triangle::UpperLeft,
-        //         },
-        //         z: 0,
-        //     },
-        //     indexing::CellIndex {
-        //         footprint: indexing::CellFootprintIndex {
-        //             x: 6,
-        //             y: 0,
-        //             triangle: indexing::Triangle::UpperLeft,
-        //         },
-        //         z: 0,
-        //     },
-        //     indexing::CellIndex {
-        //         footprint: indexing::CellFootprintIndex {
-        //             x: 5,
-        //             y: 0,
-        //             triangle: indexing::Triangle::LowerRight,
-        //         },
-        //         z: 1,
-        //     },
-        // ] {
-        //     println!(
-        //         "{cell_index:?}: {}",
-        //         flattened_pressure[dynamic_geometry.grid().cell_indexing().
-        // flatten(cell_index)]     );
-        // }
-    }
-}
-
 fn compute_velocity_boundary_conditions(
     problem: &Problem,
     dhdt: &fields::AreaScalarField,
@@ -556,16 +505,43 @@ mod tests {
 
         let hydrostatic_column_pressure =
             compute_hydrostatic_column_pressure(&problem, &dynamic_geometry);
-        let pressure = PressureSolver::default().solve(
+        let boundary_conditions = compute_pressure_boundary_conditions(&problem, &dynamic_geometry);
+        let mut pressure_solver = problem.make_pressure_solver();
+        match &mut pressure_solver.linear_solver {
+            linalg::LinearSolver::GaussSeidel {
+                abs_error_tol,
+                rel_error_tol,
+                ..
+            } => {
+                *abs_error_tol /= 10.;
+                *rel_error_tol /= 10.;
+            }
+            linalg::LinearSolver::Direct => {}
+        };
+
+        let pressure = Solver::compute_pressure(
             &problem,
             &dynamic_geometry,
-            &compute_pressure_boundary_conditions(&problem, &dynamic_geometry),
+            &boundary_conditions,
+            &pressure_solver,
             &fields::VolTensorField::zeros(dynamic_geometry.grid().cell_indexing()),
-            &hydrostatic_column_pressure,
+            None,
             None,
         );
+        hydrostatic_column_pressure
+            .assert_all_close(&pressure, &dynamic_geometry)
+            .rel_tol(Some(1e-1));
 
-        approx::assert_abs_diff_eq!(hydrostatic_column_pressure, pressure, epsilon = 1e-5);
+        let pressure = Solver::compute_pressure(
+            &problem,
+            &dynamic_geometry,
+            &boundary_conditions,
+            &pressure_solver,
+            &fields::VolTensorField::zeros(dynamic_geometry.grid().cell_indexing()),
+            Some(&pressure.gradient(&dynamic_geometry, &boundary_conditions)),
+            Some(&hydrostatic_column_pressure),
+        );
+        hydrostatic_column_pressure.assert_all_close(&pressure, &dynamic_geometry);
     }
 
     #[test]
