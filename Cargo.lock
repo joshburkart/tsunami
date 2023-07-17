@@ -262,6 +262,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "flow"
+version = "0.1.0"
+dependencies = [
+ "approx 0.5.1",
+ "nalgebra",
+ "ndarray",
+ "ndarray-linalg",
+ "num-traits",
+ "numpy",
+ "pyo3",
+ "sprs",
+ "strum",
+ "strum_macros",
+]
+
+[[package]]
 name = "foreign-types"
 version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -905,22 +921,6 @@ dependencies = [
  "getrandom",
  "redox_syscall 0.2.16",
  "thiserror",
-]
-
-[[package]]
-name = "riversim"
-version = "0.1.0"
-dependencies = [
- "approx 0.5.1",
- "nalgebra",
- "ndarray",
- "ndarray-linalg",
- "num-traits",
- "numpy",
- "pyo3",
- "sprs",
- "strum",
- "strum_macros",
 ]
 
 [[package]]

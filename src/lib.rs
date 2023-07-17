@@ -28,7 +28,7 @@ type Array2 = nd::Array2<Float>;
 type Array3 = nd::Array3<Float>;
 
 #[pymodule]
-fn riversim(_py: Python<'_>, m: &PyModule) -> PyResult<()> {
+fn flow(_py: Python<'_>, m: &PyModule) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(examples::bump_1d, m)?)?;
     m.add_function(wrap_pyfunction!(examples::singularity_1d, m)?)?;
     m.add_function(wrap_pyfunction!(examples::uniform, m)?)

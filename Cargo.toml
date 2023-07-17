@@ -1,11 +1,11 @@
 [package]
 edition = "2021"
-name = "riversim"
+name = "flow"
 version = "0.1.0"
 
 [lib]
 crate-type = ["cdylib", "rlib"]
-name = "riversim"
+name = "flow"
 
 [dependencies]
 nalgebra = "0.32.2"
