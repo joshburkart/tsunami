@@ -2,13 +2,11 @@ use std::ops;
 
 use ndarray as nd;
 
-use crate::{fields, geom, indexing, linalg, Array1, Float, Vector3};
+use crate::{fields, geom, indexing, linalg, Array1, Float, Point3, UnitVector3, Vector3};
 
 pub trait ImplicitValue: fields::Value {}
 impl ImplicitValue for Float {}
 impl ImplicitValue for Vector3 {}
-
-const EPSILON: Float = 1e-10;
 
 #[derive(Clone, Copy, Default)]
 pub struct ImplicitVolField<V: ImplicitValue> {
@@ -18,18 +16,19 @@ impl ImplicitVolField<Float> {
     pub fn laplacian(
         self,
         explicit_grad: Option<&fields::VolVectorField>,
-    ) -> SemiImplicitScalarLaplacianField {
-        SemiImplicitScalarLaplacianField { explicit_grad }
+    ) -> DifferentialImplicitSystem<SemiImplicitScalarLaplacianField> {
+        DifferentialImplicitSystem {
+            differential: SemiImplicitScalarLaplacianField { explicit_grad },
+        }
     }
 }
 
 pub struct CellCoef {
     cell_index: indexing::CellIndex,
-    /// The coefficient, or [`None`] to indicate `1.`.
-    coef: Option<Float>,
+    coef: Float,
 }
 
-pub trait ImplicitTerm {
+pub trait ImplicitSystem {
     type ImplicitValue: ImplicitValue;
 
     /// Generate the subsystem of an overall field equation linear system
@@ -40,18 +39,17 @@ pub trait ImplicitTerm {
     ///
     /// # Returns
     ///
-    /// Any constant value for the subsystem, i.e. the `b` in `Ax + b = 0`, or
-    /// `None` to indicate `0.`.
+    /// Any constant value for the subsystem, i.e. the `b` in `Ax + b = 0`.
     fn gen_subsystem<F: FnMut(CellCoef)>(
         &self,
         add_cell_coef: &mut F,
         cell_index: indexing::CellIndex,
         dynamic_geometry: &geom::DynamicGeometry,
         boundary_conditions: &fields::BoundaryConditions<Self::ImplicitValue>,
-    ) -> Option<Self::ImplicitValue>;
+    ) -> Self::ImplicitValue;
 }
 
-impl<V: ImplicitValue> ImplicitTerm for ImplicitVolField<V> {
+impl<V: ImplicitValue> ImplicitSystem for ImplicitVolField<V> {
     type ImplicitValue = V;
 
     fn gen_subsystem<F: FnMut(CellCoef)>(
@@ -60,20 +58,20 @@ impl<V: ImplicitValue> ImplicitTerm for ImplicitVolField<V> {
         cell_index: indexing::CellIndex,
         _dynamic_geometry: &geom::DynamicGeometry,
         _boundary_conditions: &fields::BoundaryConditions<Self::ImplicitValue>,
-    ) -> Option<Self::ImplicitValue> {
+    ) -> Self::ImplicitValue {
         add_cell_coef(CellCoef {
             cell_index,
-            coef: None,
+            coef: 1.,
         });
-        None
+        <Self::ImplicitValue as num_traits::Zero>::zero()
     }
 }
 
-pub struct ImplicitScalarProduct<T: ImplicitTerm> {
+pub struct ImplicitScalarProduct<T: ImplicitSystem> {
     scalar: Float,
     term: T,
 }
-impl<T: ImplicitTerm> ImplicitTerm for ImplicitScalarProduct<T> {
+impl<T: ImplicitSystem> ImplicitSystem for ImplicitScalarProduct<T> {
     type ImplicitValue = T::ImplicitValue;
 
     fn gen_subsystem<F: FnMut(CellCoef)>(
@@ -82,34 +80,32 @@ impl<T: ImplicitTerm> ImplicitTerm for ImplicitScalarProduct<T> {
         cell_index: indexing::CellIndex,
         dynamic_geometry: &geom::DynamicGeometry,
         boundary_conditions: &fields::BoundaryConditions<T::ImplicitValue>,
-    ) -> Option<Self::ImplicitValue> {
+    ) -> Self::ImplicitValue {
         let mut add_cell_coef_wrapper = |cell_coef: CellCoef| {
             add_cell_coef(CellCoef {
                 cell_index: cell_coef.cell_index,
-                coef: cell_coef
-                    .coef
-                    .map(|coef| coef * self.scalar)
-                    .or(Some(self.scalar)),
+                coef: cell_coef.coef * self.scalar,
             })
         };
 
-        self.term
-            .gen_subsystem(
-                &mut add_cell_coef_wrapper,
-                cell_index,
-                dynamic_geometry,
-                boundary_conditions,
-            )
-            .map(|rhs| rhs * self.scalar)
+        self.term.gen_subsystem(
+            &mut add_cell_coef_wrapper,
+            cell_index,
+            dynamic_geometry,
+            boundary_conditions,
+        ) * self.scalar
     }
 }
 
-pub struct ImplicitTermSum<T1: ImplicitTerm, T2: ImplicitTerm> {
+pub struct ImplicitTermSum<T1: ImplicitSystem, T2: ImplicitSystem> {
     term_1: T1,
     term_2: T2,
 }
-impl<V: ImplicitValue, T1: ImplicitTerm<ImplicitValue = V>, T2: ImplicitTerm<ImplicitValue = V>>
-    ImplicitTerm for ImplicitTermSum<T1, T2>
+impl<
+        V: ImplicitValue,
+        T1: ImplicitSystem<ImplicitValue = V>,
+        T2: ImplicitSystem<ImplicitValue = V>,
+    > ImplicitSystem for ImplicitTermSum<T1, T2>
 {
     type ImplicitValue = <T1::ImplicitValue as std::ops::Add<T2::ImplicitValue>>::Output;
 
@@ -119,7 +115,7 @@ impl<V: ImplicitValue, T1: ImplicitTerm<ImplicitValue = V>, T2: ImplicitTerm<Imp
         cell_index: indexing::CellIndex,
         dynamic_geometry: &geom::DynamicGeometry,
         boundary_conditions: &fields::BoundaryConditions<V>,
-    ) -> Option<V> {
+    ) -> V {
         let rhs_1 = self.term_1.gen_subsystem(
             add_cell_coef,
             cell_index,
@@ -132,14 +128,11 @@ impl<V: ImplicitValue, T1: ImplicitTerm<ImplicitValue = V>, T2: ImplicitTerm<Imp
             dynamic_geometry,
             boundary_conditions,
         );
-        Some(
-            rhs_1.unwrap_or(<T1::ImplicitValue as num_traits::Zero>::zero())
-                + rhs_2.unwrap_or(<T2::ImplicitValue as num_traits::Zero>::zero()),
-        )
+        rhs_1 + rhs_2
     }
 }
 
-impl<'a, V: ImplicitValue> ImplicitTerm for &'a fields::VolField<V> {
+impl<'a, V: ImplicitValue> ImplicitSystem for &'a fields::VolField<V> {
     type ImplicitValue = V;
 
     fn gen_subsystem<F: FnMut(CellCoef)>(
@@ -148,12 +141,12 @@ impl<'a, V: ImplicitValue> ImplicitTerm for &'a fields::VolField<V> {
         cell_index: indexing::CellIndex,
         _dynamic_geometry: &geom::DynamicGeometry,
         _boundary_conditions: &fields::BoundaryConditions<V>,
-    ) -> Option<V> {
-        Some(self.cell_value(cell_index))
+    ) -> V {
+        self.cell_value(cell_index)
     }
 }
 
-impl<V: ImplicitValue> ImplicitTerm for V {
+impl<V: ImplicitValue> ImplicitSystem for V {
     type ImplicitValue = V;
 
     fn gen_subsystem<F: FnMut(CellCoef)>(
@@ -162,16 +155,39 @@ impl<V: ImplicitValue> ImplicitTerm for V {
         _cell_index: indexing::CellIndex,
         _dynamic_geometry: &geom::DynamicGeometry,
         _boundary_conditions: &fields::BoundaryConditions<Self::ImplicitValue>,
-    ) -> Option<Self::ImplicitValue> {
-        Some(*self)
+    ) -> Self::ImplicitValue {
+        *self
     }
 }
 
-pub struct SemiImplicitScalarLaplacianField<'a> {
-    explicit_grad: Option<&'a fields::VolVectorField>,
+pub trait DifferentialImplicitSystemImpl {
+    type ImplicitValue: ImplicitValue;
+
+    fn handle_interior_face<F: FnMut(CellCoef)>(
+        &self,
+        add_cell_coef: &mut F,
+        cell: &geom::Cell,
+        neighbor_cell: &geom::Cell,
+        outward_normal: UnitVector3,
+    ) -> Self::ImplicitValue;
+
+    fn handle_boundary_face<F: FnMut(CellCoef)>(
+        &self,
+        add_cell_coef: &mut F,
+        cell: &geom::Cell,
+        block_paired_cell: &geom::Cell,
+        outward_normal: UnitVector3,
+        face_centroid: Point3,
+        boundary_condition: fields::BoundaryCondition<Self::ImplicitValue>,
+    ) -> Self::ImplicitValue;
 }
-impl<'a> ImplicitTerm for SemiImplicitScalarLaplacianField<'a> {
-    type ImplicitValue = Float;
+
+pub struct DifferentialImplicitSystem<D: DifferentialImplicitSystemImpl> {
+    differential: D,
+}
+
+impl<D: DifferentialImplicitSystemImpl> ImplicitSystem for DifferentialImplicitSystem<D> {
+    type ImplicitValue = D::ImplicitValue;
 
     fn gen_subsystem<F: FnMut(CellCoef)>(
         &self,
@@ -179,98 +195,162 @@ impl<'a> ImplicitTerm for SemiImplicitScalarLaplacianField<'a> {
         cell_index: indexing::CellIndex,
         dynamic_geometry: &geom::DynamicGeometry,
         boundary_conditions: &fields::BoundaryConditions<Self::ImplicitValue>,
-    ) -> Option<Self::ImplicitValue> {
+    ) -> Self::ImplicitValue {
         let cell = dynamic_geometry.cell(cell_index);
 
-        let mut cell_coef = 0.;
-        let mut lhs_constant = None;
+        let mut lhs_constant = <Self::ImplicitValue as num_traits::Zero>::zero();
         for face in &cell.faces {
-            let mut handle_boundary_face =
-                |block_paired_cell: &geom::Cell, boundary_condition| match boundary_condition {
-                    fields::BoundaryCondition::HomDirichlet => {
-                        let displ = face.centroid().coords
-                            - 0.5 * (cell.centroid.coords + block_paired_cell.centroid.coords);
-                        let c_corr = 1. / face.outward_normal().dot(&displ);
-                        let coef = -0.5 * c_corr * face.area() / (cell.volume + EPSILON);
-                        add_cell_coef(CellCoef {
-                            cell_index: block_paired_cell.index,
-                            coef: Some(coef),
-                        });
-                        cell_coef += coef;
-                    }
-                    fields::BoundaryCondition::HomNeumann => {}
-                    fields::BoundaryCondition::InhomNeumann(boundary_value) => {
-                        // TODO: Account for block paired cell if an inhomogeneous Neumann BC is
-                        // used for X or Y boundaries.
-                        lhs_constant = Some(boundary_value * face.area() / cell.volume);
-                    }
-                    fields::BoundaryCondition::Kinematic(_) => unimplemented!(),
-                };
-            match face.neighbor() {
+            let mut add_cell_coef_wrapper = |cell_coef: CellCoef| {
+                add_cell_coef(CellCoef {
+                    cell_index: cell_coef.cell_index,
+                    coef: cell_coef.coef * face.area() / cell.volume,
+                })
+            };
+            lhs_constant += match face.neighbor() {
                 indexing::CellNeighbor::Cell(neighbor_cell_index) => {
-                    let neighbor_cell = dynamic_geometry.cell(neighbor_cell_index);
-                    let displ = neighbor_cell.centroid - cell.centroid;
-                    let c_corr = 1. / face.outward_normal().dot(&displ);
-                    let coef = c_corr * face.area() / cell.volume;
-                    cell_coef -= coef;
-                    add_cell_coef(CellCoef {
-                        cell_index: neighbor_cell_index,
-                        coef: Some(coef),
-                    });
-
-                    if let Some(explicit_grad) = self.explicit_grad {
-                        let explicit_grad_at_face = 0.5
-                            * (explicit_grad.cell_value(cell_index)
-                                + explicit_grad.cell_value(neighbor_cell_index));
-                        let explicit_correction = (face.outward_normal().into_inner()
-                            - c_corr * displ)
-                            .dot(&explicit_grad_at_face);
-                        lhs_constant = Some(explicit_correction * face.area() / cell.volume);
-                    }
+                    self.differential.handle_interior_face(
+                        &mut add_cell_coef_wrapper,
+                        cell,
+                        dynamic_geometry.cell(neighbor_cell_index),
+                        face.outward_normal(),
+                    )
                 }
                 indexing::CellNeighbor::XBoundary(boundary) => match boundary {
-                    indexing::Boundary::Lower => handle_boundary_face(
+                    indexing::Boundary::Lower => self.differential.handle_boundary_face(
+                        &mut add_cell_coef_wrapper,
+                        cell,
                         dynamic_geometry.cell(cell_index.flip()),
+                        face.outward_normal(),
+                        face.centroid(),
                         boundary_conditions.horiz.x.lower,
                     ),
-                    indexing::Boundary::Upper => handle_boundary_face(
+                    indexing::Boundary::Upper => self.differential.handle_boundary_face(
+                        &mut add_cell_coef_wrapper,
+                        cell,
                         dynamic_geometry.cell(cell_index.flip()),
+                        face.outward_normal(),
+                        face.centroid(),
                         boundary_conditions.horiz.x.upper,
                     ),
                 },
                 indexing::CellNeighbor::YBoundary(boundary) => match boundary {
-                    indexing::Boundary::Lower => handle_boundary_face(
+                    indexing::Boundary::Lower => self.differential.handle_boundary_face(
+                        &mut add_cell_coef_wrapper,
+                        cell,
                         dynamic_geometry.cell(cell_index.flip()),
+                        face.outward_normal(),
+                        face.centroid(),
                         boundary_conditions.horiz.y.lower,
                     ),
-                    indexing::Boundary::Upper => handle_boundary_face(
+                    indexing::Boundary::Upper => self.differential.handle_boundary_face(
+                        &mut add_cell_coef_wrapper,
+                        cell,
                         dynamic_geometry.cell(cell_index.flip()),
+                        face.outward_normal(),
+                        face.centroid(),
                         boundary_conditions.horiz.y.upper,
                     ),
                 },
                 indexing::CellNeighbor::ZBoundary(boundary) => match boundary {
-                    indexing::Boundary::Lower => handle_boundary_face(
+                    indexing::Boundary::Lower => self.differential.handle_boundary_face(
+                        &mut add_cell_coef_wrapper,
                         cell,
+                        cell,
+                        face.outward_normal(),
+                        face.centroid(),
                         boundary_conditions
                             .z
                             .lower
                             .boundary_condition(cell_index.footprint),
                     ),
-                    indexing::Boundary::Upper => handle_boundary_face(
+                    indexing::Boundary::Upper => self.differential.handle_boundary_face(
+                        &mut add_cell_coef_wrapper,
                         cell,
+                        cell,
+                        face.outward_normal(),
+                        face.centroid(),
                         boundary_conditions
                             .z
                             .upper
                             .boundary_condition(cell_index.footprint),
                     ),
                 },
-            }
+            } * face.area()
+                / cell.volume
         }
-        add_cell_coef(CellCoef {
-            cell_index,
-            coef: Some(cell_coef),
-        });
         lhs_constant
+    }
+}
+
+pub struct SemiImplicitScalarLaplacianField<'a> {
+    explicit_grad: Option<&'a fields::VolVectorField>,
+}
+impl<'a> DifferentialImplicitSystemImpl for SemiImplicitScalarLaplacianField<'a> {
+    type ImplicitValue = Float;
+
+    fn handle_interior_face<F: FnMut(CellCoef)>(
+        &self,
+        add_cell_coef: &mut F,
+        cell: &geom::Cell,
+        neighbor_cell: &geom::Cell,
+        outward_normal: UnitVector3,
+    ) -> Self::ImplicitValue {
+        let displ = neighbor_cell.centroid - cell.centroid;
+        let c_corr = 1. / outward_normal.dot(&displ);
+        add_cell_coef(CellCoef {
+            cell_index: cell.index,
+            coef: -c_corr,
+        });
+        add_cell_coef(CellCoef {
+            cell_index: neighbor_cell.index,
+            coef: c_corr,
+        });
+
+        if let Some(explicit_grad) = self.explicit_grad {
+            let explicit_grad_at_face = 0.5
+                * (explicit_grad.cell_value(cell.index)
+                    + explicit_grad.cell_value(neighbor_cell.index));
+            let explicit_correction =
+                (outward_normal.into_inner() - c_corr * displ).dot(&explicit_grad_at_face);
+            explicit_correction
+        } else {
+            0.
+        }
+    }
+
+    fn handle_boundary_face<F: FnMut(CellCoef)>(
+        &self,
+        add_cell_coef: &mut F,
+        cell: &geom::Cell,
+        block_paired_cell: &geom::Cell,
+        outward_normal: UnitVector3,
+        face_centroid: Point3,
+        boundary_condition: fields::BoundaryCondition<Self::ImplicitValue>,
+    ) -> Self::ImplicitValue {
+        match boundary_condition {
+            fields::BoundaryCondition::HomDirichlet => {
+                let displ = face_centroid.coords
+                    - 0.5 * (cell.centroid.coords + block_paired_cell.centroid.coords);
+                let c_corr = 1. / outward_normal.dot(&displ);
+                let coef = -0.5 * c_corr;
+                add_cell_coef(CellCoef {
+                    cell_index: cell.index,
+                    coef,
+                });
+                add_cell_coef(CellCoef {
+                    cell_index: block_paired_cell.index,
+                    coef,
+                });
+                0.
+            }
+            fields::BoundaryCondition::HomNeumann => 0.,
+            fields::BoundaryCondition::InhomNeumann(boundary_value) => {
+                // TODO: Account for block paired cell if an inhomogeneous Neumann BC is
+                // used for X or Y boundaries.
+                boundary_value
+            }
+            fields::BoundaryCondition::Kinematic(_) => unimplemented!(),
+        }
     }
 }
 
@@ -318,7 +398,7 @@ mod op_impls {
             }
         }
     }
-    impl<T: ImplicitTerm> ops::Sub<Vector3> for ImplicitScalarProduct<T> {
+    impl<T: ImplicitSystem> ops::Sub<Vector3> for ImplicitScalarProduct<T> {
         type Output = ImplicitTermSum<ImplicitScalarProduct<T>, Vector3>;
 
         fn sub(self, rhs: Vector3) -> Self::Output {
@@ -338,7 +418,7 @@ mod op_impls {
             }
         }
     }
-    impl<T: ImplicitTerm> ops::Add<Vector3> for ImplicitScalarProduct<T> {
+    impl<T: ImplicitSystem> ops::Add<Vector3> for ImplicitScalarProduct<T> {
         type Output = ImplicitTermSum<ImplicitScalarProduct<T>, Vector3>;
 
         fn add(self, rhs: Vector3) -> Self::Output {
@@ -349,11 +429,11 @@ mod op_impls {
         }
     }
     impl<
-        'a,
-        V: ImplicitValue,
-        T1: ImplicitTerm<ImplicitValue = V>,
-        T2: ImplicitTerm<ImplicitValue = V>,
-    > ops::Sub<&'a fields::VolField<V>> for ImplicitTermSum<T1, T2>
+            'a,
+            V: ImplicitValue,
+            T1: ImplicitSystem<ImplicitValue = V>,
+            T2: ImplicitSystem<ImplicitValue = V>,
+        > ops::Sub<&'a fields::VolField<V>> for ImplicitTermSum<T1, T2>
     {
         type Output = ImplicitTermSum<
             ImplicitTermSum<T1, T2>,
@@ -370,9 +450,11 @@ mod op_impls {
             }
         }
     }
-    impl<'a> ops::Sub<&'a fields::VolField<Float>> for SemiImplicitScalarLaplacianField<'a> {
+    impl<'a> ops::Sub<&'a fields::VolField<Float>>
+        for DifferentialImplicitSystem<SemiImplicitScalarLaplacianField<'a>>
+    {
         type Output = ImplicitTermSum<
-            SemiImplicitScalarLaplacianField<'a>,
+            DifferentialImplicitSystem<SemiImplicitScalarLaplacianField<'a>>,
             ImplicitScalarProduct<&'a fields::VolField<Float>>,
         >;
 
@@ -405,9 +487,10 @@ mod op_impls {
 #[derive(Debug)]
 pub struct ImplicitSolver {
     pub linear_solver: linalg::LinearSolver,
+    pub ignore_max_iters: bool,
 }
 impl ImplicitSolver {
-    pub fn solve<T: ImplicitTerm>(
+    pub fn find_root<T: ImplicitSystem>(
         &self,
         implicit_term: T,
         dynamic_geometry: &geom::DynamicGeometry,
@@ -428,7 +511,6 @@ impl ImplicitSolver {
                                          cell_index: col_cell_index,
                                          coef,
                                      }| {
-                let coef = coef.unwrap_or(1.);
                 let col_flat_index = cell_indexing.flatten(col_cell_index);
                 for i in 0..value_size {
                     matrix.add_triplet(
@@ -444,11 +526,9 @@ impl ImplicitSolver {
                 dynamic_geometry,
                 boundary_conditions,
             );
-            if let Some(subsystem_lhs_constant) = subsystem_lhs_constant {
-                subsystem_lhs_constant.flatten(lhs_constant.slice_mut(nd::s![
-                    flat_index * value_size..(flat_index + 1) * value_size
-                ]));
-            }
+            subsystem_lhs_constant.flatten(lhs_constant.slice_mut(nd::s![
+                flat_index * value_size..(flat_index + 1) * value_size
+            ]));
         }
 
         let x = guess
@@ -462,30 +542,39 @@ impl ImplicitSolver {
             &self
                 .linear_solver
                 .solve(matrix.to_csr().view(), x, -lhs_constant)
-                .map_err(|err| match err {
+                .or_else(|err| match err {
                     linalg::LinearSolveError::NotDiagonallyDominant {
                         row_index,
                         abs_diag,
                         sum_abs_row,
-                    } => ImplicitSolveError::NotDiagonallyDominant {
+                    } => Err(ImplicitSolveError::NotDiagonallyDominant {
                         cell_index: cell_indexing.unflatten(row_index),
                         abs_diag,
                         sum_abs_row,
-                    },
+                    }),
                     linalg::LinearSolveError::MaxItersReached {
                         iters,
                         rel_error,
                         abs_error,
                         rel_error_tol,
                         abs_error_tol,
-                    } => ImplicitSolveError::MaxItersReached {
-                        iters,
-                        rel_error,
-                        abs_error,
-                        rel_error_tol,
-                        abs_error_tol,
-                    },
-                    linalg::LinearSolveError::SingularMatrix => ImplicitSolveError::SingularSystem,
+                        solution,
+                    } => {
+                        if self.ignore_max_iters {
+                            Ok(solution)
+                        } else {
+                            Err(ImplicitSolveError::MaxItersReached {
+                                iters,
+                                rel_error,
+                                abs_error,
+                                rel_error_tol,
+                                abs_error_tol,
+                            })
+                        }
+                    }
+                    linalg::LinearSolveError::SingularMatrix => {
+                        Err(ImplicitSolveError::SingularSystem)
+                    }
                 })?,
         ))
     }
@@ -535,6 +624,7 @@ mod tests {
         for solver in [
             ImplicitSolver {
                 linear_solver: linalg::LinearSolver::Direct,
+                ignore_max_iters: false,
             },
             ImplicitSolver {
                 linear_solver: linalg::LinearSolver::GaussSeidel {
@@ -542,11 +632,12 @@ mod tests {
                     rel_error_tol: 1e-7,
                     abs_error_tol: 1e-7,
                 },
+                ignore_max_iters: false,
             },
         ] {
             {
                 let x_sol = solver
-                    .solve(
+                    .find_root(
                         implicit_field - Vector3::new(1., -2., 3.),
                         &dynamic_geometry,
                         &boundary_conditions,
@@ -562,7 +653,7 @@ mod tests {
             }
             {
                 let x_sol = solver
-                    .solve(
+                    .find_root(
                         -implicit_field - Vector3::new(1., -2., 3.),
                         &dynamic_geometry,
                         &boundary_conditions,
@@ -578,7 +669,7 @@ mod tests {
             }
             {
                 let x_sol = solver
-                    .solve(
+                    .find_root(
                         implicit_field + Vector3::new(1., -2., 3.),
                         &dynamic_geometry,
                         &boundary_conditions,
@@ -594,7 +685,7 @@ mod tests {
             }
             {
                 let x_sol = solver
-                    .solve(
+                    .find_root(
                         2. * implicit_field + Vector3::new(1., -2., 3.),
                         &dynamic_geometry,
                         &boundary_conditions,
@@ -610,7 +701,7 @@ mod tests {
             }
             {
                 let x_sol = solver
-                    .solve(
+                    .find_root(
                         2. * implicit_field + Vector3::new(1., -2., 3.) - &explicit_field,
                         &dynamic_geometry,
                         &boundary_conditions,

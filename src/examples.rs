@@ -2,31 +2,34 @@ use pyo3::prelude::*;
 
 use crate::{fields, geom, physics, Vector3};
 
-// TODO: Make this the only public module in order to surface and delete dead
-// code
-
 #[pyfunction]
 pub fn bump_1d(num_x_cells: usize, num_z_cells: usize) -> physics::Solver {
-    let x_axis = geom::Axis::new(0., 5., num_x_cells);
+    let x_axis = geom::Axis::new(1., 4., num_x_cells);
     let y_axis = geom::Axis::new(0., 0.01, 2);
     let grid = geom::Grid::new(x_axis, y_axis, num_z_cells);
     let static_geometry = geom::StaticGeometry::new(grid, |x, _| {
         0.1 * (x * std::f64::consts::PI / 200.).cos().powi(2)
+        // 0.3 * (-((x - 2.5) / (0.3)).powi(6)).exp()
     });
 
     let initial_height = fields::AreaScalarField::new(static_geometry.grid(), |x, _| {
         // 0.1 * (x * std::f64::consts::PI / 5.).cos() + 1.
-        0.15 * (-((x - 2.5) / (0.3)).powi(2)).exp() + 0.8
+        // -0.2 * (-((x - 2.5) / (0.3)).powi(6)).exp() + 0.8
+        0.2 * (-((x - 2.5) / (0.3)).powi(6)).exp() + 0.8
     });
     let initial_dynamic_geometry = geom::DynamicGeometry::new(static_geometry, &initial_height);
 
     let mut problem = physics::Problem::default();
-    problem.kinematic_viscosity = 5e-5;
+    problem.kinematic_viscosity = 3e-4;
 
     let velocity = fields::VolVectorField::new(&initial_dynamic_geometry, |_, _, _| {
         Vector3::new(0., 0., 0.)
     });
     let pressure_solver = problem.make_pressure_solver();
+    let pressure_solver = crate::implicit::ImplicitSolver {
+        linear_solver: crate::linalg::LinearSolver::Direct,
+        ignore_max_iters: true,
+    };
     physics::Solver::new(
         problem,
         pressure_solver,

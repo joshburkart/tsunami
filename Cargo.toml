@@ -8,18 +8,18 @@ crate-type = ["cdylib", "rlib"]
 name = "flow"
 
 [dependencies]
-nalgebra = "0.32.2"
-ndarray = {version = "0.15.4", features = ["approx-0_5"]}
-ndarray-linalg = {version = "0.16.0", features = ["openblas-system"]}
-num-traits = "0.2.15"
-numpy = "0.19.0"
+nalgebra = "0.32"
+ndarray = {version = "0.15", features = ["approx-0_5"]}
+ndarray-linalg = {version = "0.16", features = ["openblas-system"]}
+num-traits = "0.2"
+numpy = "0.19"
 pyo3 = {version = "0.19", features = ["extension-module"]}
-sprs = "0.11.1"
+sprs = "0.11"
 strum = "0.25"
 strum_macros = "0.25"
 
 [dev-dependencies]
-approx = "0.5.1"
+approx = "0.5"
 
 [profile.release]
 debug = true

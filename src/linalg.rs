@@ -47,6 +47,7 @@ pub enum LinearSolveError {
         rel_error_tol: Float,
         abs_error_tol: Float,
         iters: usize,
+        solution: Array1,
     },
     SingularMatrix,
 }
@@ -87,7 +88,7 @@ pub fn solve_linear_system_gauss_seidel(
         if rel_error
             .map(|rel_error| rel_error < rel_error_tol)
             .unwrap_or(true)
-            && abs_error < abs_error_tol
+            || abs_error < abs_error_tol
         {
             return Ok(x);
         }
@@ -127,6 +128,7 @@ pub fn solve_linear_system_gauss_seidel(
         rel_error_tol,
         abs_error_tol,
         iters: max_iters,
+        solution: x,
     })
 }
 

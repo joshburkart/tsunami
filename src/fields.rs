@@ -1,4 +1,3 @@
-use nalgebra as na;
 use ndarray::{self as nd};
 use numpy::IntoPyArray;
 use pyo3::prelude::*;
@@ -363,6 +362,7 @@ where
         if self.rel_tol.is_none() && self.abs_tol.is_none() {
             panic!("At least one tolerance must be specified");
         }
+        let mut num_failures = 0;
         for cell_index in self.dynamic_geometry.grid().cell_indexing().iter() {
             let mut checker = approx::Relative::default();
             if let Some(rel_tol) = self.rel_tol {
@@ -374,18 +374,27 @@ where
             let left = self.left.cell_value(cell_index);
             let right = self.right.cell_value(cell_index);
             if !checker.eq(&left, &right) {
-                panic!("At {cell_index:?}, left = {left}, right = {right}");
+                if num_failures < 20 {
+                    eprintln!("At {cell_index:?}, left = {left}, right = {right}");
+                }
+                num_failures += 1;
             }
+        }
+        if num_failures > 0 {
+            panic!(
+                "Didn't match at {num_failures}/{} cells",
+                self.left.cells.len()
+            )
         }
     }
 }
 #[cfg(test)]
 impl<
-    V: Value
-        + std::fmt::Display
-        + approx::AbsDiffEq<V, Epsilon = Float>
-        + approx::RelativeEq<V, Epsilon = Float>,
-> VolField<V>
+        V: Value
+            + std::fmt::Display
+            + approx::AbsDiffEq<V, Epsilon = Float>
+            + approx::RelativeEq<V, Epsilon = Float>,
+    > VolField<V>
 {
     #[track_caller]
     pub fn assert_all_close<'a, 'b, 'c>(
@@ -555,12 +564,18 @@ impl VolVectorField {
                 match boundary_condition {
                     BoundaryCondition::HomDirichlet => 0.,
                     BoundaryCondition::HomNeumann => {
-                        0.5 * (self.vector_field.cell_value(cell.index)
-                            + self.vector_field.cell_value(block_paired_cell.index))
-                        .dot(&outward_normal)
+                        let face_value = 0.5
+                            * (self.vector_field.cell_value(cell.index)
+                                + self.vector_field.cell_value(block_paired_cell.index));
+                        face_value.dot(&outward_normal)
                     }
                     BoundaryCondition::InhomNeumann(_) => unimplemented!(),
-                    BoundaryCondition::Kinematic(_) => unimplemented!(),
+                    BoundaryCondition::Kinematic(dhdt) => {
+                        let cell_value = self.vector_field.cell_value(cell.index);
+                        let face_value =
+                            compute_kinematic_face_velocity_value(cell_value, dhdt, outward_normal);
+                        face_value.dot(&outward_normal)
+                    }
                 }
             }
         }
@@ -708,14 +723,25 @@ impl VolVectorField {
         )
     }
 
-    pub fn column_average(&self) -> AreaVectorField {
-        AreaVectorField {
-            cell_footprints: self
-                .cells
-                .mapv(|velocity| na::Vector2::new(velocity.x, velocity.y))
-                .sum_axis(nd::Axis(2))
-                / self.cells.shape()[2] as Float,
+    pub fn column_average(&self, dynamic_geometry: &geom::DynamicGeometry) -> AreaVectorField {
+        let mut cell_footprints =
+            AreaVectorField::zeros(dynamic_geometry.grid().cell_footprint_indexing());
+        for cell_footprint_index in dynamic_geometry.grid().cell_footprint_indexing().iter() {
+            let mut column_volume = 0.;
+            for cell_index in dynamic_geometry
+                .grid()
+                .cell_indexing()
+                .column(cell_footprint_index)
+            {
+                let cell_value = self.cell_value(cell_index);
+                *cell_footprints.cell_footprint_value_mut(cell_footprint_index) +=
+                    dynamic_geometry.cell(cell_index).volume
+                        * Vector2::new(cell_value.x, cell_value.y);
+                column_volume += dynamic_geometry.cell(cell_index).volume;
+            }
+            *cell_footprints.cell_footprint_value_mut(cell_footprint_index) /= column_volume;
         }
+        cell_footprints
     }
 
     pub fn values_py<'py>(&self, py: Python<'py>) -> &'py numpy::PyArray5<Float> {
@@ -1002,13 +1028,24 @@ fn compute_kinematic_face_velocity_value(
     dhdt: Float,
     outward_normal: UnitVector3,
 ) -> Vector3 {
-    // u'.n = z.n * dh/dt
-    // u' - (u'.n) n = u - (u.n) n
-    // u' - (z.n * dh/dt) n = u - (u.n) n
-    // u' = u + (z.n * dh/dt - u.n) n
-    velocity_cell_value
-        + (-outward_normal.dot(&velocity_cell_value) + dhdt * outward_normal.z)
-            * outward_normal.into_inner()
+    // Let u' be the face velocity and u be the cell velocity.
+    //
+    // BCs:
+    //  u'.n = z.n * dh/dt
+    //  u' - (u'.n) n = 0
+    // Combining:
+    //  u' - (z.n * dh/dt) n = 0
+    //  u' = (z.n * dh/dt) n
+    (dhdt * outward_normal.z) * outward_normal.into_inner()
+    // // BCs:
+    // //  u'.n = z.n * dh/dt
+    // //  u' - (u'.n) n = u - (u.n) n
+    // // Combining:
+    // //  u' - (z.n * dh/dt) n = u - (u.n) n
+    // //  u' = u + (z.n * dh/dt - u.n) n
+    // velocity_cell_value
+    //     + (-outward_normal.dot(&velocity_cell_value) + dhdt * outward_normal.z)
+    //         * outward_normal.into_inner()
 }
 
 #[cfg(test)]
