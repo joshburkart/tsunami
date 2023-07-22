@@ -8,6 +8,7 @@ crate-type = ["cdylib", "rlib"]
 name = "flow"
 
 [dependencies]
+klu-rs = "0.4"
 nalgebra = "0.32"
 ndarray = {version = "0.15", features = ["approx-0_5"]}
 ndarray-linalg = {version = "0.16", features = ["openblas-system"]}

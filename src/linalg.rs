@@ -7,29 +7,31 @@ pub enum LinearSolver {
         abs_error_tol: Float,
         rel_error_tol: Float,
     },
+    Klu,
     Direct,
 }
 impl LinearSolver {
     pub fn solve(
         &self,
-        matrix: sprs::CsMatView<Float>,
+        matrix: &sprs::TriMat<Float>,
         x: Array1,
         rhs: Array1,
     ) -> Result<Array1, LinearSolveError> {
         match self {
-            LinearSolver::GaussSeidel {
+            Self::Klu => Ok(solve_linear_sytem_klu(matrix, rhs)),
+            Self::GaussSeidel {
                 max_iters,
                 rel_error_tol,
                 abs_error_tol,
             } => solve_linear_system_gauss_seidel(
-                matrix,
+                matrix.to_csr().view(),
                 x,
                 rhs,
                 *max_iters,
                 *rel_error_tol,
                 *abs_error_tol,
             ),
-            LinearSolver::Direct => solve_linear_system_direct(matrix.to_dense(), rhs),
+            Self::Direct => solve_linear_system_direct(matrix.to_csr::<isize>().to_dense(), rhs),
         }
     }
 }
@@ -50,6 +52,23 @@ pub enum LinearSolveError {
         solution: Array1,
     },
     SingularMatrix,
+}
+
+/// Use the KLU solver from SuiteSparse.
+pub fn solve_linear_sytem_klu(matrix: &sprs::TriMat<Float>, mut rhs: Array1) -> Array1 {
+    let mut builder = klu_rs::KluMatrixBuilder::new(matrix.rows() as i64);
+    for (_, (row, col)) in matrix.triplet_iter() {
+        builder.add_entry(col as i64, row as i64);
+    }
+    let matrix_spec = builder.finish(klu_rs::KluSettings::new());
+    let mut klu_matrix = matrix_spec.create_matrix().unwrap();
+    for (coef, (row, col)) in matrix.triplet_iter() {
+        klu_matrix[(col as i64, row as i64)]
+            .set(klu_matrix[(col as i64, row as i64)].get() + *coef);
+    }
+    assert!(!klu_matrix.lu_factorize(Some(1e-5)));
+    klu_matrix.solve_linear_system(rhs.as_slice_mut().unwrap());
+    rhs
 }
 
 /// Use the Gauss-Seidel method to solve a diagonally dominant linear system
@@ -138,4 +157,27 @@ pub fn solve_linear_system_direct(matrix: Array2, rhs: Array1) -> Result<Array1,
     matrix
         .solve(&rhs)
         .map_err(|_| LinearSolveError::SingularMatrix)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_klu() {
+        let mut matrix = sprs::TriMat::new((2, 2));
+        matrix.add_triplet(0, 0, 0.5);
+        matrix.add_triplet(1, 1, -0.5);
+        matrix.add_triplet(1, 1, -0.1);
+        matrix.add_triplet(0, 1, 0.5);
+        let mut rhs = Array1::zeros(2);
+        rhs[0] = 0.8;
+        rhs[1] = -1.;
+
+        let x = solve_linear_sytem_klu(&matrix, rhs.clone());
+        let x_expected =
+            solve_linear_system_direct(matrix.view().to_csr::<isize>().to_dense(), rhs).unwrap();
+
+        approx::assert_relative_eq!(x, x_expected);
+    }
 }

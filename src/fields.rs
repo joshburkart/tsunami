@@ -91,9 +91,9 @@ impl<V: Value> VertBoundaryField<V> {
             VertBoundaryField::InhomNeumann(horiz_field) => BoundaryCondition::InhomNeumann(
                 horiz_field.cell_footprint_value(cell_footprint_index),
             ),
-            VertBoundaryField::Kinematic(dhdt) => {
-                BoundaryCondition::Kinematic(dhdt.cell_footprint_value(cell_footprint_index))
-            }
+            VertBoundaryField::Kinematic(height_time_deriv) => BoundaryCondition::Kinematic(
+                height_time_deriv.cell_footprint_value(cell_footprint_index),
+            ),
         }
     }
 }
@@ -515,10 +515,13 @@ impl VolVectorField {
                             .transpose()
                     }
                     BoundaryCondition::InhomNeumann(_) => unimplemented!(),
-                    BoundaryCondition::Kinematic(dhdt) => {
+                    BoundaryCondition::Kinematic(height_time_deriv) => {
                         let cell_value = self.vector_field.cell_value(cell.index);
-                        let face_value =
-                            compute_kinematic_face_velocity_value(cell_value, dhdt, outward_normal);
+                        let face_value = compute_kinematic_face_velocity_value(
+                            cell_value,
+                            height_time_deriv,
+                            outward_normal,
+                        );
                         outward_normal.into_inner() * face_value.transpose()
                     }
                 }
@@ -570,10 +573,13 @@ impl VolVectorField {
                         face_value.dot(&outward_normal)
                     }
                     BoundaryCondition::InhomNeumann(_) => unimplemented!(),
-                    BoundaryCondition::Kinematic(dhdt) => {
+                    BoundaryCondition::Kinematic(height_time_deriv) => {
                         let cell_value = self.vector_field.cell_value(cell.index);
-                        let face_value =
-                            compute_kinematic_face_velocity_value(cell_value, dhdt, outward_normal);
+                        let face_value = compute_kinematic_face_velocity_value(
+                            cell_value,
+                            height_time_deriv,
+                            outward_normal,
+                        );
                         face_value.dot(&outward_normal)
                     }
                 }
@@ -605,7 +611,7 @@ impl VolVectorField {
                 neighbor_cell: &geom::Cell,
                 outward_normal: UnitVector3,
             ) -> Vector3 {
-                let average_gradient = 0.5
+                let explicit_grad_at_face = 0.5
                     * (self.gradient_field.cell_value(cell.index)
                         + self.gradient_field.cell_value(neighbor_cell.index));
 
@@ -614,7 +620,7 @@ impl VolVectorField {
                 c_corr
                     * (self.vector_field.cell_value(neighbor_cell.index)
                         - self.vector_field.cell_value(cell.index))
-                    + average_gradient.tr_mul(&(outward_normal.into_inner() - c_corr * displ))
+                    + explicit_grad_at_face.tr_mul(&(outward_normal.into_inner() - c_corr * displ))
             }
 
             fn compute_boundary_face_value(
@@ -638,10 +644,13 @@ impl VolVectorField {
                     }
                     BoundaryCondition::HomNeumann => Vector3::zeros(),
                     BoundaryCondition::InhomNeumann(_) => unimplemented!(),
-                    BoundaryCondition::Kinematic(dhdt) => {
+                    BoundaryCondition::Kinematic(height_time_deriv) => {
                         let cell_value = self.vector_field.cell_value(cell.index);
-                        let face_value =
-                            compute_kinematic_face_velocity_value(cell_value, dhdt, outward_normal);
+                        let face_value = compute_kinematic_face_velocity_value(
+                            cell_value,
+                            height_time_deriv,
+                            outward_normal,
+                        );
                         (face_value - cell_value)
                             / (face_centroid.coords
                                 - 0.5 * (cell.centroid.coords + block_paired_cell.centroid.coords))
@@ -706,9 +715,13 @@ impl VolVectorField {
                             + self.velocity.cell_value(block_paired_cell.index))
                     }
                     BoundaryCondition::InhomNeumann(_) => unimplemented!(),
-                    BoundaryCondition::Kinematic(dhdt) => {
+                    BoundaryCondition::Kinematic(height_time_deriv) => {
                         let cell_value = self.velocity.cell_value(cell.index);
-                        compute_kinematic_face_velocity_value(cell_value, dhdt, outward_normal)
+                        compute_kinematic_face_velocity_value(
+                            cell_value,
+                            height_time_deriv,
+                            outward_normal,
+                        )
                     }
                 };
 
@@ -868,6 +881,11 @@ where
     }
 }
 pub type AreaScalarField = AreaField<Float>;
+impl AreaScalarField {
+    pub fn values_py<'py>(&self, py: Python<'py>) -> &'py numpy::PyArray3<Float> {
+        self.cell_footprints.clone().into_pyarray(py)
+    }
+}
 
 #[pyclass]
 #[derive(Clone)]
@@ -1025,9 +1043,10 @@ impl AreaVectorField {
 /// kinematic boundary condition.
 fn compute_kinematic_face_velocity_value(
     velocity_cell_value: Vector3,
-    dhdt: Float,
+    height_time_deriv: Float,
     outward_normal: UnitVector3,
 ) -> Vector3 {
+    height_time_deriv * Vector3::z_axis().into_inner()
     // Let u' be the face velocity and u be the cell velocity.
     //
     // BCs:
@@ -1036,7 +1055,7 @@ fn compute_kinematic_face_velocity_value(
     // Combining:
     //  u' - (z.n * dh/dt) n = 0
     //  u' = (z.n * dh/dt) n
-    (dhdt * outward_normal.z) * outward_normal.into_inner()
+    // (height_time_deriv * outward_normal.z) * outward_normal.into_inner()
     // // BCs:
     // //  u'.n = z.n * dh/dt
     // //  u' - (u'.n) n = u - (u.n) n
@@ -1044,13 +1063,14 @@ fn compute_kinematic_face_velocity_value(
     // //  u' - (z.n * dh/dt) n = u - (u.n) n
     // //  u' = u + (z.n * dh/dt - u.n) n
     // velocity_cell_value
-    //     + (-outward_normal.dot(&velocity_cell_value) + dhdt * outward_normal.z)
+    //     + (-outward_normal.dot(&velocity_cell_value) + height_time_deriv * outward_normal.z)
     //         * outward_normal.into_inner()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::implicit;
 
     #[test]
     fn test_compute_advection_flat_geometry() {
@@ -1129,6 +1149,12 @@ mod tests {
             let shear = velocity.gradient(&dynamic_geometry, &boundary_conditions);
             let divergence = velocity.divergence(&dynamic_geometry, &boundary_conditions);
             let laplacian = velocity.laplacian(&dynamic_geometry, &shear, &boundary_conditions);
+            let implicit_laplacian = implicit::evaluate(
+                implicit::ImplicitVolField::<Vector3>::default().laplacian(Some(&shear)),
+                &dynamic_geometry,
+                &boundary_conditions,
+                &velocity,
+            );
 
             shear
                 .assert_all_close(&VolTensorField::zeros(cell_indexing), &dynamic_geometry)
@@ -1137,6 +1163,9 @@ mod tests {
                 .assert_all_close(&VolScalarField::zeros(cell_indexing), &dynamic_geometry)
                 .abs_tol(Some(1e-5));
             laplacian
+                .assert_all_close(&VolVectorField::zeros(cell_indexing), &dynamic_geometry)
+                .abs_tol(Some(1e-5));
+            implicit_laplacian
                 .assert_all_close(&VolVectorField::zeros(cell_indexing), &dynamic_geometry)
                 .abs_tol(Some(1e-5));
         }
@@ -1153,6 +1182,12 @@ mod tests {
             let shear = velocity.gradient(&dynamic_geometry, &boundary_conditions);
             let divergence = velocity.divergence(&dynamic_geometry, &boundary_conditions);
             let laplacian = velocity.laplacian(&dynamic_geometry, &shear, &boundary_conditions);
+            let implicit_laplacian = implicit::evaluate(
+                implicit::ImplicitVolField::<Vector3>::default().laplacian(Some(&shear)),
+                &dynamic_geometry,
+                &boundary_conditions,
+                &velocity,
+            );
 
             shear
                 .assert_all_close(&VolTensorField::zeros(cell_indexing), &dynamic_geometry)
@@ -1161,6 +1196,9 @@ mod tests {
                 .assert_all_close(&VolScalarField::zeros(cell_indexing), &dynamic_geometry)
                 .abs_tol(Some(1e-5));
             laplacian
+                .assert_all_close(&VolVectorField::zeros(cell_indexing), &dynamic_geometry)
+                .abs_tol(Some(1e-5));
+            implicit_laplacian
                 .assert_all_close(&VolVectorField::zeros(cell_indexing), &dynamic_geometry)
                 .abs_tol(Some(1e-5));
         }
@@ -1178,6 +1216,17 @@ mod tests {
             let shear = velocity.gradient(&dynamic_geometry, &boundary_conditions);
             let divergence = velocity.divergence(&dynamic_geometry, &boundary_conditions);
             let laplacian = velocity.laplacian(&dynamic_geometry, &shear, &boundary_conditions);
+            let implicit_laplacian = implicit::evaluate(
+                implicit::ImplicitVolField::<Vector3>::default().laplacian(Some(&shear)),
+                &dynamic_geometry,
+                &boundary_conditions,
+                &velocity,
+            );
+
+            laplacian
+                .assert_all_close(&implicit_laplacian, &dynamic_geometry)
+                .abs_tol(Some(1e-8))
+                .rel_tol(None);
 
             let expected_shear = VolTensorField::new(&dynamic_geometry, |x, y, _| {
                 Matrix3::new(

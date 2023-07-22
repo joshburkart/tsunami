@@ -9,27 +9,27 @@ pub fn bump_1d(num_x_cells: usize, num_z_cells: usize) -> physics::Solver {
     let grid = geom::Grid::new(x_axis, y_axis, num_z_cells);
     let static_geometry = geom::StaticGeometry::new(grid, |x, _| {
         0.1 * (x * std::f64::consts::PI / 200.).cos().powi(2)
-        // 0.3 * (-((x - 2.5) / (0.3)).powi(6)).exp()
+        // 0.1 * (-((x - 2.5) / (0.3)).powi(2)).exp()
     });
 
     let initial_height = fields::AreaScalarField::new(static_geometry.grid(), |x, _| {
         // 0.1 * (x * std::f64::consts::PI / 5.).cos() + 1.
         // -0.2 * (-((x - 2.5) / (0.3)).powi(6)).exp() + 0.8
-        0.2 * (-((x - 2.5) / (0.3)).powi(6)).exp() + 0.8
+        0.2 * (-((x - 2.5) / (0.3)).powi(2)).exp() + 0.8
     });
     let initial_dynamic_geometry = geom::DynamicGeometry::new(static_geometry, &initial_height);
 
     let mut problem = physics::Problem::default();
-    problem.kinematic_viscosity = 3e-4;
+    problem.kinematic_viscosity = 1e-3;
 
     let velocity = fields::VolVectorField::new(&initial_dynamic_geometry, |_, _, _| {
         Vector3::new(0., 0., 0.)
     });
-    let pressure_solver = problem.make_pressure_solver();
-    let pressure_solver = crate::implicit::ImplicitSolver {
-        linear_solver: crate::linalg::LinearSolver::Direct,
-        ignore_max_iters: true,
-    };
+    let pressure_solver = problem.make_implicit_solver();
+    // let pressure_solver = crate::implicit::ImplicitSolver {
+    //     linear_solver: crate::linalg::LinearSolver::Direct,
+    //     ignore_max_iters: true,
+    // };
     physics::Solver::new(
         problem,
         pressure_solver,
@@ -54,7 +54,7 @@ pub fn singularity_1d(num_x_cells: usize, num_z_cells: usize) -> physics::Solver
     let velocity = fields::VolVectorField::new(&initial_dynamic_geometry, |x, _, _| {
         Vector3::new(-(x / 0.5) * (-(x / 0.5).powi(2)).exp(), 0., 0.)
     });
-    let pressure_solver = problem.make_pressure_solver();
+    let pressure_solver = problem.make_implicit_solver();
     physics::Solver::new(
         problem,
         pressure_solver,
@@ -79,7 +79,7 @@ pub fn uniform(num_x_cells: usize, num_y_cells: usize, num_z_cells: usize) -> ph
     let velocity = fields::VolVectorField::new(&initial_dynamic_geometry, |_, _, _| {
         Vector3::new(0., 0., 0.)
     });
-    let pressure_solver = problem.make_pressure_solver();
+    let pressure_solver = problem.make_implicit_solver();
     physics::Solver::new(
         problem,
         pressure_solver,
