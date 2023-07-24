@@ -34,10 +34,10 @@ impl ImplicitVolField<Vector3> {
 
     pub fn advect_upwind(
         self,
-        explicit_velocity: &fields::VolVectorField,
+        advection_velocity: &fields::VolVectorField,
     ) -> DifferentialImplicitSystem<SemiImplicitVectorUpwindAdvectionField> {
         DifferentialImplicitSystem {
-            differential: SemiImplicitVectorUpwindAdvectionField { explicit_velocity },
+            differential: SemiImplicitVectorUpwindAdvectionField { advection_velocity },
         }
     }
 }
@@ -86,9 +86,39 @@ impl<V: ImplicitValue> ImplicitSystem for ImplicitVolField<V> {
     }
 }
 
+pub struct ImplicitVolScalarFieldProduct<'a, S: ImplicitSystem> {
+    scalar_field: &'a fields::VolScalarField,
+    system: S,
+}
+impl<'a, S: ImplicitSystem> ImplicitSystem for ImplicitVolScalarFieldProduct<'a, S> {
+    type ImplicitValue = S::ImplicitValue;
+
+    fn gen_subsystem<F: FnMut(CellCoef)>(
+        &self,
+        add_cell_coef: &mut F,
+        cell_index: indexing::CellIndex,
+        dynamic_geometry: &geom::DynamicGeometry,
+        boundary_conditions: &fields::BoundaryConditions<Self::ImplicitValue>,
+    ) -> Self::ImplicitValue {
+        let mut add_cell_coef_wrapper = |cell_coef: CellCoef| {
+            add_cell_coef(CellCoef {
+                cell_index: cell_coef.cell_index,
+                coef: self.scalar_field.cell_value(cell_coef.cell_index) * cell_coef.coef,
+            });
+        };
+
+        self.system.gen_subsystem(
+            &mut add_cell_coef_wrapper,
+            cell_index,
+            dynamic_geometry,
+            boundary_conditions,
+        ) * self.scalar_field.cell_value(cell_index)
+    }
+}
+
 pub struct ImplicitScalarProduct<S: ImplicitSystem> {
     scalar: Float,
-    term: S,
+    system: S,
 }
 impl<S: ImplicitSystem> ImplicitSystem for ImplicitScalarProduct<S> {
     type ImplicitValue = S::ImplicitValue;
@@ -107,7 +137,7 @@ impl<S: ImplicitSystem> ImplicitSystem for ImplicitScalarProduct<S> {
             })
         };
 
-        self.term.gen_subsystem(
+        self.system.gen_subsystem(
             &mut add_cell_coef_wrapper,
             cell_index,
             dynamic_geometry,
@@ -457,7 +487,7 @@ impl<'a> DifferentialImplicitSystemImpl for SemiImplicitVectorLaplacianField<'a>
 }
 
 pub struct SemiImplicitVectorUpwindAdvectionField<'a> {
-    explicit_velocity: &'a fields::VolVectorField,
+    advection_velocity: &'a fields::VolVectorField,
 }
 impl<'a> DifferentialImplicitSystemImpl for SemiImplicitVectorUpwindAdvectionField<'a> {
     type ImplicitValue = Vector3;
@@ -469,8 +499,8 @@ impl<'a> DifferentialImplicitSystemImpl for SemiImplicitVectorUpwindAdvectionFie
         neighbor_cell: &geom::Cell,
         outward_normal: UnitVector3,
     ) -> Self::ImplicitValue {
-        let cell_velocity = self.explicit_velocity.cell_value(cell.index);
-        let neighbor_cell_velocity = self.explicit_velocity.cell_value(neighbor_cell.index);
+        let cell_velocity = self.advection_velocity.cell_value(cell.index);
+        let neighbor_cell_velocity = self.advection_velocity.cell_value(neighbor_cell.index);
         let linear_face_velocity = 0.5 * (cell_velocity + neighbor_cell_velocity);
 
         let projected_face_velocity = linear_face_velocity.dot(&outward_normal);
@@ -506,8 +536,8 @@ impl<'a> DifferentialImplicitSystemImpl for SemiImplicitVectorUpwindAdvectionFie
             fields::BoundaryCondition::HomDirichlet => Vector3::zeros(),
             fields::BoundaryCondition::HomNeumann => {
                 let explicit_face_velocity = 0.5
-                    * (self.explicit_velocity.cell_value(cell.index)
-                        + self.explicit_velocity.cell_value(block_paired_cell.index));
+                    * (self.advection_velocity.cell_value(cell.index)
+                        + self.advection_velocity.cell_value(block_paired_cell.index));
                 let coef = 0.5 * explicit_face_velocity.dot(&outward_normal);
                 add_cell_coef(CellCoef {
                     cell_index: cell.index,
@@ -536,7 +566,7 @@ mod op_impls {
         fn neg(self) -> Self::Output {
             ImplicitScalarProduct {
                 scalar: -1.,
-                term: self,
+                system: self,
             }
         }
     }
@@ -546,7 +576,7 @@ mod op_impls {
         fn div(self, rhs: Float) -> Self::Output {
             ImplicitScalarProduct {
                 scalar: 1. / rhs,
-                term: self,
+                system: self,
             }
         }
     }
@@ -556,7 +586,7 @@ mod op_impls {
         fn mul(self, rhs: ImplicitVolField<V>) -> Self::Output {
             ImplicitScalarProduct {
                 scalar: self,
-                term: rhs,
+                system: rhs,
             }
         }
     }
@@ -566,7 +596,7 @@ mod op_impls {
         fn mul(self, rhs: DifferentialImplicitSystem<D>) -> Self::Output {
             ImplicitScalarProduct {
                 scalar: self,
-                term: rhs,
+                system: rhs,
             }
         }
     }
@@ -612,28 +642,6 @@ mod op_impls {
         }
     }
     impl<
-            'a,
-            V: ImplicitValue,
-            S1: ImplicitSystem<ImplicitValue = V>,
-            S2: ImplicitSystem<ImplicitValue = V>,
-        > ops::Sub<&'a fields::VolField<V>> for ImplicitTermSum<S1, S2>
-    {
-        type Output = ImplicitTermSum<
-            ImplicitTermSum<S1, S2>,
-            ImplicitScalarProduct<&'a fields::VolField<V>>,
-        >;
-
-        fn sub(self, rhs: &'a fields::VolField<V>) -> Self::Output {
-            ImplicitTermSum {
-                term_1: self,
-                term_2: ImplicitScalarProduct {
-                    scalar: -1.,
-                    term: rhs,
-                },
-            }
-        }
-    }
-    impl<
             V: ImplicitValue,
             S1: ImplicitSystem<ImplicitValue = V>,
             S2: ImplicitSystem<ImplicitValue = V>,
@@ -646,7 +654,7 @@ mod op_impls {
                 term_1: self,
                 term_2: ImplicitScalarProduct {
                     scalar: -rhs.scalar,
-                    term: rhs.term,
+                    system: rhs.system,
                 },
             }
         }
@@ -656,54 +664,35 @@ mod op_impls {
             V: ImplicitValue,
             S1: ImplicitSystem<ImplicitValue = V>,
             S2: ImplicitSystem<ImplicitValue = V>,
-            D: DifferentialImplicitSystemImpl<ImplicitValue = V>,
-        > ops::Sub<DifferentialImplicitSystem<D>> for ImplicitTermSum<S1, S2>
+            S3: ImplicitSystem<ImplicitValue = V>,
+        > ops::Add<S3> for ImplicitTermSum<S1, S2>
     {
-        type Output = ImplicitTermSum<
-            ImplicitTermSum<S1, S2>,
-            ImplicitScalarProduct<DifferentialImplicitSystem<D>>,
-        >;
+        type Output = ImplicitTermSum<ImplicitTermSum<S1, S2>, S3>;
 
-        fn sub(self, rhs: DifferentialImplicitSystem<D>) -> Self::Output {
+        fn add(self, rhs: S3) -> Self::Output {
+            ImplicitTermSum {
+                term_1: self,
+                term_2: rhs,
+            }
+        }
+    }
+    impl<
+            'a,
+            V: ImplicitValue,
+            S1: ImplicitSystem<ImplicitValue = V>,
+            S2: ImplicitSystem<ImplicitValue = V>,
+            S3: ImplicitSystem<ImplicitValue = V>,
+        > ops::Sub<S3> for ImplicitTermSum<S1, S2>
+    {
+        type Output = ImplicitTermSum<ImplicitTermSum<S1, S2>, ImplicitScalarProduct<S3>>;
+
+        fn sub(self, rhs: S3) -> Self::Output {
             ImplicitTermSum {
                 term_1: self,
                 term_2: ImplicitScalarProduct {
                     scalar: -1.,
-                    term: rhs,
+                    system: rhs,
                 },
-            }
-        }
-    }
-    impl<
-            'a,
-            V: ImplicitValue,
-            S1: ImplicitSystem<ImplicitValue = V>,
-            S2: ImplicitSystem<ImplicitValue = V>,
-            D: DifferentialImplicitSystemImpl<ImplicitValue = V>,
-        > ops::Add<DifferentialImplicitSystem<D>> for ImplicitTermSum<S1, S2>
-    {
-        type Output = ImplicitTermSum<ImplicitTermSum<S1, S2>, DifferentialImplicitSystem<D>>;
-
-        fn add(self, rhs: DifferentialImplicitSystem<D>) -> Self::Output {
-            ImplicitTermSum {
-                term_1: self,
-                term_2: rhs,
-            }
-        }
-    }
-    impl<
-            'a,
-            V: ImplicitValue,
-            S1: ImplicitSystem<ImplicitValue = V>,
-            S2: ImplicitSystem<ImplicitValue = V>,
-        > ops::Add<V> for ImplicitTermSum<S1, S2>
-    {
-        type Output = ImplicitTermSum<ImplicitTermSum<S1, S2>, V>;
-
-        fn add(self, rhs: V) -> Self::Output {
-            ImplicitTermSum {
-                term_1: self,
-                term_2: rhs,
             }
         }
     }
@@ -719,7 +708,7 @@ mod op_impls {
         fn div(self, rhs: Float) -> Self::Output {
             ImplicitScalarProduct {
                 scalar: 1. / rhs,
-                term: self,
+                system: self,
             }
         }
     }
@@ -736,7 +725,7 @@ mod op_impls {
                 term_1: self,
                 term_2: ImplicitScalarProduct {
                     scalar: -1.,
-                    term: rhs,
+                    system: rhs,
                 },
             }
         }
@@ -750,8 +739,18 @@ mod op_impls {
                 term_1: self,
                 term_2: ImplicitScalarProduct {
                     scalar: -1.,
-                    term: rhs,
+                    system: rhs,
                 },
+            }
+        }
+    }
+    impl<'a, V: ImplicitValue> ops::Mul<&'a fields::VolField<Float>> for ImplicitVolField<V> {
+        type Output = ImplicitVolScalarFieldProduct<'a, ImplicitVolField<V>>;
+
+        fn mul(self, rhs: &'a fields::VolField<Float>) -> Self::Output {
+            ImplicitVolScalarFieldProduct {
+                scalar_field: rhs,
+                system: self,
             }
         }
     }
@@ -913,7 +912,7 @@ mod tests {
         let grid = geom::Grid::new(xy_axis.clone(), xy_axis, 5);
         let static_geometry = geom::StaticGeometry::new(grid, |_x, _y| 0.);
         let height = fields::AreaField::new(static_geometry.grid(), |_x, _y| 0.);
-        let dynamic_geometry = geom::DynamicGeometry::new(static_geometry, &height);
+        let dynamic_geometry = geom::DynamicGeometry::new_from_height(static_geometry, &height);
 
         let boundary_conditions = fields::BoundaryConditions {
             horiz: fields::HorizBoundaryConditions::hom_dirichlet(),

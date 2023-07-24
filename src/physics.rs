@@ -3,13 +3,15 @@ use pyo3::prelude::*;
 use crate::{
     fields, geom, implicit,
     indexing::{self, IntoIndexIterator},
-    linalg, Float, Vector2, Vector3,
+    linalg, Float, Vector3,
 };
 
 #[derive(Clone)]
 pub struct Fields {
-    pub height: fields::AreaScalarField,
     pub height_time_deriv: fields::AreaScalarField,
+
+    pub volume: fields::VolScalarField,
+    pub volume_time_deriv: fields::VolScalarField,
 
     pub velocity: fields::VolVectorField,
     pub velocity_divergence: fields::VolScalarField,
@@ -25,10 +27,8 @@ pub struct Problem {
     pub grav_accel: Float,
     pub kinematic_viscosity: Float,
 
-    horiz_2d_velocity_boundary_conditions: fields::HorizBoundaryConditions<Vector2>,
-    horiz_velocity_boundary_conditions: fields::HorizBoundaryConditions<Vector3>,
+    pub horiz_velocity_boundary_conditions: fields::HorizBoundaryConditions<Vector3>,
     pub pressure_horiz_boundary_conditions: fields::HorizBoundaryConditions<Float>,
-    pub height_boundary_conditions: fields::HorizBoundaryConditions<Float>,
 }
 impl Default for Problem {
     fn default() -> Self {
@@ -37,10 +37,11 @@ impl Default for Problem {
             grav_accel: 9.8,
             kinematic_viscosity: 1e-6,
 
-            horiz_velocity_boundary_conditions: fields::HorizBoundaryConditions::hom_dirichlet(),
-            horiz_2d_velocity_boundary_conditions: fields::HorizBoundaryConditions::hom_dirichlet(),
+            horiz_velocity_boundary_conditions: fields::HorizBoundaryConditions {
+                x: fields::HorizBoundaryConditionPair::hom_neumann(),
+                y: fields::HorizBoundaryConditionPair::hom_neumann(),
+            },
             pressure_horiz_boundary_conditions: fields::HorizBoundaryConditions::hom_neumann(),
-            height_boundary_conditions: fields::HorizBoundaryConditions::hom_neumann(),
         }
     }
 }
@@ -50,7 +51,7 @@ impl Problem {
             linear_solver: linalg::LinearSolver::Klu,
             ignore_max_iters: true,
         }
-        // let rel_error_tol = 0.0001;
+        // let rel_error_tol = 0.001;
         // implicit::ImplicitSolver {
         //     linear_solver: linalg::LinearSolver::GaussSeidel {
         //         max_iters: 10000,
@@ -78,11 +79,13 @@ impl Solver {
         initial_height: fields::AreaScalarField,
         initial_velocity: fields::VolVectorField,
     ) -> Self {
+        let grid = initial_dynamic_geometry.grid();
+
+        let volume = compute_initial_volume(initial_dynamic_geometry.grid(), &initial_height);
+
         let pressure_boundary_conditions =
             compute_pressure_boundary_conditions(&problem, &initial_dynamic_geometry);
-        let height_time_deriv = fields::AreaScalarField::zeros(
-            initial_dynamic_geometry.grid().cell_footprint_indexing(),
-        );
+        let height_time_deriv = fields::AreaScalarField::zeros(grid.cell_footprint_indexing());
         let velocity_boundary_conditions =
             compute_velocity_boundary_conditions(&problem, &height_time_deriv);
 
@@ -103,13 +106,16 @@ impl Solver {
             pressure.gradient(&initial_dynamic_geometry, &pressure_boundary_conditions);
         let velocity_divergence =
             initial_velocity.divergence(&initial_dynamic_geometry, &velocity_boundary_conditions);
+        let volume_time_deriv =
+            fields::VolScalarField::zeros(initial_dynamic_geometry.grid().cell_indexing());
         Self {
             problem,
             implicit_solver,
             dynamic_geometry: Some(initial_dynamic_geometry),
             fields: Fields {
-                height: initial_height,
                 height_time_deriv,
+                volume,
+                volume_time_deriv,
                 velocity: initial_velocity,
                 velocity_divergence,
                 pressure,
@@ -136,57 +142,64 @@ impl Solver {
     }
 
     pub fn step(&mut self, dt: Float) {
-        let height_time_deriv = compute_height_time_deriv(
-            self.dynamic_geometry.as_ref().unwrap(),
-            self.problem.rain_rate.as_ref(),
-            &self.fields,
-            self.problem.horiz_2d_velocity_boundary_conditions,
-            self.problem.height_boundary_conditions,
+        // Determine cell volume time derivatives.
+        let advection_velocity_boundary_conditions = compute_velocity_boundary_conditions(
+            &self.problem,
+            &fields::AreaScalarField::zeros(
+                self.dynamic_geometry
+                    .as_ref()
+                    .unwrap()
+                    .grid()
+                    .cell_footprint_indexing(),
+            ),
         );
-        self.fields.height_time_deriv = height_time_deriv.clone();
-        for cell_footprint_index in self
-            .dynamic_geometry
-            .as_ref()
-            .unwrap()
-            .grid()
-            .cell_footprint_indexing()
-            .iter()
+        let advection_velocity = self
+            .fields
+            .velocity
+            .map(|velocity| Vector3::new(velocity.x, velocity.y, 0.));
+
+        let advection_velocity_divergence = advection_velocity.divergence(
+            self.dynamic_geometry(),
+            &advection_velocity_boundary_conditions,
+        );
+        let volume_time_deriv = -(&self.fields.volume * advection_velocity_divergence.clone());
+
+        // Update geometry.
         {
-            let old_h = self
-                .fields
-                .height
-                .cell_footprint_value(cell_footprint_index);
-            let new_h = (self
-                .fields
-                .height
-                .cell_footprint_value(cell_footprint_index)
-                + dt * height_time_deriv.cell_footprint_value(cell_footprint_index))
-            .max(0.);
-            // Attempt to conserve momentum.
-            for cell_index in self
-                .dynamic_geometry
-                .as_ref()
-                .unwrap()
-                .grid()
-                .cell_indexing()
-                .column(cell_footprint_index)
-            {
-                *self.fields.velocity.cell_value_mut(cell_index) *= old_h / new_h;
+            // Evolve cell volumes.
+            let grid = self.dynamic_geometry.as_ref().unwrap().grid();
+            let cell_indexing = grid.cell_indexing();
+            for cell_index in cell_indexing.iter() {
+                let cell_volume = self.fields.volume.cell_value(cell_index);
+                let new_cell_volume = (cell_volume + dt * volume_time_deriv.cell_value(cell_index))
+                    .max(geom::MIN_VOLUME);
+                *self.fields.volume.cell_value_mut(cell_index) = new_cell_volume;
             }
-            *self
-                .fields
-                .height
-                .cell_footprint_value_mut(cell_footprint_index) = new_h;
+
+            // Compute column height time derivatives.
+            for cell_footprint_index in grid.cell_footprint_indexing().iter() {
+                let mut column_volume_time_deriv = 0.;
+                for cell_index in grid.cell_indexing().column(cell_footprint_index) {
+                    column_volume_time_deriv += volume_time_deriv.cell_value(cell_index);
+                }
+                *self
+                    .fields
+                    .height_time_deriv
+                    .cell_footprint_value_mut(cell_footprint_index) =
+                    column_volume_time_deriv / grid.footprint_area();
+            }
+
+            // Update dynamic geometry.
+            self.dynamic_geometry = Some(geom::DynamicGeometry::new_from_volume(
+                self.dynamic_geometry.take().unwrap().into_static_geometry(),
+                &self.fields.volume,
+            ));
+            self.fields.volume_time_deriv = volume_time_deriv;
         }
 
-        // self.dynamic_geometry = Some(geom::DynamicGeometry::new(
-        //     self.dynamic_geometry.take().unwrap().into_static_geometry(),
-        //     &self.fields.height,
-        // ));
         let dynamic_geometry = self.dynamic_geometry.as_ref().unwrap();
-
         let velocity_boundary_conditions =
-            compute_velocity_boundary_conditions(&self.problem, &height_time_deriv);
+            compute_velocity_boundary_conditions(&self.problem, &self.fields.height_time_deriv);
         //  compute_velocity_boundary_conditions(
         //     &self.problem,
         //     &fields::AreaScalarField::zeros(
@@ -197,13 +210,6 @@ impl Solver {
         //             .cell_footprint_indexing(),
         //     ),
         // );
-
-        // Interpolate velocity to new height map. TODO
-        // fields.velocity =
-        //     interpolate_onto(&z_lattice.centers, &fields.velocity,
-        // &new_z_axis.centers);
-
-        // Compute new pressure field.
         let pressure_boundary_conditions =
             compute_pressure_boundary_conditions(&self.problem, dynamic_geometry);
         self.fields.hydrostatic_column_pressure =
@@ -213,12 +219,34 @@ impl Solver {
             .velocity
             .gradient(dynamic_geometry, &velocity_boundary_conditions);
 
-        // Perform velocity update.
+        // // Perform explicit velocity update.
+        // {
+        //     let mut dvdt = self.problem.kinematic_viscosity
+        //         * &self.fields.velocity.laplacian(
+        //             &dynamic_geometry,
+        //             &shear,
+        //             &velocity_boundary_conditions,
+        //         );
+        //     dvdt -= &self.fields.velocity.advect_upwind(
+        //         &advection_velocity,
+        //         &dynamic_geometry,
+        //         &velocity_boundary_conditions,
+        //     );
+        //     for cell_index in dynamic_geometry.grid().cell_indexing().iter() {
+        //         *dvdt.cell_value_mut(cell_index) += advection_velocity_divergence
+        //             .cell_value(cell_index)
+        //             * self.fields.velocity.cell_value(cell_index);
+        //     }
+        //     dvdt -= crate::Vector3::new(0., 0., self.problem.grav_accel);
+        //     self.fields.velocity += &(dt * &dvdt);
+        // }
+        // Perform implicit velocity update.
         {
-            let imp_velocity = implicit::ImplicitVolField::<Vector3>::default();
-            let system = (imp_velocity - &self.fields.velocity) / dt
-                - self.problem.kinematic_viscosity * imp_velocity.laplacian(Some(&shear))
-                + imp_velocity.advect_upwind(&self.fields.velocity)
+            let implicit_velocity = implicit::ImplicitVolField::<Vector3>::default();
+            let system = (implicit_velocity - &self.fields.velocity) / dt
+                - self.problem.kinematic_viscosity * implicit_velocity.laplacian(Some(&shear))
+                + implicit_velocity.advect_upwind(&advection_velocity)
+                - implicit_velocity * &advection_velocity_divergence
                 + crate::Vector3::new(0., 0., self.problem.grav_accel);
 
             self.fields.velocity = self
@@ -231,49 +259,29 @@ impl Solver {
                 )
                 .unwrap();
         }
-        // let mut dvdt = self.problem.kinematic_viscosity
-        //     * &self.fields.velocity.laplacian(
-        //         &dynamic_geometry,
-        //         &shear,
-        //         &velocity_boundary_conditions,
-        //     );
-        // let mut dvdt = -self
-        //     .fields
-        //     .velocity
-        //     .advect_upwind(dynamic_geometry, &velocity_boundary_conditions);
-        // let mut dvdt = fields::VolVectorField::zeros(dynamic_geometry.grid().cell_indexing());
-        // dvdt -= crate::Vector3::new(0., 0., self.problem.grav_accel);
-        // self.fields.velocity += &(dt * &dvdt);
 
-        // self.fields.pressure = Self::compute_initial_pressure(
-        //     &dynamic_geometry,
-        //     &pressure_boundary_conditions,
-        //     &self.implicit_solver,
-        //     &self
-        //         .fields
-        //         .velocity
-        //         .gradient(&dynamic_geometry, &velocity_boundary_conditions),
-        //     Some(&self.fields.pressure_grad),
-        //     Some(&self.fields.pressure),
-        // );
-        self.fields.pressure = Self::compute_incremental_pressure(
-            &dynamic_geometry,
-            &pressure_boundary_conditions,
-            &self.implicit_solver,
-            &self
+        // Perform pressure correction.
+        {
+            self.fields.pressure = Self::compute_incremental_pressure(
+                &dynamic_geometry,
+                &pressure_boundary_conditions,
+                &self.implicit_solver,
+                &self
+                    .fields
+                    .velocity
+                    .divergence(&dynamic_geometry, &velocity_boundary_conditions),
+                dt,
+                &self.fields.pressure_grad,
+                &self.fields.pressure,
+            );
+            self.fields.pressure_grad = self
                 .fields
-                .velocity
-                .divergence(&dynamic_geometry, &velocity_boundary_conditions),
-            dt,
-            &self.fields.pressure_grad,
-            &self.fields.pressure,
-        );
-        self.fields.pressure_grad = self
-            .fields
-            .pressure
-            .gradient(&dynamic_geometry, &pressure_boundary_conditions);
-        self.fields.velocity -= &(dt * &self.fields.pressure_grad);
+                .pressure
+                .gradient(&dynamic_geometry, &pressure_boundary_conditions);
+            self.fields.velocity -= &(dt * &self.fields.pressure_grad);
+        }
 
+        // // Run follow-up iterations of pressure correction.
         // let mut prev_pressure = self.fields.pressure.clone();
         // let mut prev_pressure_grad = self.fields.pressure_grad.clone();
         // for _ in 0..5 {
@@ -368,6 +376,17 @@ impl Solver {
     }
 
     #[getter]
+    #[pyo3(name = "volume")]
+    pub fn volume_py<'py>(&self, py: Python<'py>) -> &'py numpy::PyArray4<Float> {
+        self.fields.volume.values_py(py)
+    }
+    #[getter]
+    #[pyo3(name = "volume_time_deriv")]
+    pub fn volume_time_deriv_py<'py>(&self, py: Python<'py>) -> &'py numpy::PyArray4<Float> {
+        self.fields.volume_time_deriv.values_py(py)
+    }
+
+    #[getter]
     #[pyo3(name = "height_time_deriv")]
     pub fn height_time_deriv_py<'py>(&self, py: Python<'py>) -> &'py numpy::PyArray3<Float> {
         self.fields.height_time_deriv.values_py(py)
@@ -405,131 +424,14 @@ impl Solver {
             t = t.min(dynamic_geometry.grid().x_axis().spacing() / (v.x.abs() + 1e-10));
             t = t.min(dynamic_geometry.grid().y_axis().spacing() / (v.y.abs() + 1e-10));
             t = t.min(
-                self.fields
-                    .height
-                    .cell_footprint_value(cell_index.footprint)
-                    / (dynamic_geometry.grid().cell_indexing().num_z_cells() as Float)
+                self.fields.volume.cell_value(cell_index)
+                    / dynamic_geometry.grid().footprint_area()
                     / (v.z.abs() + 1e-10),
             );
         }
         t
     }
 }
-
-/// Linearly interpolate a velocity vector field array `v` with vertical
-/// coordinate array `old_height` onto a new vertical coordinate array
-/// `new_height`. Use constant extrapolation if a value of `new_height` falls
-/// outside the range of `old_height`.
-// fn interpolate_onto(
-//     dynamic_geometry: &geom::DynamicGeometry,
-//     old_height: &fields::HorizScalarField,
-//     new_height: &fields::HorizScalarField,
-//     velocity: &fields::VectorField,
-// ) -> fields::VectorField {
-//     for cell_footprint_index in
-// dynamic_geometry.grid().cell_footprint_indexing().iter() {
-
-//     }
-// }
-// fn interpolate_onto(
-//     old_height: &fields::HorizScalarField,
-//     v: &fields::VectorField,
-//     new_height: &fields::HorizScalarField,
-// ) -> fields::VectorField {
-//     let mut new_v =
-//         fields::VectorField::zeros((v.dim().0, v.dim().1, new_height.dim().2,
-// v.dim().3));     let dim = old_height.dim();
-//     for i in 0..dim.0 {
-//         for j in 0..dim.1 {
-//             let zij = old_height.slice(s![i, j, ..]);
-//             let vij = v.slice(s![i, j, .., ..]);
-//             let new_zij = new_height.slice(s![i, j, ..]);
-//             let mut new_vij = new_v.slice_mut(s![i, j, .., ..]);
-
-//             let mut k = 0usize;
-//             for (new_k, &new_zijk) in new_zij.iter().enumerate() {
-//                 while k < dim.2 && zij[k] < new_zijk {
-//                     k += 1;
-//                 }
-//                 new_vij.slice_mut(s![new_k, ..]).assign(&if k == 0 {
-//                     vij.slice(s![0, ..]).into_owned()
-//                 } else if k == dim.2 {
-//                     vij.slice(s![dim.2 - 1, ..]).into_owned()
-//                 } else {
-//                     //    <---------delta_zijk--------->
-//                     //    |          |                 |
-//                     // zij_left  new_zijk          zij_right
-//                     let zij_left = zij[k - 1];
-//                     let zij_right = zij[k];
-//                     let delta_zijk = zij_right - zij_left;
-//                     let alpha = if delta_zijk == 0. {
-//                         0.
-//                     } else {
-//                         (new_zijk - zij_left) / delta_zijk
-//                     };
-//                     (1. - alpha) * &vij.slice(s![k - 1, ..]) + alpha *
-// &vij.slice(s![k, ..])                 });
-//             }
-//         }
-//     }
-//     new_v
-// }
-
-pub fn compute_height_time_deriv(
-    dynamic_geometry: &geom::DynamicGeometry,
-    rain_rate: Option<&fields::AreaScalarField>,
-    fields: &Fields,
-    velocity_boundary_conditions: fields::HorizBoundaryConditions<Vector2>,
-    height_boundary_conditions: fields::HorizBoundaryConditions<Float>,
-) -> fields::AreaScalarField {
-    let mut height_time_deriv = fields
-        .velocity
-        .column_average(dynamic_geometry)
-        .advect_upwind(
-            &fields.height,
-            dynamic_geometry.grid(),
-            velocity_boundary_conditions,
-            height_boundary_conditions,
-        );
-
-    if let Some(rain_rate) = rain_rate {
-        for cell_footprint_index in dynamic_geometry.grid().cell_footprint_indexing().iter() {
-            *height_time_deriv.cell_footprint_value_mut(cell_footprint_index) +=
-                rain_rate.cell_footprint_value(cell_footprint_index);
-        }
-    }
-
-    height_time_deriv
-}
-
-// #[derive(Debug)]
-// pub struct VelocitySolver {
-//     linear_solver: linalg::LinearSolver,
-// }
-// impl VelocitySolver {
-//     pub fn solve(
-//         &self,
-//         problem: &Problem,
-//         dynamic_geometry: &geom::DynamicGeometry,
-//         boundary_conditions: &fields::BoundaryConditions<Vector3>,
-//         prev_velocity: &fields::VolVectorField,
-//         prev_pressure_grad: &fields::VolVectorField,
-//         dt: Float,
-//     ) -> fields::VolVectorField {
-//         use implicit::SolveEq;
-
-//         let prev_u = prev_velocity;
-//         let prev_grad_p = prev_pressure_grad;
-//         let nu = problem.kinematic_viscosity;
-//         let rho = problem.density;
-//         let g = Vector3::new(0., 0., -problem.grav_accel);
-
-//         let u = implicit::ImplicitVolField::<Float>::new(dynamic_geometry,
-// boundary_conditions);         let eq =
-//             (u - prev_u) / dt + prev_u.advect(u) - nu * u.laplacian() ==
-// -prev_grad_p / rho + g;         self.linear_solver.solve_eq(eq, u)
-//     }
-// }
 
 fn compute_velocity_boundary_conditions(
     problem: &Problem,
@@ -599,6 +501,22 @@ fn compute_hydrostatic_column_pressure(
     hydrostatic_column_pressure
 }
 
+fn compute_initial_volume(
+    grid: &geom::Grid,
+    height: &fields::AreaScalarField,
+) -> fields::VolScalarField {
+    let mut volume = fields::VolScalarField::zeros(grid.cell_indexing());
+    for cell_footprint_index in grid.cell_footprint_indexing().iter() {
+        let column_volume =
+            height.cell_footprint_value(cell_footprint_index) * grid.footprint_area();
+        let cell_volume = column_volume / grid.cell_indexing().num_z_cells() as Float;
+        for cell_index in grid.cell_indexing().column(cell_footprint_index) {
+            *volume.cell_value_mut(cell_index) = cell_volume;
+        }
+    }
+    volume
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -612,7 +530,7 @@ mod tests {
         let static_geometry = geom::StaticGeometry::new(grid, &|_, _| 0.);
 
         let height = fields::AreaScalarField::new(static_geometry.grid(), |_, _| 10.);
-        let dynamic_geometry = geom::DynamicGeometry::new(static_geometry, &height);
+        let dynamic_geometry = geom::DynamicGeometry::new_from_height(static_geometry, &height);
 
         let problem = Problem::default();
 
@@ -666,7 +584,7 @@ mod tests {
         let static_geometry = geom::StaticGeometry::new(grid, |_, _| 0.);
 
         let height = fields::AreaScalarField::new(static_geometry.grid(), |_, _| 10.);
-        let dynamic_geometry = geom::DynamicGeometry::new(static_geometry, &height);
+        let dynamic_geometry = geom::DynamicGeometry::new_from_height(static_geometry, &height);
 
         let problem = Problem::default();
 
@@ -684,63 +602,6 @@ mod tests {
             ) {
                 panic!("{cell_index:?}:{pressure_gradient_value}");
             }
-        }
-    }
-
-    #[test]
-    fn test_rain() {
-        let x_axis = geom::Axis::new(-1., 1., 3);
-        let y_axis = geom::Axis::new(10., 11., 4);
-        let grid = geom::Grid::new(x_axis, y_axis, 5);
-        let static_geometry = geom::StaticGeometry::new(grid, &|_, _| 0.);
-
-        let height = fields::AreaScalarField::new(static_geometry.grid(), |_, _| 3.);
-        let dynamic_geometry = geom::DynamicGeometry::new(static_geometry, &height);
-
-        let fields = Fields {
-            height: height.clone(),
-            height_time_deriv: fields::AreaScalarField::zeros(
-                dynamic_geometry.grid().cell_footprint_indexing(),
-            ),
-            velocity: fields::VolVectorField::zeros(dynamic_geometry.grid().cell_indexing()),
-            pressure: fields::VolScalarField::zeros(dynamic_geometry.grid().cell_indexing()),
-            pressure_grad: fields::VolVectorField::zeros(dynamic_geometry.grid().cell_indexing()),
-            hydrostatic_column_pressure: fields::VolScalarField::zeros(
-                dynamic_geometry.grid().cell_indexing(),
-            ),
-            velocity_divergence: fields::VolScalarField::zeros(
-                dynamic_geometry.grid().cell_indexing(),
-            ),
-        };
-
-        // No rain.
-        {
-            let rain_rate =
-                fields::AreaScalarField::zeros(dynamic_geometry.grid().cell_footprint_indexing());
-
-            let height_time_deriv = compute_height_time_deriv(
-                &dynamic_geometry,
-                Some(&rain_rate),
-                &fields,
-                fields::HorizBoundaryConditions::hom_dirichlet(),
-                fields::HorizBoundaryConditions::hom_dirichlet(),
-            );
-
-            approx::assert_abs_diff_eq!(height_time_deriv, rain_rate);
-        }
-        // Some rain.
-        {
-            let rain_rate = fields::AreaScalarField::new(dynamic_geometry.grid(), |_, _| 1.5e-2);
-
-            let height_time_deriv = compute_height_time_deriv(
-                &dynamic_geometry,
-                Some(&rain_rate),
-                &fields,
-                fields::HorizBoundaryConditions::hom_dirichlet(),
-                fields::HorizBoundaryConditions::hom_dirichlet(),
-            );
-
-            approx::assert_abs_diff_eq!(height_time_deriv, rain_rate);
         }
     }
 }

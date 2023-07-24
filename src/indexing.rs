@@ -142,11 +142,11 @@ pub struct VertexFootprintIndex {
 impl VertexFootprintIndex {
     pub fn adjacent_cells(
         self,
-        indexing: &VertexFootprintIndexing,
+        vertex_footprint_indexing: &VertexFootprintIndexing,
     ) -> impl Iterator<Item = CellFootprintIndex> + '_ {
         (-1..1).flat_map(move |dx| {
             let x = self.x.checked_add_signed(dx).and_then(move |x| {
-                if x < indexing.num_x_points - 1 {
+                if x < vertex_footprint_indexing.num_x_points - 1 {
                     Some(x)
                 } else {
                     None
@@ -154,7 +154,7 @@ impl VertexFootprintIndex {
             });
             (-1..1).flat_map(move |dy| {
                 let y = self.y.checked_add_signed(dy).and_then(move |y| {
-                    if y < indexing.num_y_points - 1 {
+                    if y < vertex_footprint_indexing.num_y_points - 1 {
                         Some(y)
                     } else {
                         None
@@ -226,9 +226,12 @@ impl VertexIndexing {
 
     pub fn column(
         &self,
-        footprint: VertexFootprintIndex,
+        vertex_footprint_index: VertexFootprintIndex,
     ) -> impl Iterator<Item = VertexIndex> + '_ {
-        (0..self.num_z_points()).map(move |z| VertexIndex { footprint, z })
+        (0..self.num_z_points()).map(move |z| VertexIndex {
+            footprint: vertex_footprint_index,
+            z,
+        })
     }
 
     pub fn classify_vertex(&self, vertex: VertexIndex) -> VertexClassification {

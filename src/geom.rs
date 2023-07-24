@@ -9,6 +9,8 @@ use crate::{
     Array1, Array2, Array3, Float, Point2, Point3, UnitVector2, UnitVector3, Vector2, Vector3,
 };
 
+pub const MIN_VOLUME: Float = 1e-10;
+
 #[pyclass]
 #[derive(Clone)]
 pub struct Grid {
@@ -296,46 +298,62 @@ impl Axis {
 pub struct ZLattice {
     /// Indexed by [`indexing::VertexIndexing`]
     lattice: Array3,
-    // Indexed by [`indexing::VertexFootprintIndexing`]
-    spacings: Array2,
 }
 impl ZLattice {
-    pub fn new_averaging(
+    pub fn new_from_volume(
+        grid: &Grid,
+        terrain: &fields::Terrain,
+        volume: &fields::VolScalarField,
+    ) -> Self {
+        let vertex_indexing = grid.vertex_indexing();
+        let vertex_footprint_indexing = grid.vertex_footprint_indexing();
+
+        let mut lattice = Array3::zeros(vertex_indexing.shape());
+        for vertex_footprint_index in vertex_footprint_indexing.iter() {
+            let terrain_height = terrain.vertex_value(vertex_footprint_index);
+            for vertex_index in vertex_indexing.column(vertex_footprint_index) {
+                if vertex_index.z == 0 {
+                    lattice[vertex_index.to_array_index()] = terrain_height;
+                } else {
+                    let spacing = mean(
+                        vertex_footprint_index
+                            .adjacent_cells(vertex_footprint_indexing)
+                            .map(|cell_footprint_index| {
+                                let cell_index = indexing::CellIndex {
+                                    footprint: cell_footprint_index,
+                                    z: vertex_index.z - 1,
+                                };
+                                volume.cell_value(cell_index).max(MIN_VOLUME)
+                                    / grid.footprint_area()
+                            }),
+                    )
+                    .unwrap();
+                    lattice[vertex_index.to_array_index()] = lattice[indexing::VertexIndex {
+                        footprint: vertex_footprint_index,
+                        z: vertex_index.z - 1,
+                    }
+                    .to_array_index()]
+                        + spacing;
+                }
+            }
+        }
+        Self { lattice }
+    }
+    pub fn new_from_height(
         grid: &Grid,
         terrain: &fields::Terrain,
         height: &fields::AreaScalarField,
     ) -> Self {
-        let vertex_indexing = grid.vertex_indexing();
-        let mut lattice = Array3::uninit(vertex_indexing.shape());
-        let mut spacings = Array2::uninit(grid.vertex_footprint_indexing().shape());
-        let vertex_footprint_indexing = grid.vertex_footprint_indexing();
-        for vertex_footprint_index in vertex_footprint_indexing.iter() {
-            let terrain_height = terrain.vertex_value(vertex_footprint_index);
-            let height = mean(
-                vertex_footprint_index
-                    .adjacent_cells(vertex_footprint_indexing)
-                    .map(|cell_footprint_index| height.cell_footprint_value(cell_footprint_index)),
-            )
-            .unwrap();
-            let spacing = height / grid.cell_indexing().num_z_cells() as Float;
-            spacings[vertex_footprint_index.to_array_index()] = std::mem::MaybeUninit::new(spacing);
-            for vertex_index in vertex_indexing.column(vertex_footprint_index) {
-                lattice[vertex_index.to_array_index()] =
-                    std::mem::MaybeUninit::new(terrain_height + spacing * vertex_index.z as Float);
+        let mut volume = fields::VolScalarField::zeros(grid.cell_indexing());
+        for cell_footprint_index in grid.cell_footprint_indexing().iter() {
+            let column_cell_volume = height.cell_footprint_value(cell_footprint_index)
+                * grid.footprint_area()
+                / grid.cell_indexing().num_z_cells() as Float;
+            for cell_index in grid.cell_indexing().column(cell_footprint_index) {
+                *volume.cell_value_mut(cell_index) = column_cell_volume;
             }
         }
-        Self {
-            lattice: unsafe { lattice.assume_init() },
-            spacings: unsafe { spacings.assume_init() },
-        }
-    }
-
-    pub fn z_spacing(&self, vertex_footprint_index: indexing::VertexFootprintIndex) -> Float {
-        self.spacings[vertex_footprint_index.to_array_index()]
-    }
-
-    pub fn z_spacing_array(&self) -> &Array2 {
-        &self.spacings
+        Self::new_from_volume(grid, terrain, &volume)
     }
 
     pub fn vertex_value(&self, vertex_index: indexing::VertexIndex) -> Float {
@@ -355,9 +373,29 @@ pub struct DynamicGeometry {
     cells: nd::Array<Cell, <indexing::CellIndex as indexing::Index>::ArrayIndex>,
 }
 impl DynamicGeometry {
-    pub fn new(static_geometry: StaticGeometry, height: &fields::AreaScalarField) -> Self {
+    pub fn new_from_volume(
+        static_geometry: StaticGeometry,
+        volume: &fields::VolScalarField,
+    ) -> Self {
         let z_lattice =
-            ZLattice::new_averaging(static_geometry.grid(), static_geometry.terrain(), &height);
+            ZLattice::new_from_volume(static_geometry.grid(), static_geometry.terrain(), volume);
+        let mut cells = nd::Array::uninit(static_geometry.grid().cell_indexing().shape());
+        for (cell_index, cell) in Self::iter_cells(&static_geometry, &z_lattice) {
+            cells[cell_index.to_array_index()] = std::mem::MaybeUninit::new(cell);
+        }
+        Self {
+            static_geometry,
+            z_lattice,
+            cells: unsafe { cells.assume_init() },
+        }
+    }
+
+    pub fn new_from_height(
+        static_geometry: StaticGeometry,
+        height: &fields::AreaScalarField,
+    ) -> Self {
+        let z_lattice =
+            ZLattice::new_from_height(static_geometry.grid(), static_geometry.terrain(), height);
         let mut cells = nd::Array::uninit(static_geometry.grid().cell_indexing().shape());
         for (cell_index, cell) in Self::iter_cells(&static_geometry, &z_lattice) {
             cells[cell_index.to_array_index()] = std::mem::MaybeUninit::new(cell);
@@ -480,12 +518,21 @@ impl DynamicGeometry {
         z_lattice: &ZLattice,
         cell_index: indexing::CellIndex,
     ) -> Float {
+        let z = cell_index.z;
         static_geometry.grid().footprint_area()
             * cell_index
                 .footprint
                 .vertices_right_handed()
                 .into_iter()
-                .map(|vertex_footprint_index| z_lattice.z_spacing(vertex_footprint_index))
+                .map(|vertex_footprint_index| {
+                    z_lattice.vertex_value(indexing::VertexIndex {
+                        footprint: vertex_footprint_index,
+                        z: z + 1,
+                    }) - z_lattice.vertex_value(indexing::VertexIndex {
+                        footprint: vertex_footprint_index,
+                        z,
+                    })
+                })
                 .sum::<Float>()
             / 3.
     }
@@ -886,7 +933,7 @@ mod test {
         let grid = Grid::new(Axis::new(0., 1., 29), Axis::new(0., 1., 32), 10);
         let height = fields::AreaScalarField::new(&grid, |_, _| 0.);
         let static_geometry = StaticGeometry::new(grid, &|x, y| 10. * x * y);
-        let dynamic_geometry = DynamicGeometry::new(static_geometry, &height);
+        let dynamic_geometry = DynamicGeometry::new_from_height(static_geometry, &height);
 
         let heights = (&dynamic_geometry.z_lattice.lattice.slice(s![.., .., 1..])
             - &dynamic_geometry.z_lattice.lattice.slice(s![.., .., ..-1]))
@@ -916,7 +963,7 @@ mod test {
         let height = fields::AreaScalarField::new(&grid, |_, _| 7.3);
 
         let static_geometry = StaticGeometry::new(grid, &|_, _| 0.);
-        let dynamic_geometry = DynamicGeometry::new(static_geometry, &height);
+        let dynamic_geometry = DynamicGeometry::new_from_height(static_geometry, &height);
 
         assert_relative_eq!(
             dynamic_geometry.z_lattice.lattice,
@@ -973,7 +1020,7 @@ mod test {
                 1. + centroid[0] + 2. * centroid[1];
         }
 
-        let z_lattice = ZLattice::new_averaging(&grid, &terrain, &height);
+        let z_lattice = ZLattice::new_from_height(&grid, &terrain, &height);
 
         let height_expected = &grid.x_axis().vertices().slice(s![.., nd::NewAxis])
             + 2. * &grid.y_axis().vertices().slice(s![nd::NewAxis, ..])

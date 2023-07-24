@@ -283,6 +283,14 @@ impl<V: Value> std::ops::Mul<&VolField<V>> for Float {
         VolField { cells }
     }
 }
+impl std::ops::Mul<VolField<Float>> for &VolField<Float> {
+    type Output = VolField<Float>;
+
+    fn mul(self, mut rhs: VolField<Float>) -> Self::Output {
+        rhs.cells *= &self.cells;
+        rhs
+    }
+}
 impl<V: Value> std::ops::SubAssign<V> for VolField<V> {
     fn sub_assign(&mut self, rhs: V) {
         for cell_value in &mut self.cells {
@@ -516,12 +524,7 @@ impl VolVectorField {
                     }
                     BoundaryCondition::InhomNeumann(_) => unimplemented!(),
                     BoundaryCondition::Kinematic(height_time_deriv) => {
-                        let cell_value = self.vector_field.cell_value(cell.index);
-                        let face_value = compute_kinematic_face_velocity_value(
-                            cell_value,
-                            height_time_deriv,
-                            outward_normal,
-                        );
+                        let face_value = compute_kinematic_face_velocity_value(height_time_deriv);
                         outward_normal.into_inner() * face_value.transpose()
                     }
                 }
@@ -574,12 +577,7 @@ impl VolVectorField {
                     }
                     BoundaryCondition::InhomNeumann(_) => unimplemented!(),
                     BoundaryCondition::Kinematic(height_time_deriv) => {
-                        let cell_value = self.vector_field.cell_value(cell.index);
-                        let face_value = compute_kinematic_face_velocity_value(
-                            cell_value,
-                            height_time_deriv,
-                            outward_normal,
-                        );
+                        let face_value = compute_kinematic_face_velocity_value(height_time_deriv);
                         face_value.dot(&outward_normal)
                     }
                 }
@@ -627,7 +625,7 @@ impl VolVectorField {
                 &self,
                 cell: &geom::Cell,
                 block_paired_cell: &geom::Cell,
-                outward_normal: UnitVector3,
+                _outward_normal: UnitVector3,
                 face_centroid: Point3,
                 boundary_condition: BoundaryCondition<Vector3>,
             ) -> Vector3 {
@@ -646,11 +644,7 @@ impl VolVectorField {
                     BoundaryCondition::InhomNeumann(_) => unimplemented!(),
                     BoundaryCondition::Kinematic(height_time_deriv) => {
                         let cell_value = self.vector_field.cell_value(cell.index);
-                        let face_value = compute_kinematic_face_velocity_value(
-                            cell_value,
-                            height_time_deriv,
-                            outward_normal,
-                        );
+                        let face_value = compute_kinematic_face_velocity_value(height_time_deriv);
                         (face_value - cell_value)
                             / (face_centroid.coords
                                 - 0.5 * (cell.centroid.coords + block_paired_cell.centroid.coords))
@@ -672,11 +666,13 @@ impl VolVectorField {
 
     pub fn advect_upwind(
         &self,
+        advection_velocity: &Self,
         dynamic_geometry: &geom::DynamicGeometry,
         boundary_conditions: &BoundaryConditions<Vector3>,
     ) -> Self {
         struct AdvectionComputer<'a> {
             velocity: &'a VolVectorField,
+            advection_velocity: &'a VolVectorField,
         }
         impl derivs::DifferentialOpComputer<Vector3, Vector3> for AdvectionComputer<'_> {
             fn compute_interior_face_value(
@@ -685,19 +681,26 @@ impl VolVectorField {
                 neighbor_cell: &geom::Cell,
                 outward_normal: UnitVector3,
             ) -> Vector3 {
-                let cell_velocity = self.velocity.cell_value(cell.index);
-                let neighbor_cell_velocity = self.velocity.cell_value(neighbor_cell.index);
-                let linear_face_velocity = 0.5 * (cell_velocity + neighbor_cell_velocity);
+                let cell_advection_velocity = self.advection_velocity.cell_value(cell.index);
+                let neighbor_cell_advection_velocity =
+                    self.advection_velocity.cell_value(neighbor_cell.index);
+                let linear_face_advection_velocity =
+                    0.5 * (cell_advection_velocity + neighbor_cell_advection_velocity);
 
-                let projected_face_velocity = linear_face_velocity.dot(&outward_normal);
-                let neighbor_is_upwind = projected_face_velocity < 0.;
-                let upwind_face_velocity = if neighbor_is_upwind {
-                    neighbor_cell_velocity
+                let projected_face_advection_velocity =
+                    linear_face_advection_velocity.dot(&outward_normal);
+                let neighbor_is_upwind = projected_face_advection_velocity < 0.;
+                let upwind_face_advection_velocity = if neighbor_is_upwind {
+                    neighbor_cell_advection_velocity
                 } else {
-                    cell_velocity
+                    cell_advection_velocity
                 };
 
-                upwind_face_velocity.dot(&outward_normal) * linear_face_velocity
+                let linear_face_advected_velocity = 0.5
+                    * (self.velocity.cell_value(cell.index)
+                        + self.velocity.cell_value(neighbor_cell.index));
+
+                upwind_face_advection_velocity.dot(&outward_normal) * linear_face_advected_velocity
             }
 
             fn compute_boundary_face_value(
@@ -716,12 +719,7 @@ impl VolVectorField {
                     }
                     BoundaryCondition::InhomNeumann(_) => unimplemented!(),
                     BoundaryCondition::Kinematic(height_time_deriv) => {
-                        let cell_value = self.velocity.cell_value(cell.index);
-                        compute_kinematic_face_velocity_value(
-                            cell_value,
-                            height_time_deriv,
-                            outward_normal,
-                        )
+                        compute_kinematic_face_velocity_value(height_time_deriv)
                     }
                 };
 
@@ -732,7 +730,10 @@ impl VolVectorField {
         derivs::compute_field_differential(
             dynamic_geometry,
             boundary_conditions,
-            AdvectionComputer { velocity: self },
+            AdvectionComputer {
+                velocity: self,
+                advection_velocity,
+            },
         )
     }
 
@@ -1041,11 +1042,7 @@ impl AreaVectorField {
 
 /// Compute the face value of the velocity at a boundary specifying the
 /// kinematic boundary condition.
-fn compute_kinematic_face_velocity_value(
-    velocity_cell_value: Vector3,
-    height_time_deriv: Float,
-    outward_normal: UnitVector3,
-) -> Vector3 {
+fn compute_kinematic_face_velocity_value(height_time_deriv: Float) -> Vector3 {
     height_time_deriv * Vector3::z_axis().into_inner()
     // Let u' be the face velocity and u be the cell velocity.
     //
@@ -1085,7 +1082,8 @@ mod tests {
             };
             let velocity = VolVectorField::zeros(cell_indexing);
 
-            let advection = velocity.advect_upwind(&dynamic_geometry, &boundary_conditions);
+            let advection =
+                velocity.advect_upwind(&velocity, &dynamic_geometry, &boundary_conditions);
 
             advection
                 .assert_all_close(&velocity, &dynamic_geometry)
@@ -1111,7 +1109,8 @@ mod tests {
             let velocity =
                 VolVectorField::new(&dynamic_geometry, |x, _, _| Vector3::new(bump(x), 0., 0.));
 
-            let advection = velocity.advect_upwind(&dynamic_geometry, &vel_boundary_conditions);
+            let advection =
+                velocity.advect_upwind(&velocity, &dynamic_geometry, &vel_boundary_conditions);
 
             let expected_advection = {
                 let mut outer_product = VolTensorField::zeros(cell_indexing);
@@ -1431,7 +1430,7 @@ mod tests {
         let height = AreaScalarField::new(&grid, |_, _| max_z);
 
         let static_geometry = geom::StaticGeometry::new(grid, &|_, _| 0.);
-        geom::DynamicGeometry::new(static_geometry, &height)
+        geom::DynamicGeometry::new_from_height(static_geometry, &height)
     }
 
     fn make_ramp_geometry(swap_xy: bool) -> geom::DynamicGeometry {
@@ -1444,6 +1443,6 @@ mod tests {
         let height = AreaScalarField::new(&grid, |x, y| 7.3 * x + y + 1.);
 
         let static_geometry = geom::StaticGeometry::new(grid, &|x, y| 0.1 * (x + y));
-        geom::DynamicGeometry::new(static_geometry, &height)
+        geom::DynamicGeometry::new_from_height(static_geometry, &height)
     }
 }
