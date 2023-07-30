@@ -11,6 +11,7 @@ pub trait DifferentialOpComputer<V: Value, DV: Value> {
         cell: &geom::Cell,
         neighbor_cell: &geom::Cell,
         outward_normal: UnitVector3,
+        face_centroid: Point3,
     ) -> DV;
 
     fn compute_boundary_face_value(
@@ -66,6 +67,7 @@ where
                     cell,
                     dynamic_geometry.cell(neighbor_cell_index),
                     face.outward_normal(),
+                    face.centroid(),
                 ),
             indexing::CellNeighbor::XBoundary(boundary) => match boundary {
                 indexing::Boundary::Lower => {

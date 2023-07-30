@@ -2,11 +2,78 @@ use std::ops;
 
 use ndarray as nd;
 
-use crate::{fields, geom, indexing, linalg, Array1, Float, Point3, UnitVector3, Vector3};
+use crate::{fields, geom, indexing, linalg, Array1, Float, Matrix3, Point3, UnitVector3, Vector3};
 
-pub trait ImplicitValue: fields::Value {}
-impl ImplicitValue for Float {}
-impl ImplicitValue for Vector3 {}
+pub trait LinearOperator<V: ImplicitValue>: ops::Mul<Float, Output = Self> {
+    fn identity() -> Self;
+    fn apply(&self, cell_value: V) -> V;
+    fn add_matrix_elements<F: FnMut(usize, usize, Float)>(&self, add_element: F);
+}
+
+impl LinearOperator<Float> for Float {
+    fn identity() -> Self {
+        1.
+    }
+    fn apply(&self, cell_value: Float) -> Float {
+        self * cell_value
+    }
+
+    fn add_matrix_elements<F: FnMut(usize, usize, Float)>(&self, mut add_element: F) {
+        add_element(0, 0, *self);
+    }
+}
+
+pub enum VectorLinearOperator {
+    Scalar(Float),
+    Matrix(Matrix3),
+}
+impl ops::Mul<Float> for VectorLinearOperator {
+    type Output = Self;
+
+    fn mul(self, rhs: Float) -> Self::Output {
+        match self {
+            VectorLinearOperator::Scalar(scalar) => Self::Scalar(scalar * rhs),
+            VectorLinearOperator::Matrix(matrix) => Self::Matrix(matrix * rhs),
+        }
+    }
+}
+impl LinearOperator<Vector3> for VectorLinearOperator {
+    fn identity() -> Self {
+        Self::Scalar(1.)
+    }
+    fn apply(&self, cell_value: Vector3) -> Vector3 {
+        match self {
+            VectorLinearOperator::Scalar(scalar) => *scalar * cell_value,
+            VectorLinearOperator::Matrix(matrix) => matrix * cell_value,
+        }
+    }
+    fn add_matrix_elements<F: FnMut(usize, usize, Float)>(&self, mut add_element: F) {
+        match self {
+            VectorLinearOperator::Scalar(scalar) => {
+                for i in 0..3 {
+                    add_element(i, i, *scalar);
+                }
+            }
+            VectorLinearOperator::Matrix(matrix) => {
+                for i in 0..3 {
+                    for j in 0..3 {
+                        add_element(i, j, matrix[(i, j)]);
+                    }
+                }
+            }
+        }
+    }
+}
+
+pub trait ImplicitValue: fields::Value {
+    type LinearOperator: LinearOperator<Self>;
+}
+impl ImplicitValue for Float {
+    type LinearOperator = Float;
+}
+impl ImplicitValue for Vector3 {
+    type LinearOperator = VectorLinearOperator;
+}
 
 #[derive(Clone, Copy, Default)]
 pub struct ImplicitVolField<V: ImplicitValue> {
@@ -42,11 +109,6 @@ impl ImplicitVolField<Vector3> {
     }
 }
 
-pub struct CellCoef {
-    cell_index: indexing::CellIndex,
-    coef: Float,
-}
-
 pub trait ImplicitSystem {
     type ImplicitValue: ImplicitValue;
 
@@ -54,14 +116,16 @@ pub trait ImplicitSystem {
     /// corresponding to a particular cell.
     ///
     /// A closure to call to add a new column coefficient will be supplied via
-    /// the `add_cell_coef` argument.
+    /// the `add_cell_linear_operator` argument.
     ///
     /// # Returns
     ///
     /// Any constant value for the subsystem, i.e. the `b` in `Ax + b = 0`.
-    fn gen_subsystem<F: FnMut(CellCoef)>(
+    fn gen_subsystem<
+        F: FnMut(indexing::CellIndex, <Self::ImplicitValue as ImplicitValue>::LinearOperator),
+    >(
         &self,
-        add_cell_coef: &mut F,
+        add_cell_linear_operator: &mut F,
         cell_index: indexing::CellIndex,
         dynamic_geometry: &geom::DynamicGeometry,
         boundary_conditions: &fields::BoundaryConditions<Self::ImplicitValue>,
@@ -71,17 +135,14 @@ pub trait ImplicitSystem {
 impl<V: ImplicitValue> ImplicitSystem for ImplicitVolField<V> {
     type ImplicitValue = V;
 
-    fn gen_subsystem<F: FnMut(CellCoef)>(
+    fn gen_subsystem<F: FnMut(indexing::CellIndex, V::LinearOperator)>(
         &self,
-        add_cell_coef: &mut F,
+        add_cell_linear_operator: &mut F,
         cell_index: indexing::CellIndex,
         _dynamic_geometry: &geom::DynamicGeometry,
         _boundary_conditions: &fields::BoundaryConditions<Self::ImplicitValue>,
     ) -> Self::ImplicitValue {
-        add_cell_coef(CellCoef {
-            cell_index,
-            coef: 1.,
-        });
+        add_cell_linear_operator(cell_index, V::LinearOperator::identity());
         <Self::ImplicitValue as num_traits::Zero>::zero()
     }
 }
@@ -93,22 +154,24 @@ pub struct ImplicitVolScalarFieldProduct<'a, S: ImplicitSystem> {
 impl<'a, S: ImplicitSystem> ImplicitSystem for ImplicitVolScalarFieldProduct<'a, S> {
     type ImplicitValue = S::ImplicitValue;
 
-    fn gen_subsystem<F: FnMut(CellCoef)>(
+    fn gen_subsystem<
+        F: FnMut(indexing::CellIndex, <S::ImplicitValue as ImplicitValue>::LinearOperator),
+    >(
         &self,
-        add_cell_coef: &mut F,
+        add_cell_linear_operator: &mut F,
         cell_index: indexing::CellIndex,
         dynamic_geometry: &geom::DynamicGeometry,
         boundary_conditions: &fields::BoundaryConditions<Self::ImplicitValue>,
     ) -> Self::ImplicitValue {
-        let mut add_cell_coef_wrapper = |cell_coef: CellCoef| {
-            add_cell_coef(CellCoef {
-                cell_index: cell_coef.cell_index,
-                coef: self.scalar_field.cell_value(cell_coef.cell_index) * cell_coef.coef,
-            });
+        let mut add_cell_linear_operator_wrapper = |cell_index, linear_operator| {
+            add_cell_linear_operator(
+                cell_index,
+                linear_operator * self.scalar_field.cell_value(cell_index),
+            );
         };
 
         self.system.gen_subsystem(
-            &mut add_cell_coef_wrapper,
+            &mut add_cell_linear_operator_wrapper,
             cell_index,
             dynamic_geometry,
             boundary_conditions,
@@ -123,22 +186,21 @@ pub struct ImplicitScalarProduct<S: ImplicitSystem> {
 impl<S: ImplicitSystem> ImplicitSystem for ImplicitScalarProduct<S> {
     type ImplicitValue = S::ImplicitValue;
 
-    fn gen_subsystem<F: FnMut(CellCoef)>(
+    fn gen_subsystem<
+        F: FnMut(indexing::CellIndex, <S::ImplicitValue as ImplicitValue>::LinearOperator),
+    >(
         &self,
-        add_cell_coef: &mut F,
+        add_cell_linear_operator: &mut F,
         cell_index: indexing::CellIndex,
         dynamic_geometry: &geom::DynamicGeometry,
         boundary_conditions: &fields::BoundaryConditions<S::ImplicitValue>,
     ) -> Self::ImplicitValue {
-        let mut add_cell_coef_wrapper = |cell_coef: CellCoef| {
-            add_cell_coef(CellCoef {
-                cell_index: cell_coef.cell_index,
-                coef: cell_coef.coef * self.scalar,
-            })
+        let mut add_cell_linear_operator_wrapper = |cell_index, linear_operator| {
+            add_cell_linear_operator(cell_index, linear_operator * self.scalar)
         };
 
         self.system.gen_subsystem(
-            &mut add_cell_coef_wrapper,
+            &mut add_cell_linear_operator_wrapper,
             cell_index,
             dynamic_geometry,
             boundary_conditions,
@@ -158,21 +220,21 @@ impl<
 {
     type ImplicitValue = <S1::ImplicitValue as std::ops::Add<S2::ImplicitValue>>::Output;
 
-    fn gen_subsystem<F: FnMut(CellCoef)>(
+    fn gen_subsystem<F: FnMut(indexing::CellIndex, V::LinearOperator)>(
         &self,
-        add_cell_coef: &mut F,
+        add_cell_linear_operator: &mut F,
         cell_index: indexing::CellIndex,
         dynamic_geometry: &geom::DynamicGeometry,
         boundary_conditions: &fields::BoundaryConditions<V>,
     ) -> V {
         let rhs_1 = self.term_1.gen_subsystem(
-            add_cell_coef,
+            add_cell_linear_operator,
             cell_index,
             dynamic_geometry,
             boundary_conditions,
         );
         let rhs_2 = self.term_2.gen_subsystem(
-            add_cell_coef,
+            add_cell_linear_operator,
             cell_index,
             dynamic_geometry,
             boundary_conditions,
@@ -184,9 +246,9 @@ impl<
 impl<'a, V: ImplicitValue> ImplicitSystem for &'a fields::VolField<V> {
     type ImplicitValue = V;
 
-    fn gen_subsystem<F: FnMut(CellCoef)>(
+    fn gen_subsystem<F: FnMut(indexing::CellIndex, V::LinearOperator)>(
         &self,
-        _add_cell_coef: &mut F,
+        _add_cell_linear_operator: &mut F,
         cell_index: indexing::CellIndex,
         _dynamic_geometry: &geom::DynamicGeometry,
         _boundary_conditions: &fields::BoundaryConditions<V>,
@@ -198,9 +260,9 @@ impl<'a, V: ImplicitValue> ImplicitSystem for &'a fields::VolField<V> {
 impl<V: ImplicitValue> ImplicitSystem for V {
     type ImplicitValue = V;
 
-    fn gen_subsystem<F: FnMut(CellCoef)>(
+    fn gen_subsystem<F: FnMut(indexing::CellIndex, V::LinearOperator)>(
         &self,
-        _add_cell_coef: &mut F,
+        _add_cell_linear_operator: &mut F,
         _cell_index: indexing::CellIndex,
         _dynamic_geometry: &geom::DynamicGeometry,
         _boundary_conditions: &fields::BoundaryConditions<Self::ImplicitValue>,
@@ -212,17 +274,22 @@ impl<V: ImplicitValue> ImplicitSystem for V {
 pub trait DifferentialImplicitSystemImpl {
     type ImplicitValue: ImplicitValue;
 
-    fn handle_interior_face<F: FnMut(CellCoef)>(
+    fn handle_interior_face<
+        F: FnMut(indexing::CellIndex, <Self::ImplicitValue as ImplicitValue>::LinearOperator),
+    >(
         &self,
-        add_cell_coef: &mut F,
+        add_cell_linear_operator: &mut F,
         cell: &geom::Cell,
         neighbor_cell: &geom::Cell,
         outward_normal: UnitVector3,
+        _face_centroid: Point3,
     ) -> Self::ImplicitValue;
 
-    fn handle_boundary_face<F: FnMut(CellCoef)>(
+    fn handle_boundary_face<
+        F: FnMut(indexing::CellIndex, <Self::ImplicitValue as ImplicitValue>::LinearOperator),
+    >(
         &self,
-        add_cell_coef: &mut F,
+        add_cell_linear_operator: &mut F,
         cell: &geom::Cell,
         block_paired_cell: &geom::Cell,
         outward_normal: UnitVector3,
@@ -238,9 +305,11 @@ pub struct DifferentialImplicitSystem<D: DifferentialImplicitSystemImpl> {
 impl<D: DifferentialImplicitSystemImpl> ImplicitSystem for DifferentialImplicitSystem<D> {
     type ImplicitValue = D::ImplicitValue;
 
-    fn gen_subsystem<F: FnMut(CellCoef)>(
+    fn gen_subsystem<
+        F: FnMut(indexing::CellIndex, <Self::ImplicitValue as ImplicitValue>::LinearOperator),
+    >(
         &self,
-        add_cell_coef: &mut F,
+        add_cell_linear_operator: &mut F,
         cell_index: indexing::CellIndex,
         dynamic_geometry: &geom::DynamicGeometry,
         boundary_conditions: &fields::BoundaryConditions<Self::ImplicitValue>,
@@ -249,24 +318,22 @@ impl<D: DifferentialImplicitSystemImpl> ImplicitSystem for DifferentialImplicitS
 
         let mut lhs_constant = <Self::ImplicitValue as num_traits::Zero>::zero();
         for face in &cell.faces {
-            let mut add_cell_coef_wrapper = |cell_coef: CellCoef| {
-                add_cell_coef(CellCoef {
-                    cell_index: cell_coef.cell_index,
-                    coef: cell_coef.coef * face.area() / cell.volume,
-                })
+            let mut add_cell_linear_operator_wrapper = |cell_index, linear_operator| {
+                add_cell_linear_operator(cell_index, linear_operator * (face.area() / cell.volume))
             };
             lhs_constant += match face.neighbor() {
                 indexing::CellNeighbor::Cell(neighbor_cell_index) => {
                     self.differential.handle_interior_face(
-                        &mut add_cell_coef_wrapper,
+                        &mut add_cell_linear_operator_wrapper,
                         cell,
                         dynamic_geometry.cell(neighbor_cell_index),
                         face.outward_normal(),
+                        face.centroid(),
                     )
                 }
                 indexing::CellNeighbor::XBoundary(boundary) => match boundary {
                     indexing::Boundary::Lower => self.differential.handle_boundary_face(
-                        &mut add_cell_coef_wrapper,
+                        &mut add_cell_linear_operator_wrapper,
                         cell,
                         dynamic_geometry.cell(cell_index.flip()),
                         face.outward_normal(),
@@ -274,7 +341,7 @@ impl<D: DifferentialImplicitSystemImpl> ImplicitSystem for DifferentialImplicitS
                         boundary_conditions.horiz.x.lower,
                     ),
                     indexing::Boundary::Upper => self.differential.handle_boundary_face(
-                        &mut add_cell_coef_wrapper,
+                        &mut add_cell_linear_operator_wrapper,
                         cell,
                         dynamic_geometry.cell(cell_index.flip()),
                         face.outward_normal(),
@@ -284,7 +351,7 @@ impl<D: DifferentialImplicitSystemImpl> ImplicitSystem for DifferentialImplicitS
                 },
                 indexing::CellNeighbor::YBoundary(boundary) => match boundary {
                     indexing::Boundary::Lower => self.differential.handle_boundary_face(
-                        &mut add_cell_coef_wrapper,
+                        &mut add_cell_linear_operator_wrapper,
                         cell,
                         dynamic_geometry.cell(cell_index.flip()),
                         face.outward_normal(),
@@ -292,7 +359,7 @@ impl<D: DifferentialImplicitSystemImpl> ImplicitSystem for DifferentialImplicitS
                         boundary_conditions.horiz.y.lower,
                     ),
                     indexing::Boundary::Upper => self.differential.handle_boundary_face(
-                        &mut add_cell_coef_wrapper,
+                        &mut add_cell_linear_operator_wrapper,
                         cell,
                         dynamic_geometry.cell(cell_index.flip()),
                         face.outward_normal(),
@@ -302,7 +369,7 @@ impl<D: DifferentialImplicitSystemImpl> ImplicitSystem for DifferentialImplicitS
                 },
                 indexing::CellNeighbor::ZBoundary(boundary) => match boundary {
                     indexing::Boundary::Lower => self.differential.handle_boundary_face(
-                        &mut add_cell_coef_wrapper,
+                        &mut add_cell_linear_operator_wrapper,
                         cell,
                         cell,
                         face.outward_normal(),
@@ -313,7 +380,7 @@ impl<D: DifferentialImplicitSystemImpl> ImplicitSystem for DifferentialImplicitS
                             .boundary_condition(cell_index.footprint),
                     ),
                     indexing::Boundary::Upper => self.differential.handle_boundary_face(
-                        &mut add_cell_coef_wrapper,
+                        &mut add_cell_linear_operator_wrapper,
                         cell,
                         cell,
                         face.outward_normal(),
@@ -337,28 +404,27 @@ pub struct SemiImplicitScalarLaplacianField<'a> {
 impl<'a> DifferentialImplicitSystemImpl for SemiImplicitScalarLaplacianField<'a> {
     type ImplicitValue = Float;
 
-    fn handle_interior_face<F: FnMut(CellCoef)>(
+    fn handle_interior_face<F: FnMut(indexing::CellIndex, Float)>(
         &self,
-        add_cell_coef: &mut F,
+        add_cell_linear_operator: &mut F,
         cell: &geom::Cell,
         neighbor_cell: &geom::Cell,
         outward_normal: UnitVector3,
+        face_centroid: Point3,
     ) -> Self::ImplicitValue {
         let displ = neighbor_cell.centroid - cell.centroid;
         let c_corr = 1. / outward_normal.dot(&displ);
-        add_cell_coef(CellCoef {
-            cell_index: cell.index,
-            coef: -c_corr,
-        });
-        add_cell_coef(CellCoef {
-            cell_index: neighbor_cell.index,
-            coef: c_corr,
-        });
+        add_cell_linear_operator(cell.index, -c_corr);
+        add_cell_linear_operator(neighbor_cell.index, c_corr);
 
         if let Some(explicit_grad) = self.explicit_grad {
-            let explicit_grad_at_face = 0.5
-                * (explicit_grad.cell_value(cell.index)
-                    + explicit_grad.cell_value(neighbor_cell.index));
+            let explicit_grad_at_face = fields::linearly_interpolate_to_face(
+                explicit_grad,
+                &face_centroid,
+                &outward_normal,
+                cell,
+                neighbor_cell,
+            );
             let explicit_correction =
                 (outward_normal.into_inner() - c_corr * displ).dot(&explicit_grad_at_face);
             explicit_correction
@@ -367,9 +433,9 @@ impl<'a> DifferentialImplicitSystemImpl for SemiImplicitScalarLaplacianField<'a>
         }
     }
 
-    fn handle_boundary_face<F: FnMut(CellCoef)>(
+    fn handle_boundary_face<F: FnMut(indexing::CellIndex, Float)>(
         &self,
-        add_cell_coef: &mut F,
+        add_cell_linear_operator: &mut F,
         cell: &geom::Cell,
         block_paired_cell: &geom::Cell,
         outward_normal: UnitVector3,
@@ -382,14 +448,8 @@ impl<'a> DifferentialImplicitSystemImpl for SemiImplicitScalarLaplacianField<'a>
                     - 0.5 * (cell.centroid.coords + block_paired_cell.centroid.coords);
                 let c_corr = 1. / outward_normal.dot(&displ);
                 let coef = -0.5 * c_corr;
-                add_cell_coef(CellCoef {
-                    cell_index: cell.index,
-                    coef,
-                });
-                add_cell_coef(CellCoef {
-                    cell_index: block_paired_cell.index,
-                    coef,
-                });
+                add_cell_linear_operator(cell.index, coef);
+                add_cell_linear_operator(block_paired_cell.index, coef);
                 0.
             }
             fields::BoundaryCondition::HomNeumann => 0.,
@@ -399,6 +459,7 @@ impl<'a> DifferentialImplicitSystemImpl for SemiImplicitScalarLaplacianField<'a>
                 boundary_value
             }
             fields::BoundaryCondition::Kinematic(_) => unimplemented!(),
+            fields::BoundaryCondition::NoPenetration => todo!(),
         }
     }
 }
@@ -409,28 +470,27 @@ pub struct SemiImplicitVectorLaplacianField<'a> {
 impl<'a> DifferentialImplicitSystemImpl for SemiImplicitVectorLaplacianField<'a> {
     type ImplicitValue = Vector3;
 
-    fn handle_interior_face<F: FnMut(CellCoef)>(
+    fn handle_interior_face<F: FnMut(indexing::CellIndex, VectorLinearOperator)>(
         &self,
-        add_cell_coef: &mut F,
+        add_cell_linear_operator: &mut F,
         cell: &geom::Cell,
         neighbor_cell: &geom::Cell,
         outward_normal: UnitVector3,
+        face_centroid: Point3,
     ) -> Self::ImplicitValue {
         let displ = neighbor_cell.centroid - cell.centroid;
         let c_corr = 1. / outward_normal.dot(&displ);
-        add_cell_coef(CellCoef {
-            cell_index: cell.index,
-            coef: -c_corr,
-        });
-        add_cell_coef(CellCoef {
-            cell_index: neighbor_cell.index,
-            coef: c_corr,
-        });
+        add_cell_linear_operator(cell.index, VectorLinearOperator::Scalar(-c_corr));
+        add_cell_linear_operator(neighbor_cell.index, VectorLinearOperator::Scalar(c_corr));
 
         if let Some(explicit_grad) = self.explicit_grad {
-            let explicit_grad_at_face = 0.5
-                * (explicit_grad.cell_value(cell.index)
-                    + explicit_grad.cell_value(neighbor_cell.index));
+            let explicit_grad_at_face = fields::linearly_interpolate_to_face(
+                explicit_grad,
+                &face_centroid,
+                &outward_normal,
+                cell,
+                neighbor_cell,
+            );
             let explicit_correction =
                 explicit_grad_at_face.tr_mul(&(outward_normal.into_inner() - c_corr * displ));
             explicit_correction
@@ -439,9 +499,9 @@ impl<'a> DifferentialImplicitSystemImpl for SemiImplicitVectorLaplacianField<'a>
         }
     }
 
-    fn handle_boundary_face<F: FnMut(CellCoef)>(
+    fn handle_boundary_face<F: FnMut(indexing::CellIndex, VectorLinearOperator)>(
         &self,
-        add_cell_coef: &mut F,
+        add_cell_linear_operator: &mut F,
         cell: &geom::Cell,
         block_paired_cell: &geom::Cell,
         outward_normal: UnitVector3,
@@ -454,14 +514,11 @@ impl<'a> DifferentialImplicitSystemImpl for SemiImplicitVectorLaplacianField<'a>
                     - 0.5 * (cell.centroid.coords + block_paired_cell.centroid.coords);
                 let c_corr = 1. / outward_normal.dot(&displ);
                 let coef = -0.5 * c_corr;
-                add_cell_coef(CellCoef {
-                    cell_index: cell.index,
-                    coef,
-                });
-                add_cell_coef(CellCoef {
-                    cell_index: block_paired_cell.index,
-                    coef,
-                });
+                add_cell_linear_operator(cell.index, VectorLinearOperator::Scalar(coef));
+                add_cell_linear_operator(
+                    block_paired_cell.index,
+                    VectorLinearOperator::Scalar(coef),
+                );
                 Vector3::zeros()
             }
             fields::BoundaryCondition::HomNeumann => Vector3::zeros(),
@@ -472,15 +529,19 @@ impl<'a> DifferentialImplicitSystemImpl for SemiImplicitVectorLaplacianField<'a>
             }
             fields::BoundaryCondition::Kinematic(height_time_deriv) => {
                 height_time_deriv * Vector3::z_axis().into_inner()
-                // BoundaryCondition::Kinematic(height_time_deriv) => {
-                //     let cell_value = self.vector_field.cell_value(cell.index);
-                //     let face_value =
-                //         compute_kinematic_face_velocity_value(cell_value, height_time_deriv, outward_normal);
-                //     (face_value - cell_value)
-                //         / (face_centroid.coords
-                //             - 0.5 * (cell.centroid.coords + block_paired_cell.centroid.coords))
-                //             .norm()
-                // }
+            }
+            fields::BoundaryCondition::NoPenetration => {
+                let projection_matrix = outward_normal.into_inner() * &outward_normal.transpose();
+                let displ = face_centroid.coords
+                    - 0.5 * (cell.centroid.coords + block_paired_cell.centroid.coords);
+                let c_corr = 1. / outward_normal.dot(&displ);
+                let matrix = -0.5 * c_corr * projection_matrix;
+                add_cell_linear_operator(cell.index, VectorLinearOperator::Matrix(matrix));
+                add_cell_linear_operator(
+                    block_paired_cell.index,
+                    VectorLinearOperator::Matrix(matrix),
+                );
+                Vector3::zeros()
             }
         }
     }
@@ -492,16 +553,23 @@ pub struct SemiImplicitVectorUpwindAdvectionField<'a> {
 impl<'a> DifferentialImplicitSystemImpl for SemiImplicitVectorUpwindAdvectionField<'a> {
     type ImplicitValue = Vector3;
 
-    fn handle_interior_face<F: FnMut(CellCoef)>(
+    fn handle_interior_face<F: FnMut(indexing::CellIndex, VectorLinearOperator)>(
         &self,
-        add_cell_coef: &mut F,
+        add_cell_linear_operator: &mut F,
         cell: &geom::Cell,
         neighbor_cell: &geom::Cell,
         outward_normal: UnitVector3,
+        face_centroid: Point3,
     ) -> Self::ImplicitValue {
         let cell_velocity = self.advection_velocity.cell_value(cell.index);
         let neighbor_cell_velocity = self.advection_velocity.cell_value(neighbor_cell.index);
-        let linear_face_velocity = 0.5 * (cell_velocity + neighbor_cell_velocity);
+        let linear_face_velocity = fields::linearly_interpolate_to_face(
+            self.advection_velocity,
+            &face_centroid,
+            &outward_normal,
+            cell,
+            neighbor_cell,
+        );
 
         let projected_face_velocity = linear_face_velocity.dot(&outward_normal);
         let neighbor_is_upwind = projected_face_velocity < 0.;
@@ -511,21 +579,24 @@ impl<'a> DifferentialImplicitSystemImpl for SemiImplicitVectorUpwindAdvectionFie
             cell_velocity
         };
 
-        let coef = 0.5 * upwind_face_velocity.dot(&outward_normal);
-        add_cell_coef(CellCoef {
-            cell_index: cell.index,
-            coef,
-        });
-        add_cell_coef(CellCoef {
-            cell_index: neighbor_cell.index,
-            coef,
-        });
+        let (weight, neighbor_weight) = fields::compute_linear_interpolation_weights(
+            &face_centroid,
+            &outward_normal,
+            cell,
+            neighbor_cell,
+        );
+        let coef = upwind_face_velocity.dot(&outward_normal);
+        add_cell_linear_operator(cell.index, VectorLinearOperator::Scalar(weight * coef));
+        add_cell_linear_operator(
+            neighbor_cell.index,
+            VectorLinearOperator::Scalar(neighbor_weight * coef),
+        );
         Vector3::zeros()
     }
 
-    fn handle_boundary_face<F: FnMut(CellCoef)>(
+    fn handle_boundary_face<F: FnMut(indexing::CellIndex, VectorLinearOperator)>(
         &self,
-        add_cell_coef: &mut F,
+        add_cell_linear_operator: &mut F,
         cell: &geom::Cell,
         block_paired_cell: &geom::Cell,
         outward_normal: UnitVector3,
@@ -535,23 +606,34 @@ impl<'a> DifferentialImplicitSystemImpl for SemiImplicitVectorUpwindAdvectionFie
         match boundary_condition {
             fields::BoundaryCondition::HomDirichlet => Vector3::zeros(),
             fields::BoundaryCondition::HomNeumann => {
-                let explicit_face_velocity = 0.5
+                let advection_face_velocity = 0.5
                     * (self.advection_velocity.cell_value(cell.index)
                         + self.advection_velocity.cell_value(block_paired_cell.index));
-                let coef = 0.5 * explicit_face_velocity.dot(&outward_normal);
-                add_cell_coef(CellCoef {
-                    cell_index: cell.index,
-                    coef,
-                });
-                add_cell_coef(CellCoef {
-                    cell_index: block_paired_cell.index,
-                    coef,
-                });
+                let coef = 0.5 * advection_face_velocity.dot(&outward_normal);
+                add_cell_linear_operator(cell.index, VectorLinearOperator::Scalar(coef));
+                add_cell_linear_operator(
+                    block_paired_cell.index,
+                    VectorLinearOperator::Scalar(coef),
+                );
                 Vector3::zeros()
             }
             fields::BoundaryCondition::InhomNeumann(_) => unimplemented!(),
             fields::BoundaryCondition::Kinematic(height_time_deriv) => {
                 height_time_deriv.powi(2) * outward_normal.z * Vector3::z_axis().into_inner()
+            }
+            fields::BoundaryCondition::NoPenetration => {
+                let advection_face_velocity = 0.5
+                    * (self.advection_velocity.cell_value(cell.index)
+                        + self.advection_velocity.cell_value(block_paired_cell.index));
+                let projection_matrix =
+                    Matrix3::identity() - outward_normal.into_inner() * &outward_normal.transpose();
+                let matrix = 0.5 * advection_face_velocity.dot(&outward_normal) * projection_matrix;
+                add_cell_linear_operator(cell.index, VectorLinearOperator::Matrix(matrix));
+                add_cell_linear_operator(
+                    block_paired_cell.index,
+                    VectorLinearOperator::Matrix(matrix),
+                );
+                Vector3::zeros()
             }
         }
     }
@@ -839,28 +921,28 @@ fn gen_system<S: ImplicitSystem>(
 
     let mut matrix = sprs::TriMat::new((matrix_size, matrix_size));
     let mut lhs_constant = Array1::zeros(matrix_size);
-    for (flat_index, cell_index) in cell_indexing.iter().enumerate() {
-        let mut add_cell_coef = |CellCoef {
-                                     cell_index: col_cell_index,
-                                     coef,
-                                 }| {
-            let col_flat_index = cell_indexing.flatten(col_cell_index);
-            for i in 0..value_size {
-                matrix.add_triplet(
-                    flat_index * value_size + i,
-                    col_flat_index * value_size + i,
-                    coef,
-                );
-            }
-        };
+    for (row_flat_index, cell_index) in cell_indexing.iter().enumerate() {
+        let mut add_cell_linear_operator =
+            |col_cell_index,
+             linear_operator: <S::ImplicitValue as ImplicitValue>::LinearOperator| {
+                let col_flat_index = cell_indexing.flatten(col_cell_index);
+                let add_element = |i, j, element| {
+                    matrix.add_triplet(
+                        row_flat_index * value_size + i,
+                        col_flat_index * value_size + j,
+                        element,
+                    );
+                };
+                linear_operator.add_matrix_elements(add_element);
+            };
         let subsystem_lhs_constant = implicit_system.gen_subsystem(
-            &mut add_cell_coef,
+            &mut add_cell_linear_operator,
             cell_index,
             dynamic_geometry,
             boundary_conditions,
         );
         subsystem_lhs_constant.flatten(lhs_constant.slice_mut(nd::s![
-            flat_index * value_size..(flat_index + 1) * value_size
+            row_flat_index * value_size..(row_flat_index + 1) * value_size
         ]));
     }
 

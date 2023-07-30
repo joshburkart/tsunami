@@ -52,6 +52,13 @@ impl<V: Value> HorizBoundaryConditionPair<V> {
             upper: BoundaryCondition::HomDirichlet,
         }
     }
+
+    pub fn no_penetration() -> Self {
+        Self {
+            lower: BoundaryCondition::NoPenetration,
+            upper: BoundaryCondition::NoPenetration,
+        }
+    }
 }
 #[derive(Clone, Debug)]
 pub struct VertBoundaryFieldPair<V: Value> {
@@ -103,6 +110,7 @@ pub enum BoundaryCondition<V: Value> {
     HomNeumann,
     InhomNeumann(V),
     Kinematic(Float),
+    NoPenetration,
 }
 
 pub trait Value:
@@ -436,10 +444,16 @@ impl VolScalarField {
                 cell: &geom::Cell,
                 neighbor_cell: &geom::Cell,
                 outward_normal: UnitVector3,
+                face_centroid: Point3,
             ) -> Vector3 {
-                0.5 * outward_normal.into_inner()
-                    * (self.scalar_field.cell_value(cell.index)
-                        + self.scalar_field.cell_value(neighbor_cell.index))
+                outward_normal.into_inner()
+                    * linearly_interpolate_to_face(
+                        self.scalar_field,
+                        &face_centroid,
+                        &outward_normal,
+                        cell,
+                        neighbor_cell,
+                    )
             }
 
             fn compute_boundary_face_value(
@@ -467,6 +481,7 @@ impl VolScalarField {
                                 + displ.norm() * boundary_deriv)
                     }
                     BoundaryCondition::Kinematic(_) => unimplemented!(),
+                    BoundaryCondition::NoPenetration => unimplemented!(),
                 }
             }
         }
@@ -498,10 +513,16 @@ impl VolVectorField {
                 cell: &geom::Cell,
                 neighbor_cell: &geom::Cell,
                 outward_normal: UnitVector3,
+                face_centroid: Point3,
             ) -> Matrix3 {
-                0.5 * outward_normal.into_inner()
-                    * (self.vector_field.cell_value(cell.index)
-                        + self.vector_field.cell_value(neighbor_cell.index))
+                outward_normal.into_inner()
+                    * linearly_interpolate_to_face(
+                        self.vector_field,
+                        &face_centroid,
+                        &outward_normal,
+                        cell,
+                        neighbor_cell,
+                    )
                     .transpose()
             }
 
@@ -513,21 +534,25 @@ impl VolVectorField {
                 _face_centroid: Point3,
                 boundary_condition: BoundaryCondition<Vector3>,
             ) -> Matrix3 {
-                match boundary_condition {
-                    BoundaryCondition::HomDirichlet => Matrix3::zeros(),
-                    BoundaryCondition::HomNeumann => {
-                        outward_normal.into_inner()
-                            * 0.5
-                            * (self.vector_field.cell_value(cell.index)
+                outward_normal.into_inner()
+                    * match boundary_condition {
+                        BoundaryCondition::HomDirichlet => Vector3::zeros(),
+                        BoundaryCondition::HomNeumann => {
+                            0.5 * (self.vector_field.cell_value(cell.index)
                                 + self.vector_field.cell_value(block_paired_cell.index))
-                            .transpose()
+                        }
+                        BoundaryCondition::InhomNeumann(_) => unimplemented!(),
+                        BoundaryCondition::Kinematic(height_time_deriv) => {
+                            compute_kinematic_face_velocity_value(height_time_deriv)
+                        }
+                        BoundaryCondition::NoPenetration => {
+                            let value = 0.5
+                                * (self.vector_field.cell_value(cell.index)
+                                    + self.vector_field.cell_value(block_paired_cell.index));
+                            value - value.dot(&outward_normal) * outward_normal.into_inner()
+                        }
                     }
-                    BoundaryCondition::InhomNeumann(_) => unimplemented!(),
-                    BoundaryCondition::Kinematic(height_time_deriv) => {
-                        let face_value = compute_kinematic_face_velocity_value(height_time_deriv);
-                        outward_normal.into_inner() * face_value.transpose()
-                    }
-                }
+                    .transpose()
             }
         }
 
@@ -553,9 +578,15 @@ impl VolVectorField {
                 cell: &geom::Cell,
                 neighbor_cell: &geom::Cell,
                 outward_normal: UnitVector3,
+                face_centroid: Point3,
             ) -> Float {
-                0.5 * (self.vector_field.cell_value(cell.index)
-                    + self.vector_field.cell_value(neighbor_cell.index))
+                linearly_interpolate_to_face(
+                    self.vector_field,
+                    &face_centroid,
+                    &outward_normal,
+                    cell,
+                    neighbor_cell,
+                )
                 .dot(&outward_normal)
             }
 
@@ -568,19 +599,18 @@ impl VolVectorField {
                 boundary_condition: BoundaryCondition<Vector3>,
             ) -> Float {
                 match boundary_condition {
-                    BoundaryCondition::HomDirichlet => 0.,
+                    BoundaryCondition::HomDirichlet => Vector3::zeros(),
                     BoundaryCondition::HomNeumann => {
-                        let face_value = 0.5
-                            * (self.vector_field.cell_value(cell.index)
-                                + self.vector_field.cell_value(block_paired_cell.index));
-                        face_value.dot(&outward_normal)
+                        0.5 * (self.vector_field.cell_value(cell.index)
+                            + self.vector_field.cell_value(block_paired_cell.index))
                     }
                     BoundaryCondition::InhomNeumann(_) => unimplemented!(),
                     BoundaryCondition::Kinematic(height_time_deriv) => {
-                        let face_value = compute_kinematic_face_velocity_value(height_time_deriv);
-                        face_value.dot(&outward_normal)
+                        compute_kinematic_face_velocity_value(height_time_deriv)
                     }
+                    BoundaryCondition::NoPenetration => Vector3::zeros(),
                 }
+                .dot(&outward_normal)
             }
         }
 
@@ -608,10 +638,15 @@ impl VolVectorField {
                 cell: &geom::Cell,
                 neighbor_cell: &geom::Cell,
                 outward_normal: UnitVector3,
+                face_centroid: Point3,
             ) -> Vector3 {
-                let explicit_grad_at_face = 0.5
-                    * (self.gradient_field.cell_value(cell.index)
-                        + self.gradient_field.cell_value(neighbor_cell.index));
+                let explicit_grad_at_face = linearly_interpolate_to_face(
+                    self.gradient_field,
+                    &face_centroid,
+                    &outward_normal,
+                    cell,
+                    neighbor_cell,
+                );
 
                 let displ = neighbor_cell.centroid - cell.centroid;
                 let c_corr = 1. / outward_normal.dot(&displ);
@@ -625,7 +660,7 @@ impl VolVectorField {
                 &self,
                 cell: &geom::Cell,
                 block_paired_cell: &geom::Cell,
-                _outward_normal: UnitVector3,
+                outward_normal: UnitVector3,
                 face_centroid: Point3,
                 boundary_condition: BoundaryCondition<Vector3>,
             ) -> Vector3 {
@@ -645,10 +680,16 @@ impl VolVectorField {
                     BoundaryCondition::Kinematic(height_time_deriv) => {
                         let cell_value = self.vector_field.cell_value(cell.index);
                         let face_value = compute_kinematic_face_velocity_value(height_time_deriv);
+                        // TODO REVERT?
                         (face_value - cell_value)
-                            / (face_centroid.coords
-                                - 0.5 * (cell.centroid.coords + block_paired_cell.centroid.coords))
-                                .norm()
+                            / (face_centroid.coords - cell.centroid.coords).norm()
+                    }
+                    BoundaryCondition::NoPenetration => {
+                        let cell_value = self.vector_field.cell_value(cell.index);
+                        let face_value = cell_value
+                            - cell_value.dot(&outward_normal) * outward_normal.into_inner();
+                        (face_value - cell_value)
+                            / (face_centroid.coords - cell.centroid.coords).norm()
                     }
                 }
             }
@@ -680,12 +721,20 @@ impl VolVectorField {
                 cell: &geom::Cell,
                 neighbor_cell: &geom::Cell,
                 outward_normal: UnitVector3,
+                face_centroid: Point3,
             ) -> Vector3 {
+                let (weight, neighbor_weight) = compute_linear_interpolation_weights(
+                    &face_centroid,
+                    &outward_normal,
+                    cell,
+                    neighbor_cell,
+                );
+
                 let cell_advection_velocity = self.advection_velocity.cell_value(cell.index);
                 let neighbor_cell_advection_velocity =
                     self.advection_velocity.cell_value(neighbor_cell.index);
-                let linear_face_advection_velocity =
-                    0.5 * (cell_advection_velocity + neighbor_cell_advection_velocity);
+                let linear_face_advection_velocity = weight * cell_advection_velocity
+                    + neighbor_weight * neighbor_cell_advection_velocity;
 
                 let projected_face_advection_velocity =
                     linear_face_advection_velocity.dot(&outward_normal);
@@ -696,9 +745,8 @@ impl VolVectorField {
                     cell_advection_velocity
                 };
 
-                let linear_face_advected_velocity = 0.5
-                    * (self.velocity.cell_value(cell.index)
-                        + self.velocity.cell_value(neighbor_cell.index));
+                let linear_face_advected_velocity = weight * self.velocity.cell_value(cell.index)
+                    + neighbor_weight * self.velocity.cell_value(neighbor_cell.index);
 
                 upwind_face_advection_velocity.dot(&outward_normal) * linear_face_advected_velocity
             }
@@ -721,6 +769,14 @@ impl VolVectorField {
                     BoundaryCondition::Kinematic(height_time_deriv) => {
                         compute_kinematic_face_velocity_value(height_time_deriv)
                     }
+                    BoundaryCondition::NoPenetration => {
+                        let unprojected_face_value = 0.5
+                            * (self.velocity.cell_value(cell.index)
+                                + self.velocity.cell_value(block_paired_cell.index));
+                        unprojected_face_value
+                            - unprojected_face_value.dot(&outward_normal)
+                                * outward_normal.into_inner()
+                    }
                 };
 
                 face_velocity.dot(&outward_normal) * face_velocity
@@ -735,27 +791,6 @@ impl VolVectorField {
                 advection_velocity,
             },
         )
-    }
-
-    pub fn column_average(&self, dynamic_geometry: &geom::DynamicGeometry) -> AreaVectorField {
-        let mut cell_footprints =
-            AreaVectorField::zeros(dynamic_geometry.grid().cell_footprint_indexing());
-        for cell_footprint_index in dynamic_geometry.grid().cell_footprint_indexing().iter() {
-            let mut column_volume = 0.;
-            for cell_index in dynamic_geometry
-                .grid()
-                .cell_indexing()
-                .column(cell_footprint_index)
-            {
-                let cell_value = self.cell_value(cell_index);
-                *cell_footprints.cell_footprint_value_mut(cell_footprint_index) +=
-                    dynamic_geometry.cell(cell_index).volume
-                        * Vector2::new(cell_value.x, cell_value.y);
-                column_volume += dynamic_geometry.cell(cell_index).volume;
-            }
-            *cell_footprints.cell_footprint_value_mut(cell_footprint_index) /= column_volume;
-        }
-        cell_footprints
     }
 
     pub fn values_py<'py>(&self, py: Python<'py>) -> &'py numpy::PyArray5<Float> {
@@ -793,9 +828,15 @@ impl VolTensorField {
                 cell: &geom::Cell,
                 neighbor_cell: &geom::Cell,
                 outward_normal: UnitVector3,
+                face_centroid: Point3,
             ) -> Vector3 {
-                0.5 * (self.tensor_field.cell_value(cell.index)
-                    + self.tensor_field.cell_value(neighbor_cell.index))
+                linearly_interpolate_to_face(
+                    self.tensor_field,
+                    &face_centroid,
+                    &outward_normal,
+                    cell,
+                    neighbor_cell,
+                )
                 .tr_mul(&outward_normal)
             }
 
@@ -816,6 +857,7 @@ impl VolTensorField {
                     }
                     BoundaryCondition::InhomNeumann(_) => unimplemented!(),
                     BoundaryCondition::Kinematic(_) => unimplemented!(),
+                    BoundaryCondition::NoPenetration => todo!(),
                 }
             }
         }
@@ -911,133 +953,29 @@ impl Terrain {
     }
 }
 
-pub struct AreaVectorField {
-    cell_footprints: nd::Array3<Vector2>,
+pub fn compute_linear_interpolation_weights(
+    face_centroid: &Point3,
+    outward_normal: &UnitVector3,
+    cell: &geom::Cell,
+    neighbor_cell: &geom::Cell,
+) -> (Float, Float) {
+    let norm = (neighbor_cell.centroid - cell.centroid).dot(outward_normal);
+    let cell_weight = (neighbor_cell.centroid - face_centroid).dot(outward_normal) / norm;
+    let neighbor_cell_weight = 1. - cell_weight;
+    (cell_weight, neighbor_cell_weight)
 }
-impl AreaVectorField {
-    pub fn zeros(cell_footprint_indexing: &indexing::CellFootprintIndexing) -> Self {
-        Self {
-            cell_footprints: nd::Array3::default(cell_footprint_indexing.shape()),
-        }
-    }
 
-    pub fn cell_footprint_value(
-        &self,
-        cell_footprint_index: indexing::CellFootprintIndex,
-    ) -> Vector2 {
-        self.cell_footprints[cell_footprint_index.to_array_index()]
-    }
-
-    pub fn cell_footprint_value_mut(
-        &mut self,
-        cell_footprint_index: indexing::CellFootprintIndex,
-    ) -> &mut Vector2 {
-        &mut self.cell_footprints[cell_footprint_index.to_array_index()]
-    }
-
-    pub fn advect_upwind(
-        &self,
-        scalar_field: &AreaScalarField,
-        grid: &geom::Grid,
-        velocity_boundary_conditions: HorizBoundaryConditions<Vector2>,
-        scalar_boundary_conditions: HorizBoundaryConditions<Float>,
-    ) -> AreaScalarField {
-        let cell_footprint_indexing = grid.cell_footprint_indexing();
-        let mut advected = AreaScalarField::zeros(cell_footprint_indexing);
-        for cell_footprint_index in cell_footprint_indexing.iter() {
-            let velocity = self.cell_footprint_value(cell_footprint_index);
-            let scalar = scalar_field.cell_footprint_value(cell_footprint_index);
-
-            for cell_footprint_pair in
-                cell_footprint_indexing.compute_footprint_pairs(cell_footprint_index)
-            {
-                let cell_footprint_edge = grid.compute_cell_footprint_edge(cell_footprint_pair);
-                let outward_normal = cell_footprint_edge.outward_normal;
-
-                let edge_velocity = match cell_footprint_pair.neighbor {
-                    indexing::CellFootprintNeighbor::CellFootprint(
-                        neighbor_cell_footprint_index,
-                    ) => {
-                        0.5 * (velocity + self.cell_footprint_value(neighbor_cell_footprint_index))
-                    }
-                    indexing::CellFootprintNeighbor::XBoundary(boundary) => match boundary {
-                        indexing::Boundary::Lower => match velocity_boundary_conditions.x.lower {
-                            BoundaryCondition::HomDirichlet => Vector2::zeros(),
-                            BoundaryCondition::HomNeumann => velocity,
-                            BoundaryCondition::InhomNeumann(_) => unimplemented!(),
-                            BoundaryCondition::Kinematic(_) => unimplemented!(),
-                        },
-                        indexing::Boundary::Upper => match velocity_boundary_conditions.x.upper {
-                            BoundaryCondition::HomDirichlet => Vector2::zeros(),
-                            BoundaryCondition::HomNeumann => velocity,
-                            BoundaryCondition::InhomNeumann(_) => unimplemented!(),
-                            BoundaryCondition::Kinematic(_) => unimplemented!(),
-                        },
-                    },
-                    indexing::CellFootprintNeighbor::YBoundary(boundary) => match boundary {
-                        indexing::Boundary::Lower => match velocity_boundary_conditions.y.lower {
-                            BoundaryCondition::HomDirichlet => Vector2::zeros(),
-                            BoundaryCondition::HomNeumann => velocity,
-                            BoundaryCondition::InhomNeumann(_) => unimplemented!(),
-                            BoundaryCondition::Kinematic(_) => unimplemented!(),
-                        },
-                        indexing::Boundary::Upper => match velocity_boundary_conditions.y.upper {
-                            BoundaryCondition::HomDirichlet => Vector2::zeros(),
-                            BoundaryCondition::HomNeumann => velocity,
-                            BoundaryCondition::InhomNeumann(_) => unimplemented!(),
-                            BoundaryCondition::Kinematic(_) => unimplemented!(),
-                        },
-                    },
-                };
-
-                let projected_edge_velocity = outward_normal.dot(&edge_velocity);
-                let neighbor_is_upwind = projected_edge_velocity < 0.;
-                let upwind_height_to_advect = if neighbor_is_upwind {
-                    match cell_footprint_pair.neighbor {
-                        indexing::CellFootprintNeighbor::CellFootprint(
-                            neighbor_cell_footprint_index,
-                        ) => scalar_field.cell_footprint_value(neighbor_cell_footprint_index),
-                        indexing::CellFootprintNeighbor::XBoundary(boundary) => match boundary {
-                            indexing::Boundary::Lower => match scalar_boundary_conditions.x.lower {
-                                BoundaryCondition::HomDirichlet => 0.,
-                                BoundaryCondition::HomNeumann => scalar,
-                                BoundaryCondition::InhomNeumann(_) => unimplemented!(),
-                                BoundaryCondition::Kinematic(_) => unimplemented!(),
-                            },
-                            indexing::Boundary::Upper => match scalar_boundary_conditions.x.upper {
-                                BoundaryCondition::HomDirichlet => 0.,
-                                BoundaryCondition::HomNeumann => scalar,
-                                BoundaryCondition::InhomNeumann(_) => unimplemented!(),
-                                BoundaryCondition::Kinematic(_) => unimplemented!(),
-                            },
-                        },
-                        indexing::CellFootprintNeighbor::YBoundary(boundary) => match boundary {
-                            indexing::Boundary::Lower => match scalar_boundary_conditions.y.lower {
-                                BoundaryCondition::HomDirichlet => 0.,
-                                BoundaryCondition::HomNeumann => scalar,
-                                BoundaryCondition::InhomNeumann(_) => unimplemented!(),
-                                BoundaryCondition::Kinematic(_) => unimplemented!(),
-                            },
-                            indexing::Boundary::Upper => match scalar_boundary_conditions.y.upper {
-                                BoundaryCondition::HomDirichlet => 0.,
-                                BoundaryCondition::HomNeumann => scalar,
-                                BoundaryCondition::InhomNeumann(_) => unimplemented!(),
-                                BoundaryCondition::Kinematic(_) => unimplemented!(),
-                            },
-                        },
-                    }
-                } else {
-                    scalar
-                };
-
-                *advected.cell_footprint_value_mut(cell_footprint_index) -=
-                    upwind_height_to_advect * cell_footprint_edge.length * projected_edge_velocity;
-            }
-            *advected.cell_footprint_value_mut(cell_footprint_index) /= grid.footprint_area()
-        }
-
-        advected
-    }
+pub fn linearly_interpolate_to_face<V: Value>(
+    field: &VolField<V>,
+    face_centroid: &Point3,
+    outward_normal: &UnitVector3,
+    cell: &geom::Cell,
+    neighbor_cell: &geom::Cell,
+) -> V {
+    let (cell_weight, neighbor_cell_weight) =
+        compute_linear_interpolation_weights(face_centroid, outward_normal, cell, neighbor_cell);
+    field.cell_value(cell.index) * cell_weight
+        + field.cell_value(neighbor_cell.index) * neighbor_cell_weight
 }
 
 /// Compute the face value of the velocity at a boundary specifying the

@@ -219,29 +219,29 @@ impl Solver {
             .velocity
             .gradient(dynamic_geometry, &velocity_boundary_conditions);
 
-        // // Perform explicit velocity update.
-        // {
-        //     let mut dvdt = self.problem.kinematic_viscosity
-        //         * &self.fields.velocity.laplacian(
-        //             &dynamic_geometry,
-        //             &shear,
-        //             &velocity_boundary_conditions,
-        //         );
-        //     dvdt -= &self.fields.velocity.advect_upwind(
-        //         &advection_velocity,
-        //         &dynamic_geometry,
-        //         &velocity_boundary_conditions,
-        //     );
-        //     for cell_index in dynamic_geometry.grid().cell_indexing().iter() {
-        //         *dvdt.cell_value_mut(cell_index) += advection_velocity_divergence
-        //             .cell_value(cell_index)
-        //             * self.fields.velocity.cell_value(cell_index);
-        //     }
-        //     dvdt -= crate::Vector3::new(0., 0., self.problem.grav_accel);
-        //     self.fields.velocity += &(dt * &dvdt);
-        // }
+        // Perform explicit velocity update.
+        if false {
+            let mut dvdt = self.problem.kinematic_viscosity
+                * &self.fields.velocity.laplacian(
+                    &dynamic_geometry,
+                    &shear,
+                    &velocity_boundary_conditions,
+                );
+            dvdt -= &self.fields.velocity.advect_upwind(
+                &advection_velocity,
+                &dynamic_geometry,
+                &velocity_boundary_conditions,
+            );
+            for cell_index in dynamic_geometry.grid().cell_indexing().iter() {
+                *dvdt.cell_value_mut(cell_index) += advection_velocity_divergence
+                    .cell_value(cell_index)
+                    * self.fields.velocity.cell_value(cell_index);
+            }
+            dvdt -= crate::Vector3::new(0., 0., self.problem.grav_accel);
+            self.fields.velocity += &(dt * &dvdt);
+        }
         // Perform implicit velocity update.
-        {
+        else {
             let implicit_velocity = implicit::ImplicitVolField::<Vector3>::default();
             let system = (implicit_velocity - &self.fields.velocity) / dt
                 - self.problem.kinematic_viscosity * implicit_velocity.laplacian(Some(&shear))
@@ -260,9 +260,22 @@ impl Solver {
                 .unwrap();
         }
 
-        // Perform pressure correction.
+        // Perform pressure.
         {
-            self.fields.pressure = Self::compute_incremental_pressure(
+            self.fields.pressure = Self::compute_initial_pressure(
+                &dynamic_geometry,
+                &pressure_boundary_conditions,
+                &self.implicit_solver,
+                &shear,
+                Some(&self.fields.pressure_grad),
+                Some(&self.fields.pressure),
+            );
+            self.fields.pressure_grad = self
+                .fields
+                .pressure
+                .gradient(&dynamic_geometry, &pressure_boundary_conditions);
+
+            let pressure_corr = Self::compute_incremental_pressure(
                 &dynamic_geometry,
                 &pressure_boundary_conditions,
                 &self.implicit_solver,
@@ -274,11 +287,9 @@ impl Solver {
                 &self.fields.pressure_grad,
                 &self.fields.pressure,
             );
-            self.fields.pressure_grad = self
-                .fields
-                .pressure
-                .gradient(&dynamic_geometry, &pressure_boundary_conditions);
-            self.fields.velocity -= &(dt * &self.fields.pressure_grad);
+            let pressure_corr_grad =
+                pressure_corr.gradient(&dynamic_geometry, &pressure_boundary_conditions);
+            self.fields.velocity -= &(dt * &pressure_corr_grad);
         }
 
         // // Run follow-up iterations of pressure correction.

@@ -30,6 +30,6 @@ type Array3 = nd::Array3<Float>;
 #[pymodule]
 fn flow(_py: Python<'_>, m: &PyModule) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(examples::bump_1d, m)?)?;
-    m.add_function(wrap_pyfunction!(examples::singularity_1d, m)?)?;
+    m.add_function(wrap_pyfunction!(examples::ramp_1d, m)?)?;
     m.add_function(wrap_pyfunction!(examples::uniform, m)?)
 }
