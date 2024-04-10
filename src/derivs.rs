@@ -94,7 +94,7 @@ where
                     boundary_conditions
                         .z
                         .lower
-                        .boundary_condition(cell_index.footprint),
+                        .boundary_condition(cell_index.cell_footprint_index),
                 ),
                 indexing::Boundary::Upper => computer.compute_boundary_face_value(
                     cell,
@@ -104,7 +104,7 @@ where
                     boundary_conditions
                         .z
                         .upper
-                        .boundary_condition(cell_index.footprint),
+                        .boundary_condition(cell_index.cell_footprint_index),
                 ),
             },
         };

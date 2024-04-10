@@ -377,7 +377,7 @@ impl<D: DifferentialImplicitSystemImpl> ImplicitSystem for DifferentialImplicitS
                         boundary_conditions
                             .z
                             .lower
-                            .boundary_condition(cell_index.footprint),
+                            .boundary_condition(cell_index.cell_footprint_index),
                     ),
                     indexing::Boundary::Upper => self.differential.handle_boundary_face(
                         &mut add_cell_linear_operator_wrapper,
@@ -388,7 +388,7 @@ impl<D: DifferentialImplicitSystemImpl> ImplicitSystem for DifferentialImplicitS
                         boundary_conditions
                             .z
                             .upper
-                            .boundary_condition(cell_index.footprint),
+                            .boundary_condition(cell_index.cell_footprint_index),
                     ),
                 },
             } * face.area()
@@ -870,6 +870,13 @@ impl ImplicitSolver {
                 .linear_solver
                 .solve(&matrix, x, -lhs_constant)
                 .or_else(|err| match err {
+                    linalg::LinearSolveError::NonFiniteMatrixElement {
+                        row_index,
+                        col_index,
+                    } => Err(ImplicitSolveError::NonFiniteMatrixElement {
+                        cell_index: cell_indexing.unflatten(row_index),
+                        col_cell_index: cell_indexing.unflatten(col_index),
+                    }),
                     linalg::LinearSolveError::NotDiagonallyDominant {
                         row_index,
                         abs_diag,
@@ -980,6 +987,10 @@ pub enum ImplicitSolveError {
         iters: usize,
     },
     SingularSystem,
+    NonFiniteMatrixElement {
+        cell_index: indexing::CellIndex,
+        col_cell_index: indexing::CellIndex,
+    },
 }
 
 #[cfg(test)]

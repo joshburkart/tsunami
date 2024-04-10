@@ -320,7 +320,7 @@ impl ZLattice {
                             .adjacent_cells(vertex_footprint_indexing)
                             .map(|cell_footprint_index| {
                                 let cell_index = indexing::CellIndex {
-                                    footprint: cell_footprint_index,
+                                    cell_footprint_index,
                                     z: vertex_index.z - 1,
                                 };
                                 volume.cell_value(cell_index).max(MIN_VOLUME)
@@ -521,7 +521,7 @@ impl DynamicGeometry {
         let z = cell_index.z;
         static_geometry.grid().footprint_area()
             * cell_index
-                .footprint
+                .cell_footprint_index
                 .vertices_right_handed()
                 .into_iter()
                 .map(|vertex_footprint_index| {
@@ -571,7 +571,7 @@ impl DynamicGeometry {
             .map(|delta_z| {
                 let z = cell_index.z + delta_z;
                 cell_index
-                    .footprint
+                    .cell_footprint_index
                     .vertices_right_handed()
                     .into_iter()
                     .map(move |vertex_footprint| {
@@ -627,7 +627,7 @@ impl DynamicGeometry {
         cell_index: indexing::CellIndex,
         horiz_side: HorizSide,
     ) -> CellFace {
-        let vertex_footprints = cell_index.footprint.vertices_right_handed();
+        let vertex_footprints = cell_index.cell_footprint_index.vertices_right_handed();
         let vertices_z = match horiz_side {
             HorizSide::Up => cell_index.z + 1,
             HorizSide::Down => cell_index.z,
@@ -696,7 +696,7 @@ impl DynamicGeometry {
                     HorizSide::Up => 1,
                     HorizSide::Down => 0,
                 };
-            let vertex_footprints = cell_index.footprint.vertices_right_handed();
+            let vertex_footprints = cell_index.cell_footprint_index.vertices_right_handed();
             [
                 indexing::VertexIndex {
                     footprint: vertex_footprints[0],
@@ -866,7 +866,7 @@ impl CellFace {
                 match vert_face.cell_footprint_edge.cell_footprint_pair.neighbor {
                     indexing::CellFootprintNeighbor::CellFootprint(footprint) => {
                         indexing::CellNeighbor::Cell(indexing::CellIndex {
-                            footprint,
+                            cell_footprint_index: footprint,
                             z: vert_face.cell_index.z,
                         })
                     }
@@ -942,7 +942,7 @@ mod test {
         assert_relative_eq!(heights, expected_heights, epsilon = 1e-6);
 
         let cell_index = indexing::CellIndex {
-            footprint: indexing::CellFootprintIndex {
+            cell_footprint_index: indexing::CellFootprintIndex {
                 x: 15,
                 y: 16,
                 triangle: indexing::Triangle::LowerRight,
@@ -979,7 +979,7 @@ mod test {
         );
 
         let cell_index = indexing::CellIndex {
-            footprint: indexing::CellFootprintIndex {
+            cell_footprint_index: indexing::CellFootprintIndex {
                 x: 0,
                 y: 0,
                 triangle: indexing::Triangle::LowerRight,
@@ -994,7 +994,7 @@ mod test {
         );
         assert_relative_eq!(cell.centroid.z, 7.3 / 10. * 0.5);
         let expected_horiz_centroid = cell_index
-            .footprint
+            .cell_footprint_index
             .vertices_right_handed()
             .into_iter()
             .map(|vertex_footprint_index| {

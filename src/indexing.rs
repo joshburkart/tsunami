@@ -598,14 +598,14 @@ impl CellIndexing {
         cell_footprint_index: CellFootprintIndex,
     ) -> impl Iterator<Item = CellIndex> {
         (0..self.num_z_cells).map(move |z| CellIndex {
-            footprint: cell_footprint_index,
+            cell_footprint_index,
             z,
         })
     }
 
     pub fn classify_cell(&self, cell_index: CellIndex) -> CellClassification {
         let CellIndex {
-            footprint: CellFootprintIndex { x, y, .. },
+            cell_footprint_index: CellFootprintIndex { x, y, .. },
             z,
         } = cell_index;
         if z == 0 {
@@ -642,12 +642,15 @@ impl Indexing for CellIndexing {
     }
 
     fn flatten(&self, index: Self::Index) -> usize {
-        self.cell_footprint_indexing.flatten(index.footprint) * self.num_z_cells + index.z
+        self.cell_footprint_indexing
+            .flatten(index.cell_footprint_index)
+            * self.num_z_cells
+            + index.z
     }
 
     fn unflatten(&self, flat_index: usize) -> Self::Index {
         CellIndex {
-            footprint: self
+            cell_footprint_index: self
                 .cell_footprint_indexing
                 .unflatten(flat_index / self.num_z_cells),
             z: flat_index % self.num_z_cells,
@@ -657,15 +660,15 @@ impl Indexing for CellIndexing {
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct CellIndex {
-    pub footprint: CellFootprintIndex,
+    pub cell_footprint_index: CellFootprintIndex,
     pub z: usize,
 }
 impl CellIndex {
     pub fn flip(self) -> Self {
         Self {
-            footprint: CellFootprintIndex {
-                triangle: self.footprint.triangle.flip(),
-                ..self.footprint
+            cell_footprint_index: CellFootprintIndex {
+                triangle: self.cell_footprint_index.triangle.flip(),
+                ..self.cell_footprint_index
             },
             ..self
         }
@@ -676,10 +679,10 @@ impl Index for CellIndex {
 
     fn to_array_index(self) -> Self::ArrayIndex {
         nd::Dim([
-            self.footprint.x,
-            self.footprint.y,
+            self.cell_footprint_index.x,
+            self.cell_footprint_index.y,
             self.z,
-            self.footprint.triangle as usize,
+            self.cell_footprint_index.triangle as usize,
         ])
     }
 }

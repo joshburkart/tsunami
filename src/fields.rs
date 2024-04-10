@@ -241,6 +241,9 @@ impl<V: Value> VolField<V> {
             cells: self.cells.map(f),
         }
     }
+    pub fn map_inplace<OV: Value, F: FnMut(&mut V)>(&mut self, f: F) {
+        self.cells.map_inplace(f)
+    }
 
     pub fn flatten(&self, cell_indexing: &indexing::CellIndexing) -> Array1 {
         let mut flattened = Array1::zeros(cell_indexing.len() * V::size());
@@ -980,7 +983,7 @@ pub fn linearly_interpolate_to_face<V: Value>(
 
 /// Compute the face value of the velocity at a boundary specifying the
 /// kinematic boundary condition.
-fn compute_kinematic_face_velocity_value(height_time_deriv: Float) -> Vector3 {
+pub fn compute_kinematic_face_velocity_value(height_time_deriv: Float) -> Vector3 {
     height_time_deriv * Vector3::z_axis().into_inner()
     // Let u' be the face velocity and u be the cell velocity.
     //

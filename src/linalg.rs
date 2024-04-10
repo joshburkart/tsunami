@@ -17,6 +17,14 @@ impl LinearSolver {
         x: Array1,
         rhs: Array1,
     ) -> Result<Array1, LinearSolveError> {
+        for (val, (row_index, col_index)) in matrix.triplet_iter() {
+            if !val.is_finite() {
+                return Err(LinearSolveError::NonFiniteMatrixElement {
+                    row_index,
+                    col_index,
+                });
+            }
+        }
         match self {
             Self::Klu => Ok(solve_linear_sytem_klu(matrix, rhs)),
             Self::GaussSeidel {
@@ -50,6 +58,10 @@ pub enum LinearSolveError {
         abs_error_tol: Float,
         iters: usize,
         solution: Array1,
+    },
+    NonFiniteMatrixElement {
+        row_index: usize,
+        col_index: usize,
     },
     SingularMatrix,
 }
