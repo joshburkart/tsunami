@@ -1,26 +1,45 @@
-[package]
-edition = "2021"
-name = "flow"
-version = "0.1.0"
+[workspace]
+members = ["flow", "pyflow", "tsunami"]
+resolver = "2"
 
-[lib]
-crate-type = ["cdylib", "rlib"]
-name = "flow"
-
-[dependencies]
-klu-rs = "0.4"
-nalgebra = "0.32"
-ndarray = {version = "0.15", features = ["approx-0_5"]}
-ndarray-linalg = {version = "0.16", features = ["openblas-system"]}
-num-traits = "0.2"
-numpy = "0.19"
-pyo3 = {version = "0.19", features = ["extension-module"]}
-sprs = "0.11"
-strum = "0.25"
-strum_macros = "0.25"
-
-[dev-dependencies]
+[workspace.dependencies]
 approx = "0.5"
+console_error_panic_hook = "0.1"
+console_log = "1"
+itertools = "0.13"
+js-sys = "0.3.69"
+gauss-quad = "0.1.8"
+log = "0.4"
+nalgebra = "0.32.5"
+ndarray = { version = "0.15", features = ["approx-0_5"] }
+ndarray-linalg = { version = "0.16", features = ["openblas-system"] }
+ndrustfft = "0.4.4"
+num-traits = "0.2"
+numpy = "0.21"
+ode_solvers = "0.4.0"
+pyo3 = { version = "0.21.1", features = ["extension-module"] }
+three-d = { version = "0.17", features = ["egui-gui"] }
+three-d-asset = { version = "0.7", features = [
+    "gltf",
+    "jpeg",
+    "png",
+    "hdr",
+    "http",
+] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+wasm-bindgen = "0.2.92"
+wasm-bindgen-futures = "0.4"
+web-sys = { version = "0.3.4", features = [
+    'Document',
+    'Element',
+    'HtmlCanvasElement',
+    'WebGlBuffer',
+    'WebGlVertexArrayObject',
+    'WebGl2RenderingContext',
+    'WebGlProgram',
+    'WebGlShader',
+    'Window',
+] }
 
 [profile.release]
 debug = true

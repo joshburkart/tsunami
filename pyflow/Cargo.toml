@@ -1,0 +1,14 @@
+[package]
+edition = "2021"
+name = "pyflow"
+version = "0.1.0"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+name = "pyflow"
+
+[dependencies]
+flow = {path = "../flow"}
+ndarray = {workspace = true}
+numpy = {workspace = true}
+pyo3 = {workspace = true}
