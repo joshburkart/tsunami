@@ -9,7 +9,7 @@ pages:
     - rustup target add wasm32-unknown-unknown
     - cargo install trunk
     - cd tsunami
-    - trunk build --release -d ../public
+    - trunk build --release -d ../public --public-url https://joshburkart.gitlab.io/flow/
   artifacts:
     paths:
       - public
