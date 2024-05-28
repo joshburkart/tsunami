@@ -6,6 +6,7 @@ resolver = "2"
 approx = "0.5"
 console_error_panic_hook = "0.1"
 console_log = "1"
+egui_commonmark = { version = "0.16", features = ["macros"] }
 itertools = "0.13"
 js-sys = "0.3.69"
 gauss-quad = "0.1.8"
@@ -18,7 +19,9 @@ num-traits = "0.2"
 numpy = "0.21"
 ode_solvers = "0.4.0"
 pyo3 = { version = "0.21.1", features = ["extension-module"] }
-three-d = { version = "0.17", features = ["egui-gui"] }
+three-d = { git = "https://github.com/joshburkart/three-d.git", rev = "255978cf6626887b24a5d5f66b0c0283874612b7", features = [
+    "egui-gui",
+] }
 three-d-asset = { version = "0.7", features = [
     "gltf",
     "jpeg",

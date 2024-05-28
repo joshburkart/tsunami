@@ -66,6 +66,7 @@ pub async fn run() {
         .or_default()
         .insert(0, "Roboto".to_owned());
     gui.context().set_fonts(fonts);
+    let mut commonmark_cache = egui_commonmark::CommonMarkCache::default();
 
     let mut frame_time_history = egui::util::History::new(2..1000, 500.);
 
@@ -92,7 +93,8 @@ pub async fn run() {
         AmbientLight::new_with_environment(&context, 20.0, Srgba::WHITE, skybox.texture());
     let directional = DirectionalLight::new(&context, 5.0, Srgba::WHITE, &vec3(-1.0, -1.0, -1.0));
 
-    let new_mesh = torus.make_mesh(params.height_exaggeration_factor);
+    let height_array = torus.solver.fields().height_grid();
+    let new_mesh = torus.make_mesh(&height_array, params.height_exaggeration_factor);
     let mut mesh_model = Gm::new(
         Mesh::new(&context, &new_mesh.clone().into()),
         PhysicalMaterial::new(
@@ -116,7 +118,9 @@ pub async fn run() {
         geometry: InstancedMesh::new(
             &context,
             &PointCloud {
-                positions: new_mesh.positions,
+                positions: Positions::F32(
+                    torus.make_points(&height_array, params.height_exaggeration_factor),
+                ),
                 colors: None,
             }
             .into(),
@@ -137,11 +141,11 @@ pub async fn run() {
         torus.solver.integrate(3e-3 * params.realtime_ratio / 100.);
 
         {
-            let new_mesh = torus.make_mesh(params.height_exaggeration_factor);
+            let height_array = torus.solver.fields().height_grid();
             mesh_model.geometry = Mesh::new(
                 &context,
                 &torus
-                    .make_mesh(params.height_exaggeration_factor)
+                    .make_mesh(&&height_array, params.height_exaggeration_factor)
                     .clone()
                     .into(),
             );
@@ -150,7 +154,9 @@ pub async fn run() {
                 point_cloud_model.geometry = InstancedMesh::new(
                     &context,
                     &PointCloud {
-                        positions: new_mesh.positions,
+                        positions: Positions::F32(
+                            torus.make_points(&height_array, params.height_exaggeration_factor),
+                        ),
                         colors: None,
                     }
                     .into(),
@@ -168,10 +174,26 @@ pub async fn run() {
             frame_input.viewport,
             frame_input.device_pixel_ratio,
             |gui_context| {
-                use three_d::egui;
                 egui::Window::new("Tsunami Simulator")
                     .vscroll(true)
                     .show(gui_context, |ui| {
+                        egui::CollapsingHeader::new(egui::RichText::from("Info").heading())
+                            .default_open(true)
+                            .show(ui, |ui| {
+                                egui_commonmark::commonmark!(
+                                    "info",
+                                    ui,
+                                    &mut commonmark_cache,
+                                    "Alpha version -- please **do not share yet**! Many rough \
+                                    edges, e.g. viscosity slider has nothing to do with water's \
+                                    viscosity despite what it says.\n\n\
+                                    \
+                                    Planned features: Spherical geometry, realistic terrain \
+                                    (continents/sea floor/etc.), click to set off a tsunami, \
+                                    and more..."
+                                );
+                            });
+
                         egui::CollapsingHeader::new(egui::RichText::from("Settings").heading())
                             .default_open(true)
                             .show(ui, |ui| {
@@ -225,16 +247,20 @@ pub async fn run() {
                                 ));
                             });
 
-                        ui.collapsing(egui::RichText::from("About").heading(), |ui| {
-                            ui.horizontal_wrapped(|ui| {
-                                ui.spacing_mut().item_spacing.x = 0.0;
-                                ui.label(
-                                    "Solves the shallow water equations pseudospectrally. Torus \
-                                    uses a rectangular domain with periodic boundary conditions. \
-                                    Sphere uses spherical harmonics. Tech stack: Rust/WASM/WebGL/\
-                                    egui/three-d. Written by Josh Burkart.",
-                                );
-                            });
+                        ui.collapsing(egui::RichText::from("Details").heading(), |ui| {
+                            egui_commonmark::commonmark!(
+                                "details",
+                                ui,
+                                &mut commonmark_cache,
+                                "Solves the shallow water equations pseudospectrally. Torus \
+                                uses a rectangular domain with periodic boundary conditions. \
+                                Sphere uses spherical harmonics.\n\n\
+                                \
+                                Tech stack: Rust/WASM/WebGL/[`egui`](https://www.egui.rs/)/\
+                                [`three-d`](https://github.com/asny/three-d).\n\n\
+                                \
+                                By Josh Burkart: [repo](https://gitlab.com/joshburkart/flow)."
+                            );
                         });
                     });
             },
@@ -301,15 +327,18 @@ impl ToroidalGeometry {
         }
     }
 
-    pub fn make_mesh(&self, height_exaggeration_factor: Float) -> CpuMesh {
+    pub fn make_mesh(
+        &self,
+        height_array: &nd::Array2<Float>,
+        height_exaggeration_factor: Float,
+    ) -> CpuMesh {
         let num_theta = self.theta_grid.len();
         let num_phi = self.phi_grid.len();
         let num_cell_vertices = num_theta * num_phi;
 
         let make_index = |i, j| (i % num_theta) * num_phi + (j % num_phi);
 
-        let height_array = self.solver.fields().height_grid();
-        let mut points = self.make_points(&height_array, height_exaggeration_factor);
+        let mut points = self.make_points(height_array, height_exaggeration_factor);
         let height_flat = height_array.as_slice().unwrap();
 
         let mut indices = Vec::new();
@@ -373,7 +402,7 @@ impl ToroidalGeometry {
         mesh
     }
 
-    fn make_points(
+    pub fn make_points(
         &self,
         height_array: &nd::Array2<Float>,
         height_exaggeration_factor: Float,
@@ -476,6 +505,7 @@ mod tests {
     #[test]
     fn test_toroidal() {
         let torus = ToroidalGeometry::new(5);
-        torus.make_mesh(2.);
+        let height_array = torus.solver.fields().height_grid();
+        torus.make_mesh(&&height_array, 2.);
     }
 }
