@@ -9,7 +9,6 @@ use flow::Float;
 #[derive(Clone)]
 struct Parameters {
     pub kinematic_viscosity_rel_to_water: Float,
-    pub tsunami_source_height_m: Float,
     pub height_exaggeration_factor: Float,
     pub realtime_ratio: Float,
     pub resolution_level: u32,
@@ -20,7 +19,6 @@ impl Default for Parameters {
     fn default() -> Self {
         Self {
             kinematic_viscosity_rel_to_water: 1.,
-            tsunami_source_height_m: 10.,
             height_exaggeration_factor: 100.,
             realtime_ratio: 100.,
             resolution_level: 6,
@@ -180,15 +178,6 @@ pub async fn run() {
                                 ui.label("Physics");
                                 ui.add(
                                     egui::Slider::new(
-                                        &mut params.tsunami_source_height_m,
-                                        (1.)..=(100.),
-                                    )
-                                    .logarithmic(true)
-                                    .text("tsunami source height")
-                                    .suffix(" m"),
-                                );
-                                ui.add(
-                                    egui::Slider::new(
                                         &mut params.kinematic_viscosity_rel_to_water,
                                         1e-1..=1e2,
                                     )
@@ -238,11 +227,13 @@ pub async fn run() {
 
                         ui.collapsing(egui::RichText::from("About").heading(), |ui| {
                             ui.horizontal_wrapped(|ui| {
+                                ui.spacing_mut().item_spacing.x = 0.0;
                                 ui.label(
                                     "Solves the shallow water equations pseudospectrally. Torus \
                                     uses a rectangular domain with periodic boundary conditions. \
-                                    Sphere uses spherical harmonics. Written by Josh Burkart.",
-                                )
+                                    Sphere uses spherical harmonics. Tech stack: Rust/WASM/WebGL/\
+                                    egui/three-d. Written by Josh Burkart.",
+                                );
                             });
                         });
                     });
@@ -475,5 +466,16 @@ impl ToroidalGeometry {
             base_height,
             flow::physics::Solver::new(problem, initial_fields),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_toroidal() {
+        let torus = ToroidalGeometry::new(5);
+        torus.make_mesh(2.);
     }
 }

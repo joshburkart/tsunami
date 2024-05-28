@@ -45,15 +45,16 @@ pub struct RectangularPeriodicBasis {
     wavenumbers: nd::Array3<ComplexFloat>,
     wavenumbers_sq: nd::Array3<Float>,
 
-    fft_handlers: std::sync::Mutex<[ndrustfft::FftHandler<Float>; 2]>,
+    rfft_handler: std::sync::Mutex<ndrustfft::R2cFftHandler<Float>>,
+    fft_handler: std::sync::Mutex<ndrustfft::FftHandler<Float>>,
+    rfft_output_size: usize,
 }
 
 impl RectangularPeriodicBasis {
     pub fn new(num_points: [usize; 2], lengths: [Float; 2]) -> Self {
-        let fft_handlers = std::sync::Mutex::new([
-            ndrustfft::FftHandler::new(num_points[0]),
-            ndrustfft::FftHandler::new(num_points[1]),
-        ]);
+        let rfft_handler = std::sync::Mutex::new(ndrustfft::R2cFftHandler::new(num_points[0]));
+        let fft_handler = std::sync::Mutex::new(ndrustfft::FftHandler::new(num_points[1]));
+        let rfft_output_size = num_points[0] / 2 + 1;
         // See https://math.mit.edu/~stevenj/fft-deriv.pdf
         let reflect = |index: i64, num_points: i64| {
             if 2 * index < num_points {
@@ -65,13 +66,12 @@ impl RectangularPeriodicBasis {
             }
         };
         let wavenumbers =
-            nd::Array3::build_uninit((num_points[0], num_points[1], 2), |mut uninit| {
-                for j in 0..num_points[0] {
-                    let j_reflected = reflect(j as i64, num_points[0] as i64) as Float;
+            nd::Array3::build_uninit((rfft_output_size, num_points[1], 2), |mut uninit| {
+                for j in 0..rfft_output_size {
                     for k in 0..num_points[1] {
                         let k_reflected = reflect(k as i64, num_points[1] as i64) as Float;
                         uninit[[j, k, 0]].write(
-                            ComplexFloat::i() * float_consts::TAU * j_reflected / lengths[0],
+                            ComplexFloat::i() * float_consts::TAU * (j as Float) / lengths[0],
                         );
                         uninit[[j, k, 1]].write(
                             ComplexFloat::i() * float_consts::TAU * k_reflected / lengths[1],
@@ -91,52 +91,54 @@ impl RectangularPeriodicBasis {
             lengths,
             wavenumbers,
             wavenumbers_sq,
-            fft_handlers,
+            rfft_handler,
+            fft_handler,
+            rfft_output_size,
         }
     }
 
-    fn to_grid<D: nd::Dimension>(
+    fn to_grid<D: FftDimension>(
         &self,
         spectral: &nd::Array<ComplexFloat, D>,
     ) -> nd::Array<Float, D> {
         let mut temp_field_1 = spectral.clone();
-        let mut temp_field_2 = temp_field_1.clone();
+        let mut temp_field_2 =
+            nd::Array::zeros(D::change_axis_0(temp_field_1.raw_dim(), self.num_points[0]));
         ndrustfft::ndifft(
-            &temp_field_1,
-            &mut temp_field_2,
-            &mut self.fft_handlers.lock().unwrap()[0],
-            0,
-        );
-        // TODO: Use an `irfft` for this second inverse FFT.
-        ndrustfft::ndifft(
-            &temp_field_2,
+            &spectral,
             &mut temp_field_1,
-            &mut self.fft_handlers.lock().unwrap()[1],
+            &mut self.fft_handler.lock().unwrap(),
             1,
         );
-        temp_field_1.mapv(|z| z.re)
+        ndrustfft::ndifft_r2c(
+            &temp_field_1,
+            &mut temp_field_2,
+            &mut self.rfft_handler.lock().unwrap(),
+            0,
+        );
+        temp_field_2
     }
 
-    fn to_spectral<S: RawFloatData, D: nd::Dimension>(
+    fn to_spectral<S: RawFloatData, D: FftDimension>(
         &self,
         grid: &nd::ArrayBase<S, D>,
     ) -> nd::Array<ComplexFloat, D> {
-        let mut temp_field_1 = grid.mapv(ComplexFloat::from);
+        let shape = D::change_axis_0(grid.raw_dim(), self.rfft_output_size);
+        let mut temp_field_1 = nd::Array::zeros(shape);
         let mut temp_field_2 = temp_field_1.clone();
-        // TODO: Use an `rfft` for this first FFT.
-        ndrustfft::ndfft(
-            &temp_field_1,
-            &mut temp_field_2,
-            &mut self.fft_handlers.lock().unwrap()[0],
+        ndrustfft::ndfft_r2c(
+            &grid,
+            &mut temp_field_1,
+            &mut self.rfft_handler.lock().unwrap(),
             0,
         );
         ndrustfft::ndfft(
-            &temp_field_2,
-            &mut temp_field_1,
-            &mut self.fft_handlers.lock().unwrap()[1],
+            &temp_field_1,
+            &mut temp_field_2,
+            &mut self.fft_handler.lock().unwrap(),
             1,
         );
-        temp_field_1
+        temp_field_2
     }
 }
 
@@ -145,10 +147,10 @@ impl Basis for RectangularPeriodicBasis {
     type SpectralVectorField = nd::Array3<ComplexFloat>;
 
     fn scalar_size(&self) -> usize {
-        self.num_points[0] * self.num_points[1]
+        (self.num_points[0] / 2 + 1) * self.num_points[1]
     }
     fn vector_size(&self) -> usize {
-        self.num_points[0] * self.num_points[1] * 2
+        (self.num_points[0] / 2 + 1) * self.num_points[1] * 2
     }
 
     fn axes(&self) -> [nd::Array1<Float>; 2] {
@@ -194,35 +196,20 @@ impl Basis for RectangularPeriodicBasis {
     }
 
     fn scalar_from_slice<'a>(&self, slice: &'a [ComplexFloat]) -> Self::SpectralScalarField {
-        let array =
-            nd::ArrayView2::from_shape((self.num_points[0], self.num_points[1]), slice).unwrap();
-        let mut spectral =
-            Self::SpectralScalarField::zeros((self.num_points[0], self.num_points[1]));
-        for i in 0..spectral.shape()[0] {
-            for j in 0..spectral.shape()[1] {
-                spectral[[i, j]] = array[[i, j]];
-            }
-        }
-        spectral
+        nd::ArrayView2::from_shape((self.rfft_output_size, self.num_points[1]), slice)
+            .unwrap()
+            .to_owned()
     }
     fn vector_from_slice<'a>(&self, slice: &'a [ComplexFloat]) -> Self::SpectralVectorField {
-        let array =
-            nd::ArrayView3::from_shape((self.num_points[0], self.num_points[1], 2), slice).unwrap();
-        let mut spectral =
-            Self::SpectralVectorField::zeros((self.num_points[0], self.num_points[1], 2));
-        for i in 0..spectral.shape()[0] {
-            for j in 0..spectral.shape()[1] {
-                for k in 0..2 {
-                    spectral[[i, j, k]] = array[[i, j, k]];
-                }
-            }
-        }
-        spectral
+        nd::ArrayView3::from_shape((self.rfft_output_size, self.num_points[1], 2), slice)
+            .unwrap()
+            .to_owned()
     }
 
     fn scalar_to_slice(&self, spectral: &Self::SpectralScalarField, slice: &mut [ComplexFloat]) {
         let mut array_mut =
-            nd::ArrayViewMut2::from_shape((self.num_points[0], self.num_points[1]), slice).unwrap();
+            nd::ArrayViewMut2::from_shape((self.rfft_output_size, self.num_points[1]), slice)
+                .unwrap();
         for i in 0..spectral.shape()[0] {
             for j in 0..spectral.shape()[1] {
                 array_mut[[i, j]] = spectral[[i, j]];
@@ -231,7 +218,7 @@ impl Basis for RectangularPeriodicBasis {
     }
     fn vector_to_slice(&self, spectral: &Self::SpectralVectorField, slice: &mut [ComplexFloat]) {
         let mut array_mut =
-            nd::ArrayViewMut3::from_shape((self.num_points[0], self.num_points[1], 2), slice)
+            nd::ArrayViewMut3::from_shape((self.rfft_output_size, self.num_points[1], 2), slice)
                 .unwrap();
         for i in 0..spectral.shape()[0] {
             for j in 0..spectral.shape()[1] {
@@ -279,6 +266,26 @@ impl Basis for RectangularPeriodicBasis {
         self.vector_to_spectral(
             &(&grid.slice(nd::s![.., .., .., nd::NewAxis]) * &grad_grid).sum_axis(nd::Axis(3)),
         )
+    }
+}
+
+trait FftDimension: nd::Dimension {
+    fn change_axis_0(shape: Self, size: usize) -> Self;
+}
+
+impl FftDimension for nd::Dim<[usize; 2]> {
+    fn change_axis_0(shape: Self, size: usize) -> Self {
+        nd::Dim([size, shape[1]])
+    }
+}
+impl FftDimension for nd::Dim<[usize; 3]> {
+    fn change_axis_0(shape: Self, size: usize) -> Self {
+        nd::Dim([size, shape[1], shape[2]])
+    }
+}
+impl FftDimension for nd::Dim<[usize; 4]> {
+    fn change_axis_0(shape: Self, size: usize) -> Self {
+        nd::Dim([size, shape[1], shape[2], shape[3]])
     }
 }
 
@@ -535,36 +542,37 @@ mod tests {
     use float_consts::PI;
 
     #[test]
-    fn test_gradient_laplacian() {
-        let basis = RectangularPeriodicBasis::new([200, 201], [10., 11.]);
-        let field_grid = basis
-            .make_scalar(|x, y| 1. + 0.5 * ((PI * x / 10.).sin() * (PI * y / 11.).sin()).powi(50));
-        let field_spectral = basis.scalar_to_spectral(&field_grid);
+    fn test_gradient() {
+        for num_points in [[200, 201], [201, 200], [300, 201], [301, 200]] {
+            let basis = RectangularPeriodicBasis::new(num_points, [10., 11.]);
+            let field_grid = basis.make_scalar(|x, y| {
+                1. + 0.5 * ((PI * x / 10.).sin() * (PI * y / 11.).sin()).powi(50)
+            });
+            let field_spectral = basis.scalar_to_spectral(&field_grid);
 
-        approx::assert_relative_eq!(
-            field_grid,
-            basis.scalar_to_grid(&field_spectral),
-            epsilon = 1e-5
-        );
+            assert_all_close(&field_grid, &basis.scalar_to_grid(&field_spectral))
+                .abs_tol(Some(1e-5));
 
-        let field_gradient_spectral = basis.gradient(&field_spectral);
-        let field_gradient_grid = basis.vector_to_grid(&field_gradient_spectral);
+            let field_gradient_spectral = basis.gradient(&field_spectral);
+            let field_gradient_grid = basis.vector_to_grid(&field_gradient_spectral);
 
-        let expected_field_gradient_grid = basis.make_vector(|x, y| {
-            [
-                0.5 * 50.
-                    * (PI * x / 10.).sin().powi(49)
-                    * (PI * x / 10.).cos()
-                    * (PI / 10.)
-                    * (PI * y / 11.).sin().powi(50),
-                0.5 * 50.
-                    * (PI * x / 10.).sin().powi(50)
-                    * (PI * y / 11.).sin().powi(49)
-                    * (PI * y / 11.).cos()
-                    * (PI / 11.),
-            ]
-        });
+            let expected_field_gradient_grid = basis.make_vector(|x, y| {
+                [
+                    0.5 * 50.
+                        * (PI * x / 10.).sin().powi(49)
+                        * (PI * x / 10.).cos()
+                        * (PI / 10.)
+                        * (PI * y / 11.).sin().powi(50),
+                    0.5 * 50.
+                        * (PI * x / 10.).sin().powi(50)
+                        * (PI * y / 11.).sin().powi(49)
+                        * (PI * y / 11.).cos()
+                        * (PI / 11.),
+                ]
+            });
 
-        assert_all_close(&field_gradient_grid, &expected_field_gradient_grid).abs_tol(Some(1e-2));
+            assert_all_close(&field_gradient_grid, &expected_field_gradient_grid)
+                .abs_tol(Some(1e-2));
+        }
     }
 }
