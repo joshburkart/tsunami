@@ -1,0 +1,10 @@
+image: rust:1.78.0
+
+pages:
+  script:
+    - cargo install trunk
+    - cd tsunami
+    - trunk build --release -d ../public
+  artifacts:
+    paths:
+      - public
