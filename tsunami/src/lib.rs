@@ -71,12 +71,12 @@ pub async fn run() {
     let mut frame_time_history = egui::util::History::new(2..1000, 500.);
 
     let paths = [
-        "right.png",
-        "left.png",
-        "top.png",
-        "bottom.png",
-        "front.png",
-        "back.png",
+        "right.jpg",
+        "left.jpg",
+        "top.jpg",
+        "bottom.jpg",
+        "front.jpg",
+        "back.jpg",
     ];
     let mut loaded = three_d_asset::io::load_async(&paths).await.unwrap();
     let skybox = Skybox::new(
