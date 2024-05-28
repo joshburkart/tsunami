@@ -1,10 +1,17 @@
 image: rust:1.78.0
 
+workflow:
+  rules:
+    - if: $CI_COMMIT_BRANCH
+
 pages:
   script:
+    - rustup target add wasm32-unknown-unknown
     - cargo install trunk
     - cd tsunami
     - trunk build --release -d ../public
   artifacts:
     paths:
       - public
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"

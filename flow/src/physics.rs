@@ -1,4 +1,3 @@
-use nalgebra as na;
 use ndarray as nd;
 
 use crate::{bases, odeint, ComplexFloat, Float, RawComplexFloatData};
