@@ -3,7 +3,7 @@ members = ["flow", "pyflow", "tsunami"]
 resolver = "2"
 
 [workspace.dependencies]
-approx = "0.5"
+approx = { version = "0.5", features = ["num-complex"] }
 console_error_panic_hook = "0.1"
 console_log = "1"
 egui_commonmark = { version = "0.16", features = ["macros"] }

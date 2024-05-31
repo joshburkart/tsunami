@@ -7,7 +7,7 @@ pub fn bump_2d_spectral(
     kinematic_viscosity: Float,
     base_height: Float,
     amplitude: Float,
-) -> physics::Solver<bases::RectangularPeriodicBasis> {
+) -> physics::Solver<bases::fourier::RectangularPeriodicBasis> {
     use bases::Basis;
 
     let lengths = [5., 15.];
@@ -27,7 +27,7 @@ pub fn bump_2d_spectral(
     let pow = |bump_size: Float, length: Float| {
         (0.5 as Float).ln() / (PI * (0.5 - bump_size / length)).sin().ln() / 2.
     };
-    let basis = std::sync::Arc::new(bases::RectangularPeriodicBasis::new(
+    let basis = std::sync::Arc::new(bases::fourier::RectangularPeriodicBasis::new(
         [num_points, num_points],
         lengths,
     ));

@@ -272,12 +272,12 @@ mod tests {
             &integrator.y().mapv(|z| z.re),
             &nd::array![ComplexFloat::new(0., 1.2 * 51.7).exp().re, 0.],
         )
-        .abs_tol(Some(1e-2));
+        .with_abs_tol(1e-2);
         crate::test_util::assert_all_close(
             &integrator.y().mapv(|z| z.im),
             &nd::array![ComplexFloat::new(0., 1.2 * 51.7).exp().im, 0.],
         )
-        .abs_tol(Some(1e-2));
+        .with_abs_tol(1e-2);
 
         integrator.integrate(&system, 11.7);
 
@@ -287,11 +287,11 @@ mod tests {
             &integrator.y().mapv(|z| z.re),
             &nd::array![ComplexFloat::new(0., 1.2 * (51.7 + 11.7)).exp().re, 0.],
         )
-        .abs_tol(Some(1e-2));
+        .with_abs_tol(1e-2);
         crate::test_util::assert_all_close(
             &integrator.y().mapv(|z| z.im),
             &nd::array![ComplexFloat::new(0., 1.2 * (51.7 + 11.7)).exp().im, 0.],
         )
-        .abs_tol(Some(1e-2));
+        .with_abs_tol(1e-2);
     }
 }

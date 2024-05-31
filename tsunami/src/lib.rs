@@ -10,7 +10,7 @@ use flow::Float;
 struct Parameters {
     pub kinematic_viscosity_rel_to_water: Float,
     pub height_exaggeration_factor: Float,
-    pub realtime_ratio: Float,
+    pub time_step: Float,
     pub resolution_level: u32,
     pub show_point_cloud: bool,
 }
@@ -20,7 +20,7 @@ impl Default for Parameters {
         Self {
             kinematic_viscosity_rel_to_water: 1.,
             height_exaggeration_factor: 100.,
-            realtime_ratio: 100.,
+            time_step: 100.,
             resolution_level: 6,
             show_point_cloud: false,
         }
@@ -68,7 +68,7 @@ pub async fn run() {
     gui.context().set_fonts(fonts);
     let mut commonmark_cache = egui_commonmark::CommonMarkCache::default();
 
-    let mut frame_time_history = egui::util::History::new(2..1000, 500.);
+    let mut frame_time_history = egui::util::History::new(50..1000, 500.);
 
     let paths = [
         "right.jpg",
@@ -138,7 +138,7 @@ pub async fn run() {
 
         torus.solver.problem_mut().kinematic_viscosity =
             1e-3 * params.kinematic_viscosity_rel_to_water;
-        torus.solver.integrate(3e-3 * params.realtime_ratio / 100.);
+        torus.solver.integrate(3e-5 * params.time_step);
 
         {
             let height_array = torus.solver.fields().height_grid();
@@ -188,7 +188,7 @@ pub async fn run() {
                                     edges, e.g. viscosity slider has nothing to do with water's \
                                     viscosity despite what it says.\n\n\
                                     \
-                                    Planned features: Spherical geometry, realistic terrain \
+                                    Planned features: spherical geometry, realistic terrain \
                                     (continents/sea floor/etc.), click to set off a tsunami, \
                                     and more..."
                                 );
@@ -236,13 +236,13 @@ pub async fn run() {
                                     )
                                     .changed();
                                 ui.add(
-                                    egui::Slider::new(&mut params.realtime_ratio, 1e0..=1e3)
+                                    egui::Slider::new(&mut params.time_step, 1e0..=1e3)
                                         .logarithmic(true)
-                                        .text("speed target")
-                                        .suffix("× realtime"),
+                                        .text("time step")
+                                        .suffix(" s"),
                                 );
                                 ui.label(format!(
-                                    "{:.0} ms/frame",
+                                    "{:.0} ms/time step",
                                     frame_time_history.average().unwrap_or(0.)
                                 ));
                             });
@@ -253,10 +253,10 @@ pub async fn run() {
                                 ui,
                                 &mut commonmark_cache,
                                 "Solves the shallow water equations pseudospectrally. Torus \
-                                uses a rectangular domain with periodic boundary conditions. \
-                                Sphere uses spherical harmonics.\n\n\
+                                uses a rectangular domain with periodic boundary conditions and a \
+                                Fourier basis. Sphere will use a spherical harmonic basis.\n\n\
                                 \
-                                Tech stack: Rust/WASM/WebGL/[`egui`](https://www.egui.rs/)/\
+                                Tech stack: Rust/Wasm/WebGL/[`egui`](https://www.egui.rs/)/\
                                 [`three-d`](https://github.com/asny/three-d).\n\n\
                                 \
                                 By Josh Burkart: [repo](https://gitlab.com/joshburkart/flow)."
@@ -298,7 +298,7 @@ struct ToroidalGeometry {
     theta_grid: Vec<Float>,
     phi_grid: Vec<Float>,
 
-    pub solver: flow::physics::Solver<flow::bases::RectangularPeriodicBasis>,
+    pub solver: flow::physics::Solver<flow::bases::fourier::RectangularPeriodicBasis>,
 }
 
 impl ToroidalGeometry {
@@ -435,7 +435,7 @@ impl ToroidalGeometry {
         resolution_level: u32,
     ) -> (
         Float,
-        flow::physics::Solver<flow::bases::RectangularPeriodicBasis>,
+        flow::physics::Solver<flow::bases::fourier::RectangularPeriodicBasis>,
     ) {
         use flow::bases::Basis;
         use flow::float_consts::PI;
@@ -465,7 +465,7 @@ impl ToroidalGeometry {
         let pow = |bump_size: flow::Float, length: flow::Float| {
             (0.5 as flow::Float).ln() / (PI * (0.5 - bump_size / length)).sin().ln() / 2.
         };
-        let basis = std::sync::Arc::new(flow::bases::RectangularPeriodicBasis::new(
+        let basis = std::sync::Arc::new(flow::bases::fourier::RectangularPeriodicBasis::new(
             num_points, lengths,
         ));
         let terrain_height = basis.scalar_to_spectral(&basis.make_scalar(|_, _| 0.));

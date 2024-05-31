@@ -7,29 +7,43 @@ pub struct AllCloseAssertion<'a, 'b, V, D: nd::Dimension>
 where
     V: std::fmt::Display
         + approx::AbsDiffEq<V, Epsilon = Float>
-        + approx::RelativeEq<V, Epsilon = Float>,
+        + approx::RelativeEq<V, Epsilon = Float>
+        + std::ops::Div<V, Output = V>
+        + Copy,
 {
     left: &'a nd::ArrayBase<nd::OwnedRepr<V>, D>,
     right: &'b nd::ArrayBase<nd::OwnedRepr<V>, D>,
 
-    rel_tol: Option<Float>,
-    abs_tol: Option<Float>,
+    rel_tol: Float,
+    abs_tol: Float,
+
+    print_ratio: bool,
+    max_mismatching_elements: usize,
 }
 #[cfg(test)]
 impl<'a, 'b, V, D: nd::Dimension> AllCloseAssertion<'a, 'b, V, D>
 where
     V: std::fmt::Display
         + approx::AbsDiffEq<V, Epsilon = Float>
-        + approx::RelativeEq<V, Epsilon = Float>,
+        + approx::RelativeEq<V, Epsilon = Float>
+        + std::ops::Div<V, Output = V>
+        + Copy,
 {
-    #[allow(dead_code)]
-    pub fn rel_tol(&mut self, rel_tol: Option<Float>) -> &mut Self {
+    pub fn with_rel_tol(mut self, rel_tol: Float) -> Self {
         self.rel_tol = rel_tol;
         self
     }
-
-    pub fn abs_tol(&mut self, abs_tol: Option<Float>) -> &mut Self {
+    pub fn with_abs_tol(mut self, abs_tol: Float) -> Self {
         self.abs_tol = abs_tol;
+        self
+    }
+    #[allow(dead_code)]
+    pub fn with_max_mismatching_elements(mut self, max_mismatching_elements: usize) -> Self {
+        self.max_mismatching_elements = max_mismatching_elements;
+        self
+    }
+    pub fn with_print_ratio(mut self, print_ratio: bool) -> Self {
+        self.print_ratio = print_ratio;
         self
     }
 }
@@ -39,36 +53,38 @@ impl<'a, 'b, V, D: nd::Dimension> Drop for AllCloseAssertion<'a, 'b, V, D>
 where
     V: std::fmt::Display
         + approx::AbsDiffEq<V, Epsilon = Float>
-        + approx::RelativeEq<V, Epsilon = Float>,
+        + approx::RelativeEq<V, Epsilon = Float>
+        + std::ops::Div<V, Output = V>
+        + Copy,
 {
     #[track_caller]
     fn drop(&mut self) {
-        if self.rel_tol.is_none() && self.abs_tol.is_none() {
-            panic!("At least one tolerance must be specified");
-        }
-        let mut num_failures = 0;
+        let mut mismatching_elements = 0;
         self.left
             .indexed_iter()
             .zip(self.right.iter())
             .for_each(|((index, left), right)| {
-                let mut checker = approx::Relative::default();
-                if let Some(rel_tol) = self.rel_tol {
-                    checker = checker.max_relative(rel_tol);
-                }
-                if let Some(abs_tol) = self.abs_tol {
-                    checker = checker.epsilon(abs_tol);
-                }
+                let checker = approx::Relative::default()
+                    .max_relative(self.rel_tol)
+                    .epsilon(self.abs_tol);
 
                 if !checker.eq(&left, &right) {
-                    if num_failures < 20 {
-                        eprintln!("At {index:?}, left = {left}, right = {right}");
+                    if mismatching_elements < self.max_mismatching_elements {
+                        if self.print_ratio {
+                            eprintln!(
+                                "At {index:?}, left = {left}, right = {right}; ratio = {}",
+                                *left / *right
+                            );
+                        } else {
+                            eprintln!("At {index:?}, left = {left}, right = {right}");
+                        }
                     }
-                    num_failures += 1;
+                    mismatching_elements += 1;
                 }
             });
-        if num_failures > 0 {
+        if mismatching_elements > 0 {
             panic!(
-                "Didn't match at {num_failures}/{} elements",
+                "Didn't match at {mismatching_elements}/{} elements",
                 self.left.len()
             )
         }
@@ -81,16 +97,22 @@ pub fn assert_all_close<
     'b,
     V: std::fmt::Display
         + approx::AbsDiffEq<V, Epsilon = Float>
-        + approx::RelativeEq<V, Epsilon = Float>,
+        + approx::RelativeEq<V, Epsilon = Float>
+        + Copy,
     D: nd::Dimension,
 >(
     left: &'a nd::ArrayBase<nd::OwnedRepr<V>, D>,
     right: &'b nd::ArrayBase<nd::OwnedRepr<V>, D>,
-) -> AllCloseAssertion<'a, 'b, V, D> {
+) -> AllCloseAssertion<'a, 'b, V, D>
+where
+    V: std::ops::Div<V, Output = V>,
+{
     AllCloseAssertion {
         left,
         right,
-        rel_tol: Some(1e-7),
-        abs_tol: Some(0.),
+        rel_tol: 1e-5,
+        abs_tol: 0.,
+        print_ratio: false,
+        max_mismatching_elements: 20,
     }
 }

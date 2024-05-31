@@ -32,18 +32,18 @@ impl<B: bases::Basis> Fields<nd::OwnedRepr<ComplexFloat>, B> {
 }
 impl<B: bases::Basis> Fields<nd::OwnedRepr<ComplexFloat>, B> {
     pub fn zeros(basis: std::sync::Arc<B>) -> Self {
-        let len = basis.scalar_size() + basis.vector_size();
+        let len = basis.scalar_grid_size() + basis.vector_grid_size();
         let storage = nd::Array1::zeros([len]);
         Self { basis, storage }
     }
 }
 impl<S: RawComplexFloatData, B: bases::Basis> Fields<S, B> {
     pub fn size(&self) -> usize {
-        self.basis.scalar_size() + self.basis.vector_size()
+        self.basis.scalar_grid_size() + self.basis.vector_grid_size()
     }
 
     pub fn height_spectral(&self) -> B::SpectralScalarField {
-        let scalar_size = self.basis.scalar_size();
+        let scalar_size = self.basis.scalar_grid_size();
         self.basis
             .scalar_from_slice(&self.storage.as_slice().unwrap()[..scalar_size])
     }
@@ -52,7 +52,7 @@ impl<S: RawComplexFloatData, B: bases::Basis> Fields<S, B> {
         self.basis.scalar_to_grid(&spectral)
     }
     pub fn velocity_spectral(&self) -> B::SpectralVectorField {
-        let scalar_size = self.basis.scalar_size();
+        let scalar_size = self.basis.scalar_grid_size();
         self.basis
             .vector_from_slice(&self.storage.as_slice().unwrap()[scalar_size..])
     }
@@ -65,13 +65,13 @@ impl<S: RawComplexFloatData + nd::DataMut, B: bases::Basis> Fields<S, B> {
     pub fn assign_height(&mut self, height: &B::SpectralScalarField) {
         self.basis.scalar_to_slice(
             height,
-            &mut self.storage.as_slice_mut().unwrap()[..self.basis.scalar_size()],
+            &mut self.storage.as_slice_mut().unwrap()[..self.basis.scalar_grid_size()],
         )
     }
     pub fn assign_velocity(&mut self, velocity: &B::SpectralVectorField) {
         self.basis.vector_to_slice(
             velocity,
-            &mut self.storage.as_slice_mut().unwrap()[self.basis.scalar_size()..],
+            &mut self.storage.as_slice_mut().unwrap()[self.basis.scalar_grid_size()..],
         )
     }
 }

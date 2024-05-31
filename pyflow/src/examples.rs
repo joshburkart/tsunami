@@ -25,7 +25,7 @@ impl RectangularFields {
 
 #[pyclass]
 pub struct RectangularSolver {
-    solver: physics::Solver<bases::RectangularPeriodicBasis>,
+    solver: physics::Solver<bases::fourier::RectangularPeriodicBasis>,
 }
 #[pymethods]
 impl RectangularSolver {
@@ -85,7 +85,7 @@ pub fn bump_2d_spectral(
     let pow = |bump_size: Float, length: Float| {
         (0.5 as Float).ln() / (PI * (bump_size / length)).cos().ln() / 2.
     };
-    let basis = std::sync::Arc::new(bases::RectangularPeriodicBasis::new(
+    let basis = std::sync::Arc::new(bases::fourier::RectangularPeriodicBasis::new(
         [num_points, num_points],
         lengths,
     ));
