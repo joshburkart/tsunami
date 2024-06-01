@@ -32,18 +32,18 @@ impl<B: bases::Basis> Fields<nd::OwnedRepr<ComplexFloat>, B> {
 }
 impl<B: bases::Basis> Fields<nd::OwnedRepr<ComplexFloat>, B> {
     pub fn zeros(basis: std::sync::Arc<B>) -> Self {
-        let len = basis.scalar_grid_size() + basis.vector_grid_size();
+        let len = basis.scalar_spectral_size() + basis.vector_spectral_size();
         let storage = nd::Array1::zeros([len]);
         Self { basis, storage }
     }
 }
 impl<S: RawComplexFloatData, B: bases::Basis> Fields<S, B> {
     pub fn size(&self) -> usize {
-        self.basis.scalar_grid_size() + self.basis.vector_grid_size()
+        self.basis.scalar_spectral_size() + self.basis.vector_spectral_size()
     }
 
     pub fn height_spectral(&self) -> B::SpectralScalarField {
-        let scalar_size = self.basis.scalar_grid_size();
+        let scalar_size = self.basis.scalar_spectral_size();
         self.basis
             .scalar_from_slice(&self.storage.as_slice().unwrap()[..scalar_size])
     }
@@ -52,7 +52,7 @@ impl<S: RawComplexFloatData, B: bases::Basis> Fields<S, B> {
         self.basis.scalar_to_grid(&spectral)
     }
     pub fn velocity_spectral(&self) -> B::SpectralVectorField {
-        let scalar_size = self.basis.scalar_grid_size();
+        let scalar_size = self.basis.scalar_spectral_size();
         self.basis
             .vector_from_slice(&self.storage.as_slice().unwrap()[scalar_size..])
     }
@@ -65,13 +65,13 @@ impl<S: RawComplexFloatData + nd::DataMut, B: bases::Basis> Fields<S, B> {
     pub fn assign_height(&mut self, height: &B::SpectralScalarField) {
         self.basis.scalar_to_slice(
             height,
-            &mut self.storage.as_slice_mut().unwrap()[..self.basis.scalar_grid_size()],
+            &mut self.storage.as_slice_mut().unwrap()[..self.basis.scalar_spectral_size()],
         )
     }
     pub fn assign_velocity(&mut self, velocity: &B::SpectralVectorField) {
         self.basis.vector_to_slice(
             velocity,
-            &mut self.storage.as_slice_mut().unwrap()[self.basis.scalar_grid_size()..],
+            &mut self.storage.as_slice_mut().unwrap()[self.basis.scalar_spectral_size()..],
         )
     }
 }
@@ -120,7 +120,7 @@ where
         // Height time derivative.
         fields_time_deriv.assign_height(
             &(-self.basis.divergence(&self.basis.vector_to_spectral(
-                &(&height_grid.slice(nd::s![.., .., nd::NewAxis]) * &velocity_grid),
+                &(&height_grid.slice(nd::s![nd::NewAxis, .., ..]) * &velocity_grid),
             ))),
         );
 
@@ -133,26 +133,6 @@ where
         fields_time_deriv.assign_velocity(&(viscous + advection + gravity));
     }
 }
-
-// pub fn solve<'a, B: bases::Basis>(
-//     problem: &'a Problem<B>,
-//     initial_fields: Fields<'a, nd::OwnedRepr<Float>, B>,
-//     delta_t: Float,
-//     t_final: Float,
-// ) -> Vec<Fields<'a, nd::OwnedRepr<Float>, B>> {
-//     let mut y = na::DVector::zeros(initial_fields.size());
-//     let mut y_fields = Fields::new_mut(&problem.basis, &mut y);
-//     y_fields.height_mut().assign(initial_fields.height());
-//     y_fields.velocity_mut().assign(initial_fields.velocity());
-//     let mut integrator =
-//         ode_solvers::Dop853::new(problem, 0., t_final, delta_t, y, problem.rtol, problem.atol);
-//     integrator.integrate().expect("Integration failed");
-//     integrator
-//         .y_out()
-//         .iter()
-//         .map(|yi| Fields::new_cloned(&problem.basis, yi))
-//         .collect()
-// }
 
 pub struct Solver<B: bases::Basis>
 where
@@ -216,62 +196,3 @@ where
         Fields::new_owned(self.problem.basis.clone(), self.integrator.y())
     }
 }
-
-// #[pymethods]
-// impl Solver {
-//     #[getter]
-//     pub fn grid(&self) -> geom::Grid {
-//         self.dynamic_basis.as_ref().unwrap().grid().clone()
-//     }
-
-//     #[getter]
-//     #[pyo3(name = "z_lattice")]
-//     pub fn z_lattice_py<'py>(&self, py: Python<'py>) -> &'py numpy::PyArray3<Float> {
-//         self.dynamic_basis.as_ref().unwrap().z_lattice_py(py)
-//     }
-
-//     #[getter]
-//     #[pyo3(name = "pressure")]
-//     pub fn pressure_py<'py>(&self, py: Python<'py>) -> &'py numpy::PyArray4<Float> {
-//         self.fields.pressure.values_py(py)
-//     }
-
-//     #[getter]
-//     #[pyo3(name = "volume")]
-//     pub fn volume_py<'py>(&self, py: Python<'py>) -> &'py numpy::PyArray4<Float> {
-//         self.fields.volume.values_py(py)
-//     }
-//     #[getter]
-//     #[pyo3(name = "volume_time_deriv")]
-//     pub fn volume_time_deriv_py<'py>(&self, py: Python<'py>) -> &'py numpy::PyArray4<Float> {
-//         self.fields.volume_time_deriv.values_py(py)
-//     }
-
-//     #[getter]
-//     #[pyo3(name = "height_time_deriv")]
-//     pub fn height_time_deriv_py<'py>(&self, py: Python<'py>) -> &'py numpy::PyArray3<Float> {
-//         self.fields.height_time_deriv.values_py(py)
-//     }
-
-//     #[getter]
-//     #[pyo3(name = "velocity_divergence")]
-//     pub fn velocity_divergence_py<'py>(&self, py: Python<'py>) -> &'py numpy::PyArray4<Float> {
-//         self.fields.velocity_divergence.values_py(py)
-//     }
-//     #[getter]
-//     #[pyo3(name = "velocity")]
-//     pub fn velocity_py<'py>(&self, py: Python<'py>) -> &'py numpy::PyArray5<Float> {
-//         self.fields.velocity.values_py(py)
-//     }
-
-//     #[getter]
-//     #[pyo3(name = "courant_dt")]
-//     pub fn courant_dt_py<'py>(&self, py: Python<'py>) -> &'py numpy::PyArray4<Float> {
-//         self.fields.courant_dt.values_py(py)
-//     }
-
-//     #[pyo3(name = "step")]
-//     pub fn step_py(&mut self, dt: Float) {
-//         self.step(dt)
-//     }
-// }

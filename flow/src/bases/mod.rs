@@ -9,9 +9,9 @@ pub trait Basis {
     type SpectralScalarField;
     type SpectralVectorField;
 
-    fn scalar_grid_size(&self) -> usize;
-    fn vector_grid_size(&self) -> usize {
-        self.scalar_grid_size() * 2
+    fn scalar_spectral_size(&self) -> usize;
+    fn vector_spectral_size(&self) -> usize {
+        self.scalar_spectral_size() * 2
     }
 
     fn axes(&self) -> [nd::Array1<Float>; 2];
@@ -29,12 +29,12 @@ pub trait Basis {
     }
     fn make_vector<F: Fn(Float, Float) -> [Float; 2]>(&self, f: F) -> nd::Array3<Float> {
         let [xs, ys] = self.axes();
-        let vector = nd::Array3::build_uninit((xs.len(), ys.len(), 2), |mut vector| {
+        let vector = nd::Array3::build_uninit((2, xs.len(), ys.len()), |mut vector| {
             for (i, &x) in xs.iter().enumerate() {
                 for (j, &y) in ys.iter().enumerate() {
                     let value = f(x, y);
-                    vector[[i, j, 0]].write(value[0]);
-                    vector[[i, j, 1]].write(value[1]);
+                    vector[[0, i, j]].write(value[0]);
+                    vector[[1, i, j]].write(value[1]);
                 }
             }
         });
@@ -64,21 +64,21 @@ pub trait Basis {
 }
 
 trait FftDimension: nd::Dimension {
-    fn change_axis_0(shape: Self, size: usize) -> Self;
+    fn change_last_axis(shape: Self, size: usize) -> Self;
 }
 
 impl FftDimension for nd::Dim<[usize; 2]> {
-    fn change_axis_0(shape: Self, size: usize) -> Self {
-        nd::Dim([size, shape[1]])
+    fn change_last_axis(shape: Self, size: usize) -> Self {
+        nd::Dim([shape[0], size])
     }
 }
 impl FftDimension for nd::Dim<[usize; 3]> {
-    fn change_axis_0(shape: Self, size: usize) -> Self {
-        nd::Dim([size, shape[1], shape[2]])
+    fn change_last_axis(shape: Self, size: usize) -> Self {
+        nd::Dim([shape[0], shape[1], size])
     }
 }
 impl FftDimension for nd::Dim<[usize; 4]> {
-    fn change_axis_0(shape: Self, size: usize) -> Self {
-        nd::Dim([size, shape[1], shape[2], shape[3]])
+    fn change_last_axis(shape: Self, size: usize) -> Self {
+        nd::Dim([shape[0], shape[1], shape[2], size])
     }
 }

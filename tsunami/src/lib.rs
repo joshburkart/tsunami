@@ -106,7 +106,7 @@ pub async fn run() {
                     NormalDistributionFunction::TrowbridgeReitzGGX,
                     GeometryFunction::SmithSchlickGGX,
                 ),
-                albedo: Srgba::new(0, 89, 179, u8::MAX),
+                albedo: Srgba::new(0, 102, 204, u8::MAX),
                 ..Default::default()
             },
         ),
@@ -504,8 +504,9 @@ mod tests {
 
     #[test]
     fn test_toroidal() {
-        let torus = ToroidalGeometry::new(5);
+        let mut torus = ToroidalGeometry::new(5);
         let height_array = torus.solver.fields().height_grid();
         torus.make_mesh(&&height_array, 2.);
+        torus.solver.integrate(0.01);
     }
 }
