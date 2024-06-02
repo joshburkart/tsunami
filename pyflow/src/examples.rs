@@ -25,7 +25,7 @@ impl RectangularFields {
 
 #[pyclass]
 pub struct RectangularSolver {
-    solver: physics::Solver<bases::fourier::RectangularPeriodicBasis>,
+    solver: physics::Solver<bases::ylm::SphericalHarmonicBasis>,
 }
 #[pymethods]
 impl RectangularSolver {
@@ -67,8 +67,7 @@ pub fn bump_2d_spectral(
     amplitude: Float,
 ) -> RectangularSolver {
     use bases::Basis;
-    let lengths = [15., 5.];
-    let bump_size = 0.3;
+    let bump_size = 0.1;
 
     // Want to generate a power so that a periodic "bump" is generated of width `bump_size`. Start
     // from FWHM definition, given circumference = lengths[i]:
@@ -85,23 +84,19 @@ pub fn bump_2d_spectral(
     let pow = |bump_size: Float, length: Float| {
         (0.5 as Float).ln() / (PI * (bump_size / length)).cos().ln() / 2.
     };
-    let basis = std::sync::Arc::new(bases::fourier::RectangularPeriodicBasis::new(
-        [num_points, num_points],
-        lengths,
-    ));
-    let terrain_height = basis.scalar_to_spectral(&basis.make_scalar(|_, _| 0.));
+    let basis = std::sync::Arc::new(bases::ylm::SphericalHarmonicBasis::new(num_points));
+    let terrain_height = basis.scalar_to_spectral(&basis.make_scalar(|_, _| 1.));
     let mut initial_fields = physics::Fields::zeros(basis.clone());
-    let powx = pow(bump_size, lengths[0]);
-    let powy = pow(bump_size, lengths[1]);
-    initial_fields.assign_height(&basis.scalar_to_spectral(&basis.make_scalar(|x, y| {
+    let powx = pow(bump_size, 1.);
+    let powy = pow(bump_size, 1.);
+    initial_fields.assign_height(&basis.scalar_to_spectral(&basis.make_scalar(|mu, phi| {
         base_height
             + amplitude
-                * ((PI * x / lengths[0]).sin().powi(2).powf(powx)
-                    * (PI * y / lengths[1]).sin().powi(2).powf(powy))
+                * (mu.acos() + PI / 4.).sin().powi(2).max(0.).powf(powx)
+                * (phi).sin().max(0.).powi(2).powf(powy)
     })));
     let problem = physics::Problem {
         basis,
-        rain_rate: None,
         terrain_height,
         grav_accel: 9.8,
         kinematic_viscosity,

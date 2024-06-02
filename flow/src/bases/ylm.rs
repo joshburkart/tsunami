@@ -1,7 +1,7 @@
 use crate::{bases::Basis, float_consts, ComplexFloat, Float};
 use ndarray as nd;
 
-struct SphericalHarmonicBasis {
+pub struct SphericalHarmonicBasis {
     max_l: usize,
     Lambda_sq: nd::Array1<Float>,
 
@@ -38,19 +38,11 @@ impl SphericalHarmonicBasis {
             vector_spherical_harmonics,
         }
     }
-
-    // Convert a flattened index into an (l, m) pair (for unpacking from a 1-D slice).
-    fn unflatten(&self, i: usize) -> (usize, usize) {
-        (i / (self.max_l + 1), i % (self.max_l + 1))
-    }
-    fn scalar_spectral_size(&self) -> usize {
-        (self.max_l + 2) * (self.max_l + 1) / 2
-    }
 }
 
 pub enum Component {
-    Phi = 0,
-    Theta = 1,
+    Theta = 0,
+    Phi = 1,
 }
 
 impl Basis for SphericalHarmonicBasis {
@@ -58,7 +50,7 @@ impl Basis for SphericalHarmonicBasis {
     type SpectralVectorField = VectorSphericalHarmonicField;
 
     fn scalar_spectral_size(&self) -> usize {
-        self.mu_gauss_legendre_quad.nodes.len() * self.phi_grid.len()
+        (self.max_l + 2) * (self.max_l + 1) / 2
     }
 
     fn axes(&self) -> [nd::Array1<Float>; 2] {
@@ -69,14 +61,20 @@ impl Basis for SphericalHarmonicBasis {
     }
 
     fn scalar_from_slice<'a>(&self, slice: &'a [ComplexFloat]) -> Self::SpectralScalarField {
+        assert_eq!(self.scalar_spectral_size(), slice.len());
         let mut f_l_m = nd::Array2::zeros((self.max_l + 1, self.max_l + 1));
-        for i in 0..self.scalar_spectral_size() {
-            let (l, m) = self.unflatten(i);
-            f_l_m[[l, m]] = slice[i];
+        let mut i = 0;
+        for l in 0..=self.max_l {
+            for m in 0..=l {
+                f_l_m[[l, m]] = slice[i];
+                i += 1;
+            }
         }
-        Self::SpectralScalarField { f_l_m: f_l_m }
+        assert_eq!(i, self.scalar_spectral_size());
+        Self::SpectralScalarField { f_l_m }
     }
     fn vector_from_slice<'a>(&self, slice: &'a [ComplexFloat]) -> Self::SpectralVectorField {
+        assert_eq!(self.vector_spectral_size(), slice.len());
         let split_point = slice.len() / 2;
         Self::SpectralVectorField {
             Psi: self.scalar_from_slice(&slice[0..split_point]),
@@ -85,21 +83,25 @@ impl Basis for SphericalHarmonicBasis {
     }
 
     fn scalar_to_slice(&self, spectral: &Self::SpectralScalarField, slice: &mut [ComplexFloat]) {
-        for i in 0..self.scalar_spectral_size() {
-            let (l, m) = self.unflatten(i);
-            slice[i] = spectral.f_l_m[[l, m]];
+        assert_eq!(self.scalar_spectral_size(), slice.len());
+        let mut i = 0;
+        for l in 0..=self.max_l {
+            for m in 0..=l {
+                slice[i] = spectral.f_l_m[[l, m]];
+                i += 1;
+            }
         }
+        assert_eq!(i, self.scalar_spectral_size());
     }
     fn vector_to_slice(&self, spectral: &Self::SpectralVectorField, slice: &mut [ComplexFloat]) {
+        assert_eq!(self.vector_spectral_size(), slice.len());
         let scalar_spectral_size = self.scalar_spectral_size();
-        for i in 0..scalar_spectral_size {
-            let (l, m) = self.unflatten(i);
-            slice[i] = spectral.Psi.f_l_m[[l, m]];
-        }
+        self.scalar_to_slice(&spectral.Psi, &mut slice[0..scalar_spectral_size]);
         if let Some(Phi) = &spectral.Phi {
-            for i in 0..scalar_spectral_size {
-                let (l, m) = self.unflatten(i);
-                slice[i + scalar_spectral_size] = Phi.f_l_m[[l, m]];
+            self.scalar_to_slice(&Phi, &mut slice[scalar_spectral_size..]);
+        } else {
+            for val in &mut slice[scalar_spectral_size..] {
+                *val = (0.).into();
             }
         }
     }
@@ -142,12 +144,11 @@ impl Basis for SphericalHarmonicBasis {
                     ComplexFloat::from(0.)
                 };
                 for i in 0..self.mu_gauss_legendre_quad.nodes.len() {
-                    // $\hat{\theta}$ component.
-                    f_comp_mu_m[[0, i, m]] += V_l_m * Q_l_m_mu[[l, m, i]]
+                    f_comp_mu_m[[Component::Theta as usize, i, m]] += V_l_m * Q_l_m_mu[[l, m, i]]
                         - ComplexFloat::i() * W_l_m * R_l_m_mu[[l, m, i]];
-                    // $\hat{\phi}$ component.
-                    f_comp_mu_m[[1, i, m]] += ComplexFloat::i() * V_l_m * R_l_m_mu[[l, m, i]]
-                        + W_l_m * Q_l_m_mu[[l, m, i]];
+                    f_comp_mu_m[[Component::Phi as usize, i, m]] +=
+                        ComplexFloat::i() * V_l_m * R_l_m_mu[[l, m, i]]
+                            + W_l_m * Q_l_m_mu[[l, m, i]];
                 }
             }
         }
@@ -204,21 +205,22 @@ impl Basis for SphericalHarmonicBasis {
         let Q_l_m_mu = &self.vector_spherical_harmonics.Q_l_m_mu;
         let R_l_m_mu = &self.vector_spherical_harmonics.R_l_m_mu;
         let w = &self.mu_gauss_legendre_quad.weights;
-        let Lambda_sq = &self.Lambda_sq;
         let mut Psi_f_l_m = nd::Array2::zeros((self.max_l + 1, self.max_l + 1));
         let mut Phi_f_l_m = nd::Array2::zeros((self.max_l + 1, self.max_l + 1));
         for l in 1..=self.max_l {
             for m in 0..=l {
                 for i in 0..self.mu_gauss_legendre_quad.nodes.len() {
-                    Psi_f_l_m[[l, m]] += (Q_l_m_mu[[l, m, i]] * f_comp_mu_m[[0, i, m]]
-                        - ComplexFloat::i() * R_l_m_mu[[l, m, i]] * f_comp_mu_m[[1, i, m]])
-                        * w[i]
-                        / Lambda_sq[l];
-                    Phi_f_l_m[[l, m]] +=
-                        (ComplexFloat::i() * R_l_m_mu[[l, m, i]] * f_comp_mu_m[[0, i, m]]
-                            + Q_l_m_mu[[l, m, i]] * f_comp_mu_m[[1, i, m]])
-                            * w[i]
-                            / Lambda_sq[l];
+                    Psi_f_l_m[[l, m]] += (Q_l_m_mu[[l, m, i]]
+                        * f_comp_mu_m[[Component::Theta as usize, i, m]]
+                        - ComplexFloat::i()
+                            * R_l_m_mu[[l, m, i]]
+                            * f_comp_mu_m[[Component::Phi as usize, i, m]])
+                        * w[i];
+                    Phi_f_l_m[[l, m]] += (ComplexFloat::i()
+                        * R_l_m_mu[[l, m, i]]
+                        * f_comp_mu_m[[Component::Theta as usize, i, m]]
+                        + Q_l_m_mu[[l, m, i]] * f_comp_mu_m[[Component::Phi as usize, i, m]])
+                        * w[i];
                 }
             }
         }
@@ -230,25 +232,28 @@ impl Basis for SphericalHarmonicBasis {
 
     fn gradient(&self, spectral: &SphericalHarmonicField) -> VectorSphericalHarmonicField {
         VectorSphericalHarmonicField {
-            Psi: spectral.clone(),
+            Psi: SphericalHarmonicField {
+                f_l_m: spectral.f_l_m.clone(),
+            },
             Phi: None,
         }
     }
     fn divergence(&self, spectral: &VectorSphericalHarmonicField) -> SphericalHarmonicField {
         SphericalHarmonicField {
-            f_l_m: &spectral.Psi.f_l_m * &self.Lambda_sq.slice(nd::s![.., nd::NewAxis]),
+            f_l_m: -&spectral.Psi.f_l_m * &self.Lambda_sq.slice(nd::s![.., nd::NewAxis]),
         }
     }
     fn vector_laplacian(
         &self,
         field: &VectorSphericalHarmonicField,
     ) -> VectorSphericalHarmonicField {
+        let neg_Lambda_sq = -&self.Lambda_sq.slice(nd::s![.., nd::NewAxis]);
         VectorSphericalHarmonicField {
             Psi: SphericalHarmonicField {
-                f_l_m: &field.Psi.f_l_m * &self.Lambda_sq.slice(nd::s![.., nd::NewAxis]),
+                f_l_m: &field.Psi.f_l_m * &neg_Lambda_sq,
             },
             Phi: field.Phi.as_ref().map(|Phi| SphericalHarmonicField {
-                f_l_m: &Phi.f_l_m * &self.Lambda_sq.slice(nd::s![.., nd::NewAxis]),
+                f_l_m: &Phi.f_l_m * &neg_Lambda_sq,
             }),
         }
     }
@@ -268,7 +273,7 @@ impl Basis for SphericalHarmonicBasis {
 }
 
 #[derive(Clone, Debug)]
-struct SphericalHarmonicField {
+pub struct SphericalHarmonicField {
     pub f_l_m: nd::Array2<ComplexFloat>,
 }
 
@@ -280,12 +285,22 @@ impl std::ops::Neg for SphericalHarmonicField {
     }
 }
 
-impl std::ops::Add<Self> for SphericalHarmonicField {
-    type Output = Self;
+impl<'a> std::ops::Add<Self> for &'a SphericalHarmonicField {
+    type Output = SphericalHarmonicField;
 
     fn add(self, rhs: Self) -> Self::Output {
-        Self {
-            f_l_m: self.f_l_m + rhs.f_l_m,
+        SphericalHarmonicField {
+            f_l_m: &self.f_l_m + &rhs.f_l_m,
+        }
+    }
+}
+
+impl<'a> std::ops::Sub<Self> for &'a SphericalHarmonicField {
+    type Output = SphericalHarmonicField;
+
+    fn sub(self, rhs: Self) -> Self::Output {
+        SphericalHarmonicField {
+            f_l_m: &self.f_l_m - &rhs.f_l_m,
         }
     }
 }
@@ -301,7 +316,7 @@ impl std::ops::Mul<SphericalHarmonicField> for ComplexFloat {
 }
 
 #[derive(Clone)]
-struct VectorSphericalHarmonicField {
+pub struct VectorSphericalHarmonicField {
     /// The $\mathbf{\Psi}$ spherical harmonic coefficients.
     Psi: SphericalHarmonicField,
     /// The $\mathbf{\Phi}$ spherical harmonic coefficients, or [`None`] to indicate zero (as an
@@ -326,12 +341,28 @@ impl std::ops::Add<Self> for VectorSphericalHarmonicField {
 
     fn add(self, rhs: Self) -> Self::Output {
         Self {
-            Psi: self.Psi + rhs.Psi,
-            Phi: match (self.Phi, rhs.Phi) {
+            Psi: &self.Psi + &rhs.Psi,
+            Phi: match (&self.Phi, &rhs.Phi) {
                 (None, None) => None,
-                (None, Some(Phi_rhs)) => Some(Phi_rhs),
-                (Some(Phi_lhs), None) => Some(Phi_lhs),
+                (None, Some(Phi_rhs)) => Some(Phi_rhs.clone()),
+                (Some(Phi_lhs), None) => Some(Phi_lhs.clone()),
                 (Some(Phi_lhs), Some(Phi_rhs)) => Some(Phi_lhs + Phi_rhs),
+            },
+        }
+    }
+}
+
+impl std::ops::Sub<Self> for VectorSphericalHarmonicField {
+    type Output = Self;
+
+    fn sub(self, rhs: Self) -> Self::Output {
+        Self {
+            Psi: &self.Psi - &rhs.Psi,
+            Phi: match (&self.Phi, &rhs.Phi) {
+                (None, None) => None,
+                (None, Some(Phi_rhs)) => Some(-Phi_rhs.clone()),
+                (Some(Phi_lhs), None) => Some(Phi_lhs.clone()),
+                (Some(Phi_lhs), Some(Phi_rhs)) => Some(Phi_lhs - Phi_rhs),
             },
         }
     }
@@ -468,6 +499,7 @@ impl VectorSphericalHarmonics {
         let max_l = P_l_m_mu.shape()[0] - 1;
         let num_mus = P_l_m_mu.shape()[2];
         for l in 0..=max_l {
+            let Lambda = (if l > 0 { l * (l + 1) } else { 1 } as Float).sqrt();
             let l_sqrt_factor = if l > 0 {
                 ((2 * l + 1) as Float / (2 * l - 1) as Float).sqrt()
             } else {
@@ -510,11 +542,13 @@ impl VectorSphericalHarmonics {
 
                     Q_l_m_mu[[l, m, i]] = -0.5
                         * (-sqrt_i32((li - mi) * (li + mi + 1)) * P_l_mp1
-                            + sqrt_i32((li + mi) * (li - mi + 1)) * P_l_mm1);
+                            + sqrt_i32((li + mi) * (li - mi + 1)) * P_l_mm1)
+                        / Lambda;
                     R_l_m_mu[[l, m, i]] = -0.5
                         * l_sqrt_factor
                         * (sqrt_i32((li - mi) * (li - mi - 1)) * P_lm1_mp1
-                            + sqrt_i32((li + mi) * (li + mi - 1)) * P_lm1_mm1);
+                            + sqrt_i32((li + mi) * (li + mi - 1)) * P_lm1_mm1)
+                        / Lambda;
                 }
             }
         }
@@ -533,18 +567,18 @@ struct GaussLegendreQuadrature {
 
 impl GaussLegendreQuadrature {
     pub fn new(max_l: usize) -> Self {
+        use itertools::Itertools;
         let gauss_legendre = gauss_quad::GaussLegendre::init(max_l + 1);
+        let (nodes, weights): (Vec<Float>, Vec<Float>) = gauss_legendre
+            .nodes
+            .into_iter()
+            .map(|x| x as Float)
+            .zip(gauss_legendre.weights.into_iter().map(|x| x as Float))
+            .sorted_by(|(x, _), (y, _)| x.partial_cmp(y).unwrap())
+            .unzip();
         Self {
-            nodes: gauss_legendre
-                .nodes
-                .into_iter()
-                .map(|node| node as Float)
-                .collect(),
-            weights: gauss_legendre
-                .weights
-                .into_iter()
-                .map(|weight| weight as Float)
-                .collect(),
+            nodes: nodes.into(),
+            weights: weights.into(),
         }
     }
 }
@@ -557,7 +591,7 @@ mod test {
     use float_consts::FRAC_1_PI;
 
     #[test]
-    fn test_roundtrip_zeroth() {
+    fn test_scalar_roundtrip_zeroth() {
         let basis = SphericalHarmonicBasis::new(0);
 
         let grid = basis.make_scalar(|_, _| 1.);
@@ -576,7 +610,7 @@ mod test {
     }
 
     #[test]
-    fn test_roundtrip_first() {
+    fn test_scalar_roundtrip_first() {
         let basis = SphericalHarmonicBasis::new(1);
 
         let grid = basis.make_scalar(|mu, _| mu);
@@ -591,7 +625,8 @@ mod test {
             &nd::array![[0., 0.], [2. * (float_consts::PI / 3.).sqrt(), 0.,]]
                 .mapv(ComplexFloat::from),
         )
-        .with_print_ratio(true);
+        .with_print_ratio(true)
+        .with_abs_tol(1e-5);
         assert_all_close(&grid, &grid_roundtrip).with_print_ratio(true);
     }
 
@@ -637,9 +672,11 @@ mod test {
         Psi.f_l_m[[4, 2]] = ComplexFloat::new(7., 1.5);
         Psi.f_l_m[[5, 0]] = ComplexFloat::new(-0.9, 0.);
         Phi.f_l_m[[1, 1]] = ComplexFloat::new(4.4, 1.);
+        Phi.f_l_m[[2, 1]] = ComplexFloat::new(0.4, -1.2);
         Phi.f_l_m[[5, 0]] = ComplexFloat::new(-6.6, 0.);
+        Phi.f_l_m[[1, 0]] = ComplexFloat::new(6.1, 0.);
         let spectral = VectorSphericalHarmonicField {
-            Psi: Psi,
+            Psi,
             Phi: Some(Phi),
         };
 
@@ -665,7 +702,7 @@ mod test {
         for l in 1..10 {
             for m in 0..=l {
                 assert_relative_eq!(
-                    (l * (l + 1)) as Float,
+                    1.,
                     float_consts::TAU
                         * (&(vsh.Q_l_m_mu.slice(nd::s![l, m, ..]).mapv(|Q| Q.powi(2))
                             + vsh.R_l_m_mu.slice(nd::s![l, m, ..]).mapv(|R| R.powi(2)))
@@ -772,7 +809,7 @@ mod test {
         let mu_grid = nd::arr1(&[0., 0.123, 0.55555, 0.87, 1., -0.5, -0.1]);
         let P_l_m_mu = VectorSphericalHarmonics::compute_legendre_funcs(3, &mu_grid);
         for l in 0..4 {
-            for m in 0..l + 1 {
+            for m in 0..=l {
                 for (i, &mu) in mu_grid.iter().enumerate() {
                     let Y_lm = condon_shortley(m as u32) * P_l_m_mu[[l, m, i]];
                     assert_relative_eq!(
@@ -782,6 +819,151 @@ mod test {
                     );
                 }
             }
+        }
+    }
+
+    #[test]
+    fn test_vector_spherical_harmonics() {
+        let one = ComplexFloat::from(1.);
+        let zero = ComplexFloat::from(0.);
+        let thetah = || nd::array![one, zero];
+        let phih = || nd::array![zero, one];
+
+        // From Wikipedia: https://en.wikipedia.org/wiki/Vector_spherical_harmonics
+        let sin = |mu: Float| (1. - mu.powi(2)).sqrt();
+        let manual_Psi_lm = |l: u32, m: u32, mu: Float| match (l, m) {
+            (0, 0) => zero * thetah(),
+            (1, 0) => -one / 2. * (3. * FRAC_1_PI).sqrt() * sin(mu) * thetah(),
+            (1, 1) => {
+                -one / 2.
+                    * (3. * FRAC_1_PI / 2.).sqrt()
+                    * (one * mu * thetah() + ComplexFloat::i() * phih())
+            }
+            (2, 0) => -one * 3. / 2. * (5. * FRAC_1_PI).sqrt() * sin(mu) * mu * thetah(),
+            (2, 1) => {
+                -one * (15. / 8. * FRAC_1_PI).sqrt()
+                    * (one * (2. * mu.acos()).cos() * thetah() + ComplexFloat::i() * mu * phih())
+            }
+            (2, 2) => {
+                one * (15. / 8. * FRAC_1_PI).sqrt()
+                    * sin(mu)
+                    * (one * mu * thetah() + ComplexFloat::i() * phih())
+            }
+            _ => panic!(),
+        };
+        let manual_Phi_lm = |l: u32, m: u32, mu: Float| match (l, m) {
+            (0, 0) => zero * thetah(),
+            (1, 0) => -one / 2. * (3. * FRAC_1_PI).sqrt() * sin(mu) * phih(),
+            (1, 1) => {
+                one / 2.
+                    * (3. * FRAC_1_PI / 2.).sqrt()
+                    * (-one * mu * phih() + ComplexFloat::i() * thetah())
+            }
+            (2, 0) => -one * 3. / 2. * (5. * FRAC_1_PI).sqrt() * sin(mu) * mu * phih(),
+            (2, 1) => {
+                one * (15. / 8. * FRAC_1_PI).sqrt()
+                    * (-one * (2. * mu.acos()).cos() * phih() + ComplexFloat::i() * mu * thetah())
+            }
+            (2, 2) => {
+                one * (15. / 8. * FRAC_1_PI).sqrt()
+                    * sin(mu)
+                    * (one * mu * phih() - ComplexFloat::i() * thetah())
+            }
+            _ => panic!(),
+        };
+
+        // (-1)^m to match Condon-Shortley phase used in Wikipedia.
+        let condon_shortley = |m: u32| (-1i32).pow(m as u32) as Float;
+
+        let mu_grid = nd::arr1(&[0., 0.123, 0.55555, 0.87, 1., -0.5, -0.1]);
+        let P_l_m_mu = VectorSphericalHarmonics::compute_legendre_funcs(7, &mu_grid);
+        let (Q_l_m_mu, R_l_m_mu) =
+            VectorSphericalHarmonics::compute_vector_spherical_harmonic_funcs(&P_l_m_mu);
+        for (i, &mu) in mu_grid.iter().enumerate() {
+            for l in 0..=2 {
+                let Lambda = ((l * (l + 1)) as Float).sqrt();
+                for m in 0..=l {
+                    println!("l={l},m={m},mu={mu:.4}");
+                    let Psi_lm = ComplexFloat::from(condon_shortley(m as u32))
+                        * nd::array![
+                            one * Q_l_m_mu[[l, m, i]],
+                            ComplexFloat::i() * R_l_m_mu[[l, m, i]],
+                        ]
+                        * Lambda;
+                    let Phi_lm = ComplexFloat::from(condon_shortley(m as u32))
+                        * nd::array![
+                            -ComplexFloat::i() * R_l_m_mu[[l, m, i]],
+                            one * Q_l_m_mu[[l, m, i]],
+                        ]
+                        * Lambda;
+                    assert_relative_eq!(
+                        -Psi_lm, // TODO NO MINUS
+                        manual_Psi_lm(l as u32, m as u32, mu),
+                        max_relative = 1e-5
+                    );
+                    assert_relative_eq!(
+                        -Phi_lm, // TODO NO MINUS
+                        manual_Phi_lm(l as u32, m as u32, mu),
+                        max_relative = 1e-5
+                    );
+                }
+            }
+
+            assert_relative_eq!(
+                Q_l_m_mu[[1, 0, i]] * (2. as Float).sqrt(),
+                -0.5 * (-(2 as Float).sqrt() * P_l_m_mu[[1, 1, i]]
+                    - (2 as Float).sqrt() * P_l_m_mu[[1, 1, i]])
+            );
+        }
+    }
+
+    #[test]
+    fn test_to_from_slice() {
+        let max_l = 6;
+        let basis = SphericalHarmonicBasis::new(max_l);
+        let mut f_l_m = nd::Array2::zeros((max_l + 1, max_l + 1));
+        for l in 0..=max_l {
+            for m in 0..=l {
+                f_l_m[[l, m]] = ComplexFloat::new(l as Float, m as Float);
+            }
+        }
+
+        let scalar = SphericalHarmonicField { f_l_m };
+
+        {
+            let mut storage = vec![(0.).into(); basis.scalar_spectral_size()];
+            basis.scalar_to_slice(&scalar, &mut storage[..]);
+            assert_all_close(&basis.scalar_from_slice(&storage).f_l_m, &scalar.f_l_m);
+        }
+
+        {
+            let vector_1 = VectorSphericalHarmonicField {
+                Psi: -scalar.clone(),
+                Phi: None,
+            };
+            let mut storage = vec![(0.).into(); basis.vector_spectral_size()];
+            basis.vector_to_slice(&vector_1, &mut storage[..]);
+            let vector_1_roundtrip = basis.vector_from_slice(&storage);
+            assert_all_close(&vector_1_roundtrip.Psi.f_l_m, &vector_1.Psi.f_l_m);
+            assert_all_close(
+                &vector_1_roundtrip.Phi.unwrap().f_l_m,
+                &(ComplexFloat::from(0.) * &vector_1.Psi.f_l_m),
+            );
+        }
+
+        {
+            let vector_2 = VectorSphericalHarmonicField {
+                Psi: -scalar.clone(),
+                Phi: Some(ComplexFloat::i() * scalar),
+            };
+            let mut storage = vec![(0.).into(); basis.vector_spectral_size()];
+            basis.vector_to_slice(&vector_2, &mut storage[..]);
+            let vector_1_roundtrip = basis.vector_from_slice(&storage);
+            assert_all_close(&vector_1_roundtrip.Psi.f_l_m, &vector_2.Psi.f_l_m);
+            assert_all_close(
+                &vector_1_roundtrip.Phi.unwrap().f_l_m,
+                &vector_2.Phi.unwrap().f_l_m,
+            );
         }
     }
 }

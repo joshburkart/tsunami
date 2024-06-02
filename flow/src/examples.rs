@@ -47,7 +47,6 @@ pub fn bump_2d_spectral(
     })));
     let problem = physics::Problem {
         basis,
-        rain_rate: None,
         terrain_height,
         grav_accel: 9.8,
         kinematic_viscosity,

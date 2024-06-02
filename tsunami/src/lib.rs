@@ -1,10 +1,9 @@
 use three_d::*;
 use wasm_bindgen::prelude::*;
 
-use ndarray as nd;
-
-use flow::float_consts;
 use flow::Float;
+
+mod geom;
 
 #[derive(Clone)]
 struct Parameters {
@@ -19,7 +18,7 @@ impl Default for Parameters {
     fn default() -> Self {
         Self {
             kinematic_viscosity_rel_to_water: 1.,
-            height_exaggeration_factor: 100.,
+            height_exaggeration_factor: 40.,
             time_step: 100.,
             resolution_level: 6,
             show_point_cloud: false,
@@ -41,18 +40,19 @@ pub async fn run() {
 
     let mut camera = Camera::new_perspective(
         window.viewport(),
-        vec3(7.0, 7.0, 7.0),
+        vec3(7.0, 7.0, 7.0) / 3.,
         vec3(0., 0., 0.),
         vec3(0.0, 0.0, 1.0),
         degrees(45.0),
         0.1,
         1000.0,
     );
-    let mut control = OrbitControl::new(*camera.target(), 5., 15.);
+    let mut control = OrbitControl::new(*camera.target(), 5. / 3., 5.);
 
     let mut params = Parameters::default();
 
-    let mut torus = ToroidalGeometry::new(params.resolution_level);
+    let mut geometry_type = geom::GeometryType::Sphere;
+    let mut geometry = geom::Geometry::new(geometry_type, params.resolution_level);
 
     let mut gui = GUI::new(&context);
     let mut fonts = egui::FontDefinitions::default();
@@ -93,8 +93,8 @@ pub async fn run() {
         AmbientLight::new_with_environment(&context, 20.0, Srgba::WHITE, skybox.texture());
     let directional = DirectionalLight::new(&context, 5.0, Srgba::WHITE, &vec3(-1.0, -1.0, -1.0));
 
-    let height_array = torus.solver.fields().height_grid();
-    let new_mesh = torus.make_mesh(&height_array, params.height_exaggeration_factor);
+    let height_array = geometry.height_grid();
+    let new_mesh = geometry.make_mesh(&height_array, params.height_exaggeration_factor);
     let mut mesh_model = Gm::new(
         Mesh::new(&context, &new_mesh.clone().into()),
         PhysicalMaterial::new(
@@ -113,13 +113,13 @@ pub async fn run() {
     );
 
     let mut point_mesh = CpuMesh::sphere(10);
-    point_mesh.transform(&Mat4::from_scale(0.008)).unwrap();
+    point_mesh.transform(&Mat4::from_scale(0.002)).unwrap();
     let mut point_cloud_model = Gm {
         geometry: InstancedMesh::new(
             &context,
             &PointCloud {
-                positions: Positions::F32(
-                    torus.make_points(&height_array, params.height_exaggeration_factor),
+                positions: Positions::F64(
+                    geometry.make_points(&height_array, params.height_exaggeration_factor),
                 ),
                 colors: None,
             }
@@ -133,18 +133,18 @@ pub async fn run() {
 
     window.render_loop(move |mut frame_input| {
         if reset {
-            torus = ToroidalGeometry::new(params.resolution_level);
+            geometry = geom::Geometry::new(geometry_type, params.resolution_level);
+            reset = false;
         }
 
-        torus.solver.problem_mut().kinematic_viscosity =
-            1e-3 * params.kinematic_viscosity_rel_to_water;
-        torus.solver.integrate(3e-5 * params.time_step);
+        geometry.set_kinematic_viscosity(1e-3 * params.kinematic_viscosity_rel_to_water); // TODO
+        geometry.integrate(3e-5 * params.time_step); // TODO
 
         {
-            let height_array = torus.solver.fields().height_grid();
+            let height_array = geometry.height_grid();
             mesh_model.geometry = Mesh::new(
                 &context,
-                &torus
+                &geometry
                     .make_mesh(&&height_array, params.height_exaggeration_factor)
                     .clone()
                     .into(),
@@ -154,8 +154,8 @@ pub async fn run() {
                 point_cloud_model.geometry = InstancedMesh::new(
                     &context,
                     &PointCloud {
-                        positions: Positions::F32(
-                            torus.make_points(&height_array, params.height_exaggeration_factor),
+                        positions: Positions::F64(
+                            geometry.make_points(&height_array, params.height_exaggeration_factor),
                         ),
                         colors: None,
                     }
@@ -186,18 +186,35 @@ pub async fn run() {
                                     &mut commonmark_cache,
                                     "Alpha version -- please **do not share yet**! Many rough \
                                     edges, e.g. viscosity slider has nothing to do with water's \
-                                    viscosity despite what it says.\n\n\
-                                    \
-                                    Planned features: spherical geometry, realistic terrain \
-                                    (continents/sea floor/etc.), click to set off a tsunami, \
-                                    and more..."
+                                    viscosity despite what it says.\n\
+                                    \n\
+                                    Planned features: realistic terrain (continents/sea floor/\
+                                    etc.), click to set off a tsunami, and more..."
                                 );
                             });
 
                         egui::CollapsingHeader::new(egui::RichText::from("Settings").heading())
                             .default_open(true)
                             .show(ui, |ui| {
-                                ui.label("Physics");
+                                ui.label(egui::RichText::new("Geometry").strong());
+                                ui.horizontal(|ui| {
+                                    reset |= ui
+                                        .radio_value(
+                                            &mut geometry_type,
+                                            geom::GeometryType::Sphere,
+                                            "Sphere",
+                                        )
+                                        .changed()
+                                        | ui.radio_value(
+                                            &mut geometry_type,
+                                            geom::GeometryType::Torus,
+                                            "Torus",
+                                        )
+                                        .changed();
+                                });
+                                ui.add_space(10.);
+
+                                ui.label(egui::RichText::new("Physics").strong());
                                 ui.add(
                                     egui::Slider::new(
                                         &mut params.kinematic_viscosity_rel_to_water,
@@ -207,9 +224,9 @@ pub async fn run() {
                                     .text("kinematic viscosity")
                                     .suffix("× water"),
                                 );
-                                ui.add_space(15.);
+                                ui.add_space(10.);
 
-                                ui.label("Visualization");
+                                ui.label(egui::RichText::new("Visualization").strong());
                                 ui.add(
                                     egui::Slider::new(
                                         &mut params.height_exaggeration_factor,
@@ -223,10 +240,10 @@ pub async fn run() {
                                     &mut params.show_point_cloud,
                                     "show points",
                                 ));
-                                ui.add_space(15.);
+                                ui.add_space(10.);
 
-                                ui.label("Performance");
-                                reset = ui
+                                ui.label(egui::RichText::new("Performance").strong());
+                                reset |= ui
                                     .add(
                                         egui::Slider::new(&mut params.resolution_level, 4..=7)
                                             .fixed_decimals(0)
@@ -254,11 +271,11 @@ pub async fn run() {
                                 &mut commonmark_cache,
                                 "Solves the shallow water equations pseudospectrally. Torus \
                                 uses a rectangular domain with periodic boundary conditions and a \
-                                Fourier basis. Sphere will use a spherical harmonic basis.\n\n\
-                                \
+                                Fourier basis. Sphere uses a spherical harmonic basis.\n\
+                                \n\
                                 Tech stack: Rust/Wasm/WebGL/[`egui`](https://www.egui.rs/)/\
-                                [`three-d`](https://github.com/asny/three-d).\n\n\
-                                \
+                                [`three-d`](https://github.com/asny/three-d).\n\
+                                \n\
                                 By Josh Burkart: [repo](https://gitlab.com/joshburkart/flow)."
                             );
                         });
@@ -287,226 +304,4 @@ pub async fn run() {
 
         FrameOutput::default()
     });
-}
-
-struct ToroidalGeometry {
-    base_height: Float,
-
-    major_radius: Float,
-    minor_radius: Float,
-
-    theta_grid: Vec<Float>,
-    phi_grid: Vec<Float>,
-
-    pub solver: flow::physics::Solver<flow::bases::fourier::RectangularPeriodicBasis>,
-}
-
-impl ToroidalGeometry {
-    pub fn new(resolution_level: u32) -> Self {
-        use flow::bases::Basis;
-
-        let (base_height, solver) = Self::make_solver(resolution_level);
-
-        let axes = solver.problem().basis.axes();
-
-        let major_radius = axes[0][1] * axes[0].len() as Float / float_consts::TAU;
-        let minor_radius = axes[1][1] * axes[1].len() as Float / float_consts::TAU;
-        let theta_grid = (&axes[0] / major_radius).to_vec();
-        let phi_grid = (&axes[1] / minor_radius).to_vec();
-
-        Self {
-            base_height,
-
-            major_radius,
-            minor_radius,
-
-            theta_grid,
-            phi_grid,
-
-            solver,
-        }
-    }
-
-    pub fn make_mesh(
-        &self,
-        height_array: &nd::Array2<Float>,
-        height_exaggeration_factor: Float,
-    ) -> CpuMesh {
-        let num_theta = self.theta_grid.len();
-        let num_phi = self.phi_grid.len();
-        let num_cell_vertices = num_theta * num_phi;
-
-        let make_index = |i, j| (i % num_theta) * num_phi + (j % num_phi);
-
-        let mut points = self.make_points(height_array, height_exaggeration_factor);
-        let height_flat = height_array.as_slice().unwrap();
-
-        let mut indices = Vec::new();
-        for i in 0..num_theta {
-            for j in 0..num_phi {
-                let ll = make_index(i, j);
-                let lr = make_index(i + 1, j);
-                let ul = make_index(i, j + 1);
-                let ur = make_index(i + 1, j + 1);
-
-                // Augment with linearly interpolated cell centers for improved visuals.
-                let height_c =
-                    0.25 * (height_flat[ll] + height_flat[lr] + height_flat[ul] + height_flat[ur]);
-                points.push(self.make_point(
-                    (self.theta_grid[i]
-                        + if i + 1 < num_theta {
-                            self.theta_grid[i + 1]
-                        } else {
-                            self.theta_grid[0] + float_consts::TAU
-                        })
-                        / 2.,
-                    (self.phi_grid[j]
-                        + if j + 1 < num_phi {
-                            self.phi_grid[j + 1]
-                        } else {
-                            self.phi_grid[0] + float_consts::TAU
-                        })
-                        / 2.,
-                    height_c,
-                    height_exaggeration_factor,
-                ));
-                // Index of interpolated center point within flat `points` vector.
-                let c = num_cell_vertices + make_index(i, j);
-
-                // Bottom triangle.
-                indices.push(ll as u16);
-                indices.push(lr as u16);
-                indices.push(c as u16);
-                // Left triangle.
-                indices.push(ll as u16);
-                indices.push(c as u16);
-                indices.push(ul as u16);
-                // Top triangle.
-                indices.push(ul as u16);
-                indices.push(c as u16);
-                indices.push(ur as u16);
-                // Right triangle.
-                indices.push(lr as u16);
-                indices.push(ur as u16);
-                indices.push(c as u16);
-            }
-        }
-
-        let mut mesh = CpuMesh {
-            indices: Indices::U16(indices),
-            positions: Positions::F32(points),
-            ..Default::default()
-        };
-        mesh.compute_normals();
-        mesh.validate().unwrap();
-        mesh
-    }
-
-    pub fn make_points(
-        &self,
-        height_array: &nd::Array2<Float>,
-        height_exaggeration_factor: Float,
-    ) -> Vec<Vector3<Float>> {
-        let mut points = Vec::with_capacity(self.theta_grid.len() * self.phi_grid.len());
-        for (i, &theta) in self.theta_grid.iter().enumerate() {
-            for (j, &phi) in self.phi_grid.iter().enumerate() {
-                let height = height_array[[i, j]];
-                points.push(self.make_point(theta, phi, height, height_exaggeration_factor));
-            }
-        }
-        points
-    }
-
-    fn make_point(
-        &self,
-        theta: Float,
-        phi: Float,
-        height: Float,
-        height_exaggeration_factor: Float,
-    ) -> three_d::Vector3<Float> {
-        let radially_out = Vector3::new(-theta.cos(), theta.sin(), 0.);
-        self.major_radius * radially_out
-            + (self.minor_radius
-                + (height_exaggeration_factor / 100.) * (height - self.base_height))
-                * (-phi.cos() * radially_out + phi.sin() * Vector3::unit_z())
-    }
-
-    fn make_solver(
-        resolution_level: u32,
-    ) -> (
-        Float,
-        flow::physics::Solver<flow::bases::fourier::RectangularPeriodicBasis>,
-    ) {
-        use flow::bases::Basis;
-        use flow::float_consts::PI;
-
-        let num_points = [
-            2usize.pow(resolution_level + 1),
-            2usize.pow(resolution_level),
-        ];
-        let lengths = [15., 5.];
-        let base_height = 5.;
-        let amplitude = base_height * 0.2;
-        let bump_size = 0.15;
-        let kinematic_viscosity = 1e-2;
-
-        // Want to generate a power so that a periodic "bump" is generated of width `bump_size`. Start
-        // from FWHM definition:
-        //
-        // ```
-        // 1/2 = sin(pi * (1/2 - bump_size / lengths[i]))^(2n)
-        // ```
-        //
-        // Solve for `n`:
-        //
-        // ```
-        // n = log(1/2) / (2 * log(sin(pi * (1/2 - bump_size / lengths[i]))))
-        // ```
-        let pow = |bump_size: flow::Float, length: flow::Float| {
-            (0.5 as flow::Float).ln() / (PI * (0.5 - bump_size / length)).sin().ln() / 2.
-        };
-        let basis = std::sync::Arc::new(flow::bases::fourier::RectangularPeriodicBasis::new(
-            num_points, lengths,
-        ));
-        let terrain_height = basis.scalar_to_spectral(&basis.make_scalar(|_, _| 0.));
-        let mut initial_fields = flow::physics::Fields::zeros(basis.clone());
-        initial_fields.assign_height(&basis.scalar_to_spectral(&basis.make_scalar(|x, y| {
-            base_height
-                + amplitude
-                    * (PI * (x / lengths[0] - 0.11))
-                        .sin()
-                        .powi(2)
-                        .powf(pow(bump_size, lengths[0]))
-                    * (PI * y / lengths[1])
-                        .sin()
-                        .powi(2)
-                        .powf(pow(bump_size, lengths[1]))
-        })));
-        let problem = flow::physics::Problem {
-            basis,
-            rain_rate: None,
-            terrain_height,
-            grav_accel: 9.8,
-            kinematic_viscosity,
-            rtol: 1e-2,
-            atol: 1e-2,
-        };
-        (
-            base_height,
-            flow::physics::Solver::new(problem, initial_fields),
-        )
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_toroidal() {
-        let mut torus = ToroidalGeometry::new(5);
-        let height_array = torus.solver.fields().height_grid();
-        torus.make_mesh(&&height_array, 2.);
-        torus.solver.integrate(0.01);
-    }
 }

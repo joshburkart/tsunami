@@ -79,7 +79,6 @@ impl<S: RawComplexFloatData + nd::DataMut, B: bases::Basis> Fields<S, B> {
 pub struct Problem<B: bases::Basis> {
     pub basis: std::sync::Arc<B>,
 
-    pub rain_rate: Option<B::SpectralScalarField>,
     pub terrain_height: B::SpectralScalarField,
 
     pub grav_accel: Float,
@@ -116,6 +115,10 @@ where
 
         let height_grid = self.basis.scalar_to_grid(&height);
         let velocity_grid = self.basis.vector_to_grid(&velocity);
+
+        height_grid
+            .iter()
+            .for_each(|&h| assert!(h >= 0., "Water column height became negative"));
 
         // Height time derivative.
         fields_time_deriv.assign_height(
