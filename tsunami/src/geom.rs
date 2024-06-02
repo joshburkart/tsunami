@@ -246,16 +246,23 @@ impl Sphere {
         let basis = std::sync::Arc::new(flow::bases::ylm::SphericalHarmonicBasis::new(max_l));
         let terrain_height = basis.scalar_to_spectral(&basis.make_scalar(|_, _| 1.));
         let mut initial_fields = flow::physics::Fields::zeros(basis.clone());
-        initial_fields.assign_height(&basis.scalar_to_spectral(&basis.make_scalar(|mu, phi| {
+        let initial_height_grid = basis.make_scalar(|mu, phi| {
             base_height
                 + amplitude
-                    * (mu.acos() + float_consts::PI / 4.)
+                    * ((mu.acos() + float_consts::PI / 4.)
                         .sin()
                         .max(0.)
                         .powi(2)
                         .powf(pow(bump_size, 1.))
-                    * phi.sin().max(0.).powi(2).powf(pow(bump_size, 1.))
-        })));
+                        * phi.sin().max(0.).powi(2).powf(pow(bump_size, 1.))
+                        + (mu.acos() - float_consts::PI / 4.)
+                            .sin()
+                            .max(0.)
+                            .powi(2)
+                            .powf(pow(bump_size, 1.))
+                            * phi.cos().max(0.).powi(2).powf(pow(bump_size, 1.)))
+        });
+        initial_fields.assign_height(&basis.scalar_to_spectral(&initial_height_grid));
         let problem = flow::physics::Problem {
             basis,
             terrain_height,

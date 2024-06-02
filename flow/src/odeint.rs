@@ -145,14 +145,14 @@ where
                 / y_next.len() as Float)
                 .sqrt();
 
-            if error > 5. {
-                // Error is unacceptable. Halve the step size and try again.
-                self.step_size /= 2.;
-                assert!(self.step_size > self.min_step_size, "Error: {:?}", error,);
+            // if error > 5. {
+            //     // Error is unacceptable. Halve the step size and try again.
+            //     self.step_size /= 2.;
+            //     assert!(self.step_size > self.min_step_size, "Error: {:?}", error,);
 
-                y_next.assign(&y_prev);
-                continue;
-            }
+            //     y_next.assign(&y_prev);
+            //     continue;
+            // }
 
             self.t_next += self.step_size;
 
