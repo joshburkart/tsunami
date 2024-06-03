@@ -21,7 +21,7 @@ impl Default for Parameters {
             height_exaggeration_factor: 40.,
             time_step: 100.,
             resolution_level: 6,
-            show_point_cloud: false,
+            show_point_cloud: true,
         }
     }
 }
@@ -186,7 +186,7 @@ pub async fn run() {
                                     &mut commonmark_cache,
                                     "Alpha version -- please **do not share yet**! Many rough \
                                     edges, e.g. viscosity slider has nothing to do with water's \
-                                    viscosity despite what it says, advection term not yet\
+                                    viscosity despite what it says, advection term not yet \
                                     implemented in spherical geometry, etc.\n\
                                     \n\
                                     Planned features: realistic terrain (continents/sea floor/\
