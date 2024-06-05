@@ -9,107 +9,101 @@ pub enum GeometryType {
     Torus,
 }
 
-pub struct Geometry(GeometryImpl);
-
-enum GeometryImpl {
-    Sphere(Sphere),
-    Torus(Torus),
+pub struct Rendering {
+    pub points: Vec<Vector3<Float>>,
+    pub mesh: CpuMesh,
 }
 
-impl Geometry {
-    pub fn new(geometry_type: GeometryType, resolution_level: u32) -> Self {
-        Self(match geometry_type {
-            GeometryType::Sphere => GeometryImpl::Sphere(Sphere::new(resolution_level)),
-            GeometryType::Torus => GeometryImpl::Torus(Torus::new(resolution_level)),
-        })
-    }
+#[derive(Clone)]
+pub enum Renderable {
+    Sphere(SphereRenderable),
+    Torus(TorusRenderable),
+}
 
-    pub fn integrate(&mut self, delta_t: Float) {
-        match &mut self.0 {
-            GeometryImpl::Sphere(sphere) => sphere.solver.integrate(delta_t),
-            GeometryImpl::Torus(torus) => torus.solver.integrate(delta_t),
-        }
-    }
-    pub fn height_grid(&self) -> nd::Array2<Float> {
-        match &self.0 {
-            GeometryImpl::Sphere(sphere) => sphere.solver.fields().height_grid(),
-            GeometryImpl::Torus(torus) => torus.solver.fields().height_grid(),
-        }
-    }
-    pub fn set_kinematic_viscosity(&mut self, value: Float) {
-        match &mut self.0 {
-            GeometryImpl::Sphere(sphere) => sphere.solver.problem_mut().kinematic_viscosity = value,
-            GeometryImpl::Torus(torus) => torus.solver.problem_mut().kinematic_viscosity = value,
-        }
-    }
-
-    pub fn make_mesh(
-        &self,
-        height_array: &nd::Array2<Float>,
-        height_exaggeration_factor: Float,
-    ) -> CpuMesh {
-        match &self.0 {
-            GeometryImpl::Sphere(sphere) => {
-                sphere.make_mesh(height_array, height_exaggeration_factor)
-            }
-            GeometryImpl::Torus(torus) => torus.make_mesh(height_array, height_exaggeration_factor),
-        }
-    }
-
-    pub fn make_points(
-        &self,
-        height_array: &nd::Array2<Float>,
-        height_exaggeration_factor: Float,
-    ) -> Vec<Vector3<Float>> {
-        match &self.0 {
-            GeometryImpl::Sphere(sphere) => {
-                sphere.make_points(height_array, height_exaggeration_factor)
-            }
-            GeometryImpl::Torus(torus) => {
-                torus.make_points(height_array, height_exaggeration_factor)
-            }
+impl Renderable {
+    pub fn render(&self, height_exaggeration_factor: Float) -> Rendering {
+        match self {
+            Renderable::Sphere(sphere) => sphere.render(height_exaggeration_factor),
+            Renderable::Torus(torus) => torus.render(height_exaggeration_factor),
         }
     }
 }
 
-struct Sphere {
-    base_height: Float,
-
-    solver: flow::physics::Solver<flow::bases::ylm::SphericalHarmonicBasis>,
-
-    mu_grid: nd::Array1<Float>,
-    phi_grid: nd::Array1<Float>,
-}
-
-impl Sphere {
-    pub fn new(resolution_level: u32) -> Self {
-        use flow::bases::Basis;
-
-        let (base_height, solver) = Self::make_solver(resolution_level);
-
-        let [mu_grid, phi_grid] = solver.problem().basis.axes();
-
-        Self {
-            base_height,
-
-            solver,
-
-            mu_grid,
-            phi_grid,
+pub fn interp_between(
+    renderable_prev: &Renderable,
+    renderable_next: &Renderable,
+    t_between: Float,
+) -> Renderable {
+    match renderable_next {
+        Renderable::Sphere(sphere_next) => {
+            if let Renderable::Sphere(sphere_prev) = renderable_prev {
+                if sphere_prev.mu_grid.len() == sphere_next.mu_grid.len()
+                    && sphere_prev.phi_grid.len() == sphere_next.phi_grid.len()
+                {
+                    Renderable::Sphere(SphereRenderable {
+                        base_height: sphere_next.base_height,
+                        mu_grid: sphere_next.mu_grid.clone(),
+                        phi_grid: sphere_next.phi_grid.clone(),
+                        fields_snapshot: flow::physics::interp_between(
+                            &sphere_prev.fields_snapshot,
+                            &sphere_next.fields_snapshot,
+                            t_between,
+                        ),
+                    })
+                } else {
+                    renderable_next.clone()
+                }
+            } else {
+                renderable_next.clone()
+            }
+        }
+        Renderable::Torus(torus_next) => {
+            if let Renderable::Torus(torus_prev) = renderable_prev {
+                if torus_prev.theta_grid.len() == torus_next.theta_grid.len()
+                    && torus_prev.phi_grid.len() == torus_next.phi_grid.len()
+                {
+                    Renderable::Torus(TorusRenderable {
+                        base_height: torus_next.base_height,
+                        major_radius: torus_next.major_radius,
+                        minor_radius: torus_prev.minor_radius,
+                        theta_grid: torus_next.theta_grid.clone(),
+                        phi_grid: torus_next.phi_grid.clone(),
+                        fields_snapshot: flow::physics::interp_between(
+                            &torus_prev.fields_snapshot,
+                            &torus_next.fields_snapshot,
+                            t_between,
+                        ),
+                    })
+                } else {
+                    renderable_next.clone()
+                }
+            } else {
+                renderable_next.clone()
+            }
         }
     }
+}
 
-    pub fn make_mesh(
-        &self,
-        height_array: &nd::Array2<Float>,
-        height_exaggeration_factor: Float,
-    ) -> CpuMesh {
+#[derive(Clone)]
+pub struct SphereRenderable {
+    pub base_height: Float,
+
+    pub mu_grid: nd::Array1<Float>,
+    pub phi_grid: nd::Array1<Float>,
+
+    pub fields_snapshot: flow::physics::FieldsSnapshot<flow::bases::ylm::SphericalHarmonicBasis>,
+}
+
+impl SphereRenderable {
+    pub fn render(&self, height_exaggeration_factor: Float) -> Rendering {
         let num_mu = self.mu_grid.len();
         let num_phi = self.phi_grid.len();
 
         let make_index = |i, j| (i * num_phi + (j % num_phi)) as u32;
 
-        let mut points = self.make_points(height_array, height_exaggeration_factor);
+        let height_array = self.fields_snapshot.fields.height_grid();
+
+        let mut points = self.make_points(&height_array, height_exaggeration_factor);
         // Add bottom point.
         let bottom = points.len() as u32;
         points.push(self.make_point(
@@ -163,15 +157,16 @@ impl Sphere {
 
         let mut mesh = CpuMesh {
             indices: Indices::U32(indices),
-            positions: Positions::F32(points),
+            positions: Positions::F32(points.clone()),
             ..Default::default()
         };
         mesh.compute_normals();
         mesh.validate().unwrap();
-        mesh
+
+        Rendering { points, mesh }
     }
 
-    pub fn make_points(
+    fn make_points(
         &self,
         height_array: &nd::Array2<Float>,
         height_exaggeration_factor: Float,
@@ -197,8 +192,199 @@ impl Sphere {
         let radially_out = Vector3::new(sin_theta * phi.cos(), sin_theta * phi.sin(), mu);
         radially_out * (1. + (height - self.base_height) * height_exaggeration_factor)
     }
+}
 
-    fn make_solver(
+#[derive(Clone)]
+pub struct TorusRenderable {
+    pub base_height: Float,
+
+    pub theta_grid: nd::Array1<Float>,
+    pub phi_grid: nd::Array1<Float>,
+
+    pub major_radius: Float,
+    pub minor_radius: Float,
+
+    pub fields_snapshot:
+        flow::physics::FieldsSnapshot<flow::bases::fourier::RectangularPeriodicBasis>,
+}
+
+impl TorusRenderable {
+    pub fn render(&self, height_exaggeration_factor: Float) -> Rendering {
+        let num_theta = self.theta_grid.len();
+        let num_phi = self.phi_grid.len();
+        let num_cell_vertices = num_theta * num_phi;
+
+        let make_index = |i, j| (i % num_theta) * num_phi + (j % num_phi);
+
+        let height_array = self.fields_snapshot.fields.height_grid();
+
+        let points = self.make_points(&height_array, height_exaggeration_factor);
+        let mut augmented_points = points.clone();
+        let height_flat = height_array.as_slice().unwrap();
+
+        let mut indices = Vec::new();
+        for i in 0..num_theta {
+            for j in 0..num_phi {
+                let ll = make_index(i, j);
+                let lr = make_index(i + 1, j);
+                let ul = make_index(i, j + 1);
+                let ur = make_index(i + 1, j + 1);
+
+                // Augment with linearly interpolated cell centers for improved visuals.
+                let height_c =
+                    0.25 * (height_flat[ll] + height_flat[lr] + height_flat[ul] + height_flat[ur]);
+                augmented_points.push(self.make_point(
+                    (self.theta_grid[i]
+                        + if i + 1 < num_theta {
+                            self.theta_grid[i + 1]
+                        } else {
+                            self.theta_grid[0] + float_consts::TAU
+                        })
+                        / 2.,
+                    (self.phi_grid[j]
+                        + if j + 1 < num_phi {
+                            self.phi_grid[j + 1]
+                        } else {
+                            self.phi_grid[0] + float_consts::TAU
+                        })
+                        / 2.,
+                    height_c,
+                    height_exaggeration_factor,
+                ));
+                // Index of interpolated center point within flat `augmented_points` vector.
+                let c = num_cell_vertices + make_index(i, j);
+
+                // Bottom triangle.
+                indices.push(ll as u32);
+                indices.push(lr as u32);
+                indices.push(c as u32);
+                // Left triangle.
+                indices.push(ll as u32);
+                indices.push(c as u32);
+                indices.push(ul as u32);
+                // Top triangle.
+                indices.push(ul as u32);
+                indices.push(c as u32);
+                indices.push(ur as u32);
+                // Right triangle.
+                indices.push(lr as u32);
+                indices.push(ur as u32);
+                indices.push(c as u32);
+            }
+        }
+
+        let mut mesh = CpuMesh {
+            indices: Indices::U32(indices),
+            positions: Positions::F32(augmented_points),
+            ..Default::default()
+        };
+        mesh.compute_normals();
+        mesh.validate().unwrap();
+
+        Rendering { points, mesh }
+    }
+
+    pub fn make_points(
+        &self,
+        height_array: &nd::Array2<Float>,
+        height_exaggeration_factor: Float,
+    ) -> Vec<Vector3<Float>> {
+        let mut points = Vec::with_capacity(self.theta_grid.len() * self.phi_grid.len());
+        for (i, &theta) in self.theta_grid.iter().enumerate() {
+            for (j, &phi) in self.phi_grid.iter().enumerate() {
+                let height = height_array[[i, j]];
+                points.push(self.make_point(theta, phi, height, height_exaggeration_factor));
+            }
+        }
+        points
+    }
+
+    fn make_point(
+        &self,
+        theta: Float,
+        phi: Float,
+        height: Float,
+        height_exaggeration_factor: Float,
+    ) -> three_d::Vector3<Float> {
+        const SCALE: Float = 0.4;
+        let radially_out = Vector3::new(-theta.cos(), theta.sin(), 0.);
+        SCALE
+            * (self.major_radius * radially_out
+                + (self.minor_radius
+                    + (height_exaggeration_factor / 100.) * (height - self.base_height))
+                    * (-phi.cos() * radially_out + phi.sin() * Vector3::unit_z()))
+    }
+}
+
+pub struct Geometry(GeometryImpl);
+
+enum GeometryImpl {
+    Sphere(SphereGeometry),
+    Torus(TorusGeometry),
+}
+
+impl Geometry {
+    pub fn new(geometry_type: GeometryType, resolution_level: u32) -> Self {
+        Self(match geometry_type {
+            GeometryType::Sphere => GeometryImpl::Sphere(SphereGeometry::new(resolution_level)),
+            GeometryType::Torus => GeometryImpl::Torus(TorusGeometry::new(resolution_level)),
+        })
+    }
+
+    pub fn integrate(&mut self) -> Renderable {
+        match &mut self.0 {
+            GeometryImpl::Sphere(sphere) => Renderable::Sphere(SphereRenderable {
+                base_height: sphere.base_height,
+                mu_grid: sphere.mu_grid.clone(),
+                phi_grid: sphere.phi_grid.clone(),
+                fields_snapshot: sphere.solver.integrate(),
+            }),
+            GeometryImpl::Torus(torus) => Renderable::Torus(TorusRenderable {
+                base_height: torus.base_height,
+                major_radius: torus.major_radius,
+                minor_radius: torus.minor_radius,
+                theta_grid: torus.theta_grid.clone(),
+                phi_grid: torus.phi_grid.clone(),
+                fields_snapshot: torus.solver.integrate(),
+            }),
+        }
+    }
+    pub fn set_kinematic_viscosity(&mut self, value: Float) {
+        match &mut self.0 {
+            GeometryImpl::Sphere(sphere) => sphere.solver.problem_mut().kinematic_viscosity = value,
+            GeometryImpl::Torus(torus) => torus.solver.problem_mut().kinematic_viscosity = value,
+        }
+    }
+}
+
+struct SphereGeometry {
+    base_height: Float,
+
+    solver: flow::physics::Solver<flow::bases::ylm::SphericalHarmonicBasis>,
+
+    mu_grid: nd::Array1<Float>,
+    phi_grid: nd::Array1<Float>,
+}
+
+impl SphereGeometry {
+    pub fn new(resolution_level: u32) -> Self {
+        use flow::bases::Basis;
+
+        let (base_height, solver) = Self::make_solver(resolution_level);
+
+        let [mu_grid, phi_grid] = solver.problem().basis.axes();
+
+        Self {
+            base_height,
+
+            solver,
+
+            mu_grid,
+            phi_grid,
+        }
+    }
+
+    pub fn make_solver(
         resolution_level: u32,
     ) -> (
         Float,
@@ -265,7 +451,7 @@ impl Sphere {
     }
 }
 
-struct Torus {
+struct TorusGeometry {
     base_height: Float,
 
     major_radius: Float,
@@ -277,7 +463,7 @@ struct Torus {
     solver: flow::physics::Solver<flow::bases::fourier::RectangularPeriodicBasis>,
 }
 
-impl Torus {
+impl TorusGeometry {
     pub fn new(resolution_level: u32) -> Self {
         use flow::bases::Basis;
 
@@ -301,112 +487,6 @@ impl Torus {
 
             solver,
         }
-    }
-
-    pub fn make_mesh(
-        &self,
-        height_array: &nd::Array2<Float>,
-        height_exaggeration_factor: Float,
-    ) -> CpuMesh {
-        let num_theta = self.theta_grid.len();
-        let num_phi = self.phi_grid.len();
-        let num_cell_vertices = num_theta * num_phi;
-
-        let make_index = |i, j| (i % num_theta) * num_phi + (j % num_phi);
-
-        let mut points = self.make_points(height_array, height_exaggeration_factor);
-        let height_flat = height_array.as_slice().unwrap();
-
-        let mut indices = Vec::new();
-        for i in 0..num_theta {
-            for j in 0..num_phi {
-                let ll = make_index(i, j);
-                let lr = make_index(i + 1, j);
-                let ul = make_index(i, j + 1);
-                let ur = make_index(i + 1, j + 1);
-
-                // Augment with linearly interpolated cell centers for improved visuals.
-                let height_c =
-                    0.25 * (height_flat[ll] + height_flat[lr] + height_flat[ul] + height_flat[ur]);
-                points.push(self.make_point(
-                    (self.theta_grid[i]
-                        + if i + 1 < num_theta {
-                            self.theta_grid[i + 1]
-                        } else {
-                            self.theta_grid[0] + float_consts::TAU
-                        })
-                        / 2.,
-                    (self.phi_grid[j]
-                        + if j + 1 < num_phi {
-                            self.phi_grid[j + 1]
-                        } else {
-                            self.phi_grid[0] + float_consts::TAU
-                        })
-                        / 2.,
-                    height_c,
-                    height_exaggeration_factor,
-                ));
-                // Index of interpolated center point within flat `points` vector.
-                let c = num_cell_vertices + make_index(i, j);
-
-                // Bottom triangle.
-                indices.push(ll as u32);
-                indices.push(lr as u32);
-                indices.push(c as u32);
-                // Left triangle.
-                indices.push(ll as u32);
-                indices.push(c as u32);
-                indices.push(ul as u32);
-                // Top triangle.
-                indices.push(ul as u32);
-                indices.push(c as u32);
-                indices.push(ur as u32);
-                // Right triangle.
-                indices.push(lr as u32);
-                indices.push(ur as u32);
-                indices.push(c as u32);
-            }
-        }
-
-        let mut mesh = CpuMesh {
-            indices: Indices::U32(indices),
-            positions: Positions::F32(points),
-            ..Default::default()
-        };
-        mesh.compute_normals();
-        mesh.validate().unwrap();
-        mesh
-    }
-
-    pub fn make_points(
-        &self,
-        height_array: &nd::Array2<Float>,
-        height_exaggeration_factor: Float,
-    ) -> Vec<Vector3<Float>> {
-        let mut points = Vec::with_capacity(self.theta_grid.len() * self.phi_grid.len());
-        for (i, &theta) in self.theta_grid.iter().enumerate() {
-            for (j, &phi) in self.phi_grid.iter().enumerate() {
-                let height = height_array[[i, j]];
-                points.push(self.make_point(theta, phi, height, height_exaggeration_factor));
-            }
-        }
-        points
-    }
-
-    fn make_point(
-        &self,
-        theta: Float,
-        phi: Float,
-        height: Float,
-        height_exaggeration_factor: Float,
-    ) -> three_d::Vector3<Float> {
-        const SCALE: Float = 0.4;
-        let radially_out = Vector3::new(-theta.cos(), theta.sin(), 0.);
-        SCALE
-            * (self.major_radius * radially_out
-                + (self.minor_radius
-                    + (height_exaggeration_factor / 100.) * (height - self.base_height))
-                    * (-phi.cos() * radially_out + phi.sin() * Vector3::unit_z()))
     }
 
     fn make_solver(
@@ -472,26 +552,5 @@ impl Torus {
             base_height,
             flow::physics::Solver::new(problem, initial_fields),
         )
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_spherical() {
-        let mut sphere = Sphere::new(5);
-        let height_array = sphere.solver.fields().height_grid();
-        sphere.make_mesh(&height_array, 2.);
-        sphere.solver.integrate(0.01);
-    }
-
-    #[test]
-    fn test_toroidal() {
-        let mut torus = Torus::new(5);
-        let height_array = torus.solver.fields().height_grid();
-        torus.make_mesh(&height_array, 2.);
-        torus.solver.integrate(0.01);
     }
 }

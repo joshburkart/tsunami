@@ -29,15 +29,11 @@ pub struct RectangularSolver {
 }
 #[pymethods]
 impl RectangularSolver {
-    pub fn integrate(&mut self, delta_t: Float) {
-        self.solver.integrate(delta_t)
-    }
-
-    #[getter]
-    pub fn fields(&self) -> RectangularFields {
+    pub fn integrate(&mut self) -> RectangularFields {
+        let fields_snapshot = self.solver.integrate();
         RectangularFields {
-            height: self.solver.fields().height_grid(),
-            velocity: self.solver.fields().velocity_grid(),
+            height: fields_snapshot.fields.height_grid(),
+            velocity: fields_snapshot.fields.velocity_grid(),
         }
     }
 

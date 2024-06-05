@@ -2,10 +2,45 @@ use ndarray as nd;
 
 use crate::{bases, odeint, ComplexFloat, Float, RawComplexFloatData};
 
+pub struct FieldsSnapshot<B: bases::Basis> {
+    pub t: Float,
+    pub fields: Fields<nd::OwnedRepr<ComplexFloat>, B>,
+}
+
+pub fn interp_between<B: bases::Basis>(
+    fields_prev: &FieldsSnapshot<B>,
+    fields_next: &FieldsSnapshot<B>,
+    t_between: Float,
+) -> FieldsSnapshot<B> {
+    assert!(fields_prev.t <= t_between);
+    assert!(t_between <= fields_next.t);
+
+    let delta_t = fields_next.t - fields_prev.t;
+    let weight_prev = (fields_next.t - t_between) / delta_t;
+    let weight_next = (t_between - fields_prev.t) / delta_t;
+
+    let storage_between =
+        &fields_prev.fields.storage * weight_prev + &fields_next.fields.storage * weight_next;
+    FieldsSnapshot {
+        t: t_between,
+        fields: Fields::new_owned(fields_prev.fields.basis.clone(), storage_between),
+    }
+}
+
+impl<B: bases::Basis> Clone for FieldsSnapshot<B> {
+    fn clone(&self) -> Self {
+        Self {
+            t: self.t.clone(),
+            fields: self.fields.clone(),
+        }
+    }
+}
+
 pub struct Fields<S: RawComplexFloatData, B: bases::Basis> {
     basis: std::sync::Arc<B>,
     storage: nd::ArrayBase<S, nd::Ix1>,
 }
+
 impl<'a, B: bases::Basis> Fields<nd::ViewRepr<&'a ComplexFloat>, B> {
     pub fn new(
         basis: std::sync::Arc<B>,
@@ -14,6 +49,7 @@ impl<'a, B: bases::Basis> Fields<nd::ViewRepr<&'a ComplexFloat>, B> {
         Self { basis, storage }
     }
 }
+
 impl<'a, B: bases::Basis> Fields<nd::ViewRepr<&'a mut ComplexFloat>, B> {
     pub fn new_mut(
         basis: std::sync::Arc<B>,
@@ -22,6 +58,7 @@ impl<'a, B: bases::Basis> Fields<nd::ViewRepr<&'a mut ComplexFloat>, B> {
         Self { basis, storage }
     }
 }
+
 impl<B: bases::Basis> Fields<nd::OwnedRepr<ComplexFloat>, B> {
     pub fn new_owned(
         basis: std::sync::Arc<B>,
@@ -30,6 +67,7 @@ impl<B: bases::Basis> Fields<nd::OwnedRepr<ComplexFloat>, B> {
         Self { basis, storage }
     }
 }
+
 impl<B: bases::Basis> Fields<nd::OwnedRepr<ComplexFloat>, B> {
     pub fn zeros(basis: std::sync::Arc<B>) -> Self {
         let len = basis.scalar_spectral_size() + basis.vector_spectral_size();
@@ -37,6 +75,7 @@ impl<B: bases::Basis> Fields<nd::OwnedRepr<ComplexFloat>, B> {
         Self { basis, storage }
     }
 }
+
 impl<S: RawComplexFloatData, B: bases::Basis> Fields<S, B> {
     pub fn size(&self) -> usize {
         self.basis.scalar_spectral_size() + self.basis.vector_spectral_size()
@@ -61,6 +100,7 @@ impl<S: RawComplexFloatData, B: bases::Basis> Fields<S, B> {
         self.basis.vector_to_grid(&spectral)
     }
 }
+
 impl<S: RawComplexFloatData + nd::DataMut, B: bases::Basis> Fields<S, B> {
     pub fn assign_height(&mut self, height: &B::SpectralScalarField) {
         self.basis.scalar_to_slice(
@@ -73,6 +113,15 @@ impl<S: RawComplexFloatData + nd::DataMut, B: bases::Basis> Fields<S, B> {
             velocity,
             &mut self.storage.as_slice_mut().unwrap()[self.basis.scalar_spectral_size()..],
         )
+    }
+}
+
+impl<S: RawComplexFloatData + nd::RawDataClone, B: bases::Basis> Clone for Fields<S, B> {
+    fn clone(&self) -> Self {
+        Self {
+            basis: self.basis.clone(),
+            storage: self.storage.clone(),
+        }
     }
 }
 
@@ -191,11 +240,11 @@ where
         &mut self.problem
     }
 
-    pub fn integrate(&mut self, delta_t: Float) {
-        self.integrator.integrate(&self.problem, delta_t)
-    }
-
-    pub fn fields(&self) -> Fields<nd::OwnedRepr<ComplexFloat>, B> {
-        Fields::new_owned(self.problem.basis.clone(), self.integrator.y())
+    pub fn integrate(&mut self) -> FieldsSnapshot<B> {
+        let odeint::Solution { t, y } = self.integrator.integrate(&self.problem);
+        FieldsSnapshot {
+            t,
+            fields: Fields::new_owned(self.problem.basis.clone(), y.clone()),
+        }
     }
 }

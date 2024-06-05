@@ -2,6 +2,11 @@ use ndarray as nd;
 
 use crate::{ComplexFloat, Float};
 
+pub struct Solution<'a, V> {
+    pub t: Float,
+    pub y: &'a nd::Array1<V>,
+}
+
 pub trait System {
     type Value;
 
@@ -14,11 +19,8 @@ pub trait System {
 
 /// An explicit, adaptive-stepsize ODE integrator using RK4.
 pub struct Integrator<S: System> {
-    t_prev: Float,
-    y_prev: nd::Array1<S::Value>,
-    t_next: Float,
-    y_next: nd::Array1<S::Value>,
-    t_now: Float,
+    t: Float,
+    y: nd::Array1<S::Value>,
 
     step_size: Float,
     min_step_size: Float,
@@ -57,11 +59,8 @@ where
         let y_full_step = y_init.clone();
 
         Self {
-            y_prev: y_init.clone(),
-            y_next: y_init,
-            t_prev: 0.,
-            t_next: 0.,
-            t_now: 0.,
+            y: y_init,
+            t: 0.,
             step_size: step_size_init,
             min_step_size,
             abs_tol: 1e-5,
@@ -82,90 +81,53 @@ where
         Self { rel_tol, ..self }
     }
 
-    pub fn y(&self) -> nd::Array1<S::Value> {
-        // `t_now` should be bracketed between `t_prev` and `t_next`. Linearly interpolate so we hit
-        // `t_now`.
-        if self.t_next > self.t_prev {
-            let weight_prev =
-                S::Value::from((self.t_next - self.t_now) / (self.t_next - self.t_prev));
-            let weight_next =
-                S::Value::from((self.t_now - self.t_prev) / (self.t_next - self.t_prev));
-            let mut y = self.y_prev.clone();
-            y *= weight_prev;
-            y += &(&self.y_next * weight_next);
-            y
-        } else {
-            self.y_prev.clone()
-        }
-    }
-
-    pub fn integrate(&mut self, system: &S, delta_t: Float) {
-        assert!(delta_t >= 0.);
-
+    pub fn integrate(&mut self, system: &S) -> Solution<'_, S::Value> {
         // Put dummy values for these arrays to avoid violating borrowing rules. We'll swap the
         // dummies out at the end.
-        let mut y_prev = nd::Array::zeros(0);
-        let mut y_next = nd::Array::zeros(0);
+        let mut y = nd::Array::zeros(0);
         let mut y_half_step = nd::Array::zeros(0);
         let mut y_full_step = nd::Array::zeros(0);
-        std::mem::swap(&mut y_prev, &mut self.y_prev);
-        std::mem::swap(&mut y_next, &mut self.y_next);
+        std::mem::swap(&mut y, &mut self.y);
         std::mem::swap(&mut y_half_step, &mut self.y_half_step);
         std::mem::swap(&mut y_full_step, &mut self.y_full_step);
 
-        self.t_now += delta_t;
+        // Full step.
+        self.step(system, self.step_size, &y, &mut y_full_step, true);
 
-        // Loop until we've passed `self.t_now`. At the end of this loop, `self.t_next` should be
-        // `>= self.t_now`, `self.t_prev` should be `< self.t_now`, `y_next` should be the value of
-        // `y` integrated to `self.t_next`, and `y_prev` should be the value of `y` integrated to
-        // `self.t_prev`. This is used to linearly interpolate in `y()`.
-        while self.t_next < self.t_now {
-            self.t_prev = self.t_next;
-            y_prev.assign(&y_next);
+        // Two half steps.
+        let half_step_size = self.step_size / 2.;
+        self.step(system, half_step_size, &y, &mut y_half_step, false);
+        self.step(system, half_step_size, &y_half_step, &mut y, true);
 
-            // Full step.
-            self.step(system, self.step_size, &y_prev, &mut y_full_step, true);
+        // Compute scaled truncation error between two half steps and full step.
+        let error: Float = (y_full_step
+            .iter()
+            .zip(y.iter())
+            .map(|(&yi_full_step, &yi)| {
+                let scale =
+                    self.abs_tol + self.rel_tol * yi.norm_sq().max(yi_full_step.norm_sq()).sqrt();
+                (yi_full_step - yi).norm_sq() / scale.powi(2)
+            })
+            .sum::<Float>()
+            / y.len() as Float)
+            .sqrt();
+        assert!(error.is_finite());
 
-            // Two half steps.
-            let half_step_size = self.step_size / 2.;
-            self.step(system, half_step_size, &y_prev, &mut y_half_step, false);
-            self.step(system, half_step_size, &y_half_step, &mut y_next, true);
+        self.t += self.step_size;
 
-            // Compute scaled truncation error between two half steps and full step.
-            let error: Float = (y_full_step
-                .iter()
-                .copied()
-                .zip(y_next.iter().copied())
-                .map(|(yi_full_step, yi_next)| {
-                    let scale = self.abs_tol
-                        + self.rel_tol * yi_next.norm_sq().max(yi_full_step.norm_sq()).sqrt();
-                    (yi_full_step - yi_next).norm_sq() / scale.powi(2)
-                })
-                .sum::<Float>()
-                / y_next.len() as Float)
-                .sqrt();
+        // Simple PI controller for step size.
+        let step_size_multiplier = (0.9 * error.powf(-0.1)).min(6.).max(0.3);
+        self.step_size *= step_size_multiplier;
+        assert!(self.step_size > self.min_step_size, "Error: {:?}", error);
 
-            // if error > 5. {
-            //     // Error is unacceptable. Halve the step size and try again.
-            //     self.step_size /= 2.;
-            //     assert!(self.step_size > self.min_step_size, "Error: {:?}", error,);
+        std::mem::swap(&mut y, &mut self.y);
+        std::mem::swap(&mut y_half_step, &mut self.y_half_step);
+        std::mem::swap(&mut y_full_step, &mut self.y_full_step);
 
-            //     y_next.assign(&y_prev);
-            //     continue;
-            // }
-
-            self.t_next += self.step_size;
-
-            // Simple PI controller for step size.
-            let step_size_multiplier = (0.9 * error.powf(-0.1)).min(6.).max(0.3);
-            self.step_size *= step_size_multiplier;
-            assert!(self.step_size > self.min_step_size, "Error: {:?}", error);
+        Solution {
+            t: self.t,
+            y: &self.y,
         }
-
-        std::mem::swap(&mut y_prev, &mut self.y_prev);
-        std::mem::swap(&mut y_next, &mut self.y_next);
-        std::mem::swap(&mut y_half_step, &mut self.y_half_step);
-        std::mem::swap(&mut y_full_step, &mut self.y_full_step);
     }
 
     /// Take a single step. Only mutable since it uses the scratch `ki` arrays.
@@ -264,34 +226,26 @@ mod tests {
         .abs_tol(1e-6)
         .rel_tol(0.);
 
-        integrator.integrate(&system, 51.7);
-
+        loop {
+            let Solution { t, y } = integrator.integrate(&system);
+            println!("{t:?}");
+            if t >= 51.7 {
+                assert!(t < 55., "{:?}", t);
+                crate::test_util::assert_all_close(
+                    &y.mapv(|z| z.re),
+                    &nd::array![ComplexFloat::new(0., 1.2 * t).exp().re, 0.],
+                )
+                .with_abs_tol(1e-2);
+                crate::test_util::assert_all_close(
+                    &y.mapv(|z| z.im),
+                    &nd::array![ComplexFloat::new(0., 1.2 * t).exp().im, 0.],
+                )
+                .with_abs_tol(1e-2);
+                break;
+            }
+            // Don't run forever even if integration has ground to a halt.
+            assert!(*system.num_evals.borrow() < 10000);
+        }
         assert_eq!(*system.num_evals.borrow(), 4609);
-
-        crate::test_util::assert_all_close(
-            &integrator.y().mapv(|z| z.re),
-            &nd::array![ComplexFloat::new(0., 1.2 * 51.7).exp().re, 0.],
-        )
-        .with_abs_tol(1e-2);
-        crate::test_util::assert_all_close(
-            &integrator.y().mapv(|z| z.im),
-            &nd::array![ComplexFloat::new(0., 1.2 * 51.7).exp().im, 0.],
-        )
-        .with_abs_tol(1e-2);
-
-        integrator.integrate(&system, 11.7);
-
-        assert_eq!(*system.num_evals.borrow(), 5687);
-
-        crate::test_util::assert_all_close(
-            &integrator.y().mapv(|z| z.re),
-            &nd::array![ComplexFloat::new(0., 1.2 * (51.7 + 11.7)).exp().re, 0.],
-        )
-        .with_abs_tol(1e-2);
-        crate::test_util::assert_all_close(
-            &integrator.y().mapv(|z| z.im),
-            &nd::array![ComplexFloat::new(0., 1.2 * (51.7 + 11.7)).exp().im, 0.],
-        )
-        .with_abs_tol(1e-2);
     }
 }

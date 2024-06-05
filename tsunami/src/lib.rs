@@ -9,7 +9,6 @@ mod geom;
 struct Parameters {
     pub kinematic_viscosity_rel_to_water: Float,
     pub height_exaggeration_factor: Float,
-    pub time_step: Float,
     pub resolution_level: u32,
     pub show_point_cloud: bool,
 }
@@ -19,7 +18,6 @@ impl Default for Parameters {
         Self {
             kinematic_viscosity_rel_to_water: 1.,
             height_exaggeration_factor: 40.,
-            time_step: 50.,
             resolution_level: 6,
             show_point_cloud: false,
         }
@@ -93,10 +91,11 @@ pub async fn run() {
         AmbientLight::new_with_environment(&context, 20.0, Srgba::WHITE, skybox.texture());
     let directional = DirectionalLight::new(&context, 5.0, Srgba::WHITE, &vec3(-1.0, -1.0, -1.0));
 
-    let height_array = geometry.height_grid();
-    let new_mesh = geometry.make_mesh(&height_array, params.height_exaggeration_factor);
+    let rendering = geometry
+        .integrate()
+        .render(params.height_exaggeration_factor);
     let mut mesh_model = Gm::new(
-        Mesh::new(&context, &new_mesh.clone().into()),
+        Mesh::new(&context, &rendering.mesh.into()),
         PhysicalMaterial::new(
             &context,
             &CpuMaterial {
@@ -118,9 +117,7 @@ pub async fn run() {
         geometry: InstancedMesh::new(
             &context,
             &PointCloud {
-                positions: Positions::F32(
-                    geometry.make_points(&height_array, params.height_exaggeration_factor),
-                ),
+                positions: Positions::F32(rendering.points),
                 colors: None,
             }
             .into(),
@@ -138,25 +135,18 @@ pub async fn run() {
         }
 
         geometry.set_kinematic_viscosity(1e-3 * params.kinematic_viscosity_rel_to_water); // TODO
-        geometry.integrate(3e-5 * params.time_step); // TODO
+        let rendering = geometry
+            .integrate()
+            .render(params.height_exaggeration_factor);
 
         {
-            let height_array = geometry.height_grid();
-            mesh_model.geometry = Mesh::new(
-                &context,
-                &geometry
-                    .make_mesh(&&height_array, params.height_exaggeration_factor)
-                    .clone()
-                    .into(),
-            );
+            mesh_model.geometry = Mesh::new(&context, &rendering.mesh.into());
 
             if params.show_point_cloud {
                 point_cloud_model.geometry = InstancedMesh::new(
                     &context,
                     &PointCloud {
-                        positions: Positions::F32(
-                            geometry.make_points(&height_array, params.height_exaggeration_factor),
-                        ),
+                        positions: Positions::F32(rendering.points),
                         colors: None,
                     }
                     .into(),
@@ -256,12 +246,12 @@ pub async fn run() {
                                     }
                                     ui.label("num subdivisions");
                                 });
-                                ui.add(
-                                    egui::Slider::new(&mut params.time_step, 1e0..=1e3)
-                                        .logarithmic(true)
-                                        .text("time step")
-                                        .suffix(" s"),
-                                );
+                                // ui.add(
+                                //     egui::Slider::new(&mut params.time_step, 1e0..=1e3)
+                                //         .logarithmic(true)
+                                //         .text("time step")
+                                //         .suffix(" s"),
+                                // );
                                 ui.label(format!(
                                     "{:.0} ms/time step",
                                     frame_time_history.average().unwrap_or(0.)
