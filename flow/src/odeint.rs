@@ -266,7 +266,7 @@ mod tests {
 
         integrator.integrate(&system, 51.7);
 
-        assert_eq!(*system.num_evals.borrow(), 4763);
+        assert_eq!(*system.num_evals.borrow(), 4609);
 
         crate::test_util::assert_all_close(
             &integrator.y().mapv(|z| z.re),
@@ -281,7 +281,7 @@ mod tests {
 
         integrator.integrate(&system, 11.7);
 
-        assert_eq!(*system.num_evals.borrow(), 5830);
+        assert_eq!(*system.num_evals.borrow(), 5687);
 
         crate::test_util::assert_all_close(
             &integrator.y().mapv(|z| z.re),

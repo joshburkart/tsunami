@@ -131,7 +131,7 @@ impl Basis for SphericalHarmonicBasis {
     }
     fn vector_to_grid(&self, spectral: &VectorSphericalHarmonicField) -> nd::Array3<Float> {
         let Q_l_m_mu = &self.vector_spherical_harmonics.Q_l_m_mu;
-        let R_l_m_mu = &self.vector_spherical_harmonics.R_l_m_mu;
+        let iR_l_m_mu = &self.vector_spherical_harmonics.iR_l_m_mu;
 
         let mut f_comp_mu_m =
             nd::Array3::zeros((2, self.mu_gauss_legendre_quad.nodes.len(), self.max_l + 1));
@@ -144,11 +144,10 @@ impl Basis for SphericalHarmonicBasis {
                     ComplexFloat::from(0.)
                 };
                 for i in 0..self.mu_gauss_legendre_quad.nodes.len() {
-                    f_comp_mu_m[[Component::Theta as usize, i, m]] += V_l_m * Q_l_m_mu[[l, m, i]]
-                        - ComplexFloat::i() * W_l_m * R_l_m_mu[[l, m, i]];
+                    f_comp_mu_m[[Component::Theta as usize, i, m]] +=
+                        V_l_m * Q_l_m_mu[[l, m, i]] - W_l_m * iR_l_m_mu[[l, m, i]];
                     f_comp_mu_m[[Component::Phi as usize, i, m]] +=
-                        ComplexFloat::i() * V_l_m * R_l_m_mu[[l, m, i]]
-                            + W_l_m * Q_l_m_mu[[l, m, i]];
+                        V_l_m * iR_l_m_mu[[l, m, i]] + W_l_m * Q_l_m_mu[[l, m, i]];
                 }
             }
         }
@@ -201,26 +200,30 @@ impl Basis for SphericalHarmonicBasis {
             2,
         );
         f_comp_mu_m *= ComplexFloat::from(float_consts::TAU / (2 * self.max_l + 1) as Float);
+        let fw_comp_mu_m = {
+            f_comp_mu_m.zip_mut_with(
+                &self
+                    .mu_gauss_legendre_quad
+                    .weights
+                    .slice(nd::s![nd::NewAxis, .., nd::NewAxis]),
+                |f, w| *f *= w,
+            );
+            f_comp_mu_m
+        };
 
         let Q_l_m_mu = &self.vector_spherical_harmonics.Q_l_m_mu;
-        let R_l_m_mu = &self.vector_spherical_harmonics.R_l_m_mu;
-        let w = &self.mu_gauss_legendre_quad.weights;
-        let mut Psi_f_l_m = nd::Array2::zeros((self.max_l + 1, self.max_l + 1));
-        let mut Phi_f_l_m = nd::Array2::zeros((self.max_l + 1, self.max_l + 1));
+        let iR_l_m_mu = &self.vector_spherical_harmonics.iR_l_m_mu;
+        let mut Psi_f_l_m = nd::Array2::<ComplexFloat>::zeros((self.max_l + 1, self.max_l + 1));
+        let mut Phi_f_l_m = nd::Array2::<ComplexFloat>::zeros((self.max_l + 1, self.max_l + 1));
         for l in 1..=self.max_l {
             for m in 0..=l {
                 for i in 0..self.mu_gauss_legendre_quad.nodes.len() {
-                    Psi_f_l_m[[l, m]] += (Q_l_m_mu[[l, m, i]]
-                        * f_comp_mu_m[[Component::Theta as usize, i, m]]
-                        - ComplexFloat::i()
-                            * R_l_m_mu[[l, m, i]]
-                            * f_comp_mu_m[[Component::Phi as usize, i, m]])
-                        * w[i];
-                    Phi_f_l_m[[l, m]] += (ComplexFloat::i()
-                        * R_l_m_mu[[l, m, i]]
-                        * f_comp_mu_m[[Component::Theta as usize, i, m]]
-                        + Q_l_m_mu[[l, m, i]] * f_comp_mu_m[[Component::Phi as usize, i, m]])
-                        * w[i];
+                    Psi_f_l_m[[l, m]] += Q_l_m_mu[[l, m, i]]
+                        * fw_comp_mu_m[[Component::Theta as usize, i, m]]
+                        - iR_l_m_mu[[l, m, i]] * fw_comp_mu_m[[Component::Phi as usize, i, m]];
+                    Phi_f_l_m[[l, m]] += iR_l_m_mu[[l, m, i]]
+                        * fw_comp_mu_m[[Component::Theta as usize, i, m]]
+                        + Q_l_m_mu[[l, m, i]] * fw_comp_mu_m[[Component::Phi as usize, i, m]];
                 }
             }
         }
@@ -384,20 +387,22 @@ struct VectorSphericalHarmonics {
     /// [`Self::compute_legendre_funcs`].
     pub P_l_m_mu: nd::Array3<Float>,
     /// First vector spherical harmonic function, normalized as per [`Self::P_l_m_mu`].
-    pub Q_l_m_mu: nd::Array3<Float>,
+    pub Q_l_m_mu: nd::Array3<ComplexFloat>,
     /// Second vector spherical harmonic function, normalized as per [`Self::P_l_m_mu`].
-    pub R_l_m_mu: nd::Array3<Float>,
+    pub iR_l_m_mu: nd::Array3<ComplexFloat>,
 }
 
 impl VectorSphericalHarmonics {
     pub fn new(max_l: usize, mu_grid: &nd::Array1<Float>) -> Self {
         let P_l_m_mu = Self::compute_legendre_funcs(max_l, mu_grid);
         let (Q_l_m_mu, R_l_m_mu) = Self::compute_vector_spherical_harmonic_funcs(&P_l_m_mu);
+        let Q_l_m_mu = Q_l_m_mu.mapv(|Q| ComplexFloat::new(Q, 0.));
+        let iR_l_m_mu = R_l_m_mu.mapv(|R| ComplexFloat::new(0., R));
 
         Self {
             P_l_m_mu,
             Q_l_m_mu,
-            R_l_m_mu,
+            iR_l_m_mu,
         }
     }
 
@@ -681,7 +686,6 @@ mod test {
         };
 
         let grid = basis.vector_to_grid(&spectral);
-
         let roundtrip_spectral = basis.vector_to_spectral(&grid);
 
         assert_all_close(&spectral.Psi.f_l_m, &roundtrip_spectral.Psi.f_l_m).with_abs_tol(1e-5);
@@ -704,8 +708,8 @@ mod test {
                 assert_relative_eq!(
                     1.,
                     float_consts::TAU
-                        * (&(vsh.Q_l_m_mu.slice(nd::s![l, m, ..]).mapv(|Q| Q.powi(2))
-                            + vsh.R_l_m_mu.slice(nd::s![l, m, ..]).mapv(|R| R.powi(2)))
+                        * (&(vsh.Q_l_m_mu.slice(nd::s![l, m, ..]).mapv(|Q| Q.norm_sqr())
+                            + vsh.iR_l_m_mu.slice(nd::s![l, m, ..]).mapv(|R| R.norm_sqr()))
                             * &gauss_legendre_quad.weights)
                             .sum(),
                     max_relative = 1e-5
@@ -717,9 +721,9 @@ mod test {
         for l in 1..10 {
             for m in 0..=l {
                 assert_relative_eq!(
-                    0.,
+                    ComplexFloat::new(0., 0.),
                     (&vsh.Q_l_m_mu.slice(nd::s![l, m, ..])
-                        * &vsh.R_l_m_mu.slice(nd::s![l, m, ..])
+                        * &vsh.iR_l_m_mu.slice(nd::s![l, m, ..])
                         * &gauss_legendre_quad.weights)
                         .sum(),
                     max_relative = 1e-5
@@ -733,11 +737,11 @@ mod test {
             for lp in [1, 2, 7] {
                 for m in 0..=l.min(lp) {
                     assert_relative_eq!(
-                        0.,
+                        ComplexFloat::new(0., 0.),
                         ((&vsh.Q_l_m_mu.slice(nd::s![l, m, ..])
                             * &vsh.Q_l_m_mu.slice(nd::s![lp, m, ..])
-                            + &vsh.R_l_m_mu.slice(nd::s![l, m, ..])
-                                * &vsh.R_l_m_mu.slice(nd::s![lp, m, ..]))
+                            - &vsh.iR_l_m_mu.slice(nd::s![l, m, ..])
+                                * &vsh.iR_l_m_mu.slice(nd::s![lp, m, ..]))
                             * &gauss_legendre_quad.weights)
                             .sum(),
                         epsilon = 1e-5

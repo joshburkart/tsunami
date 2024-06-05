@@ -9,9 +9,9 @@ mod test_util;
 
 use ndarray as nd;
 
-pub type Float = f64;
+pub type Float = f32;
 type ComplexFloat = ndrustfft::Complex<Float>;
-pub use std::f64::consts as float_consts;
+pub use std::f32::consts as float_consts;
 
 pub trait RawFloatData: nd::RawData<Elem = Float> + nd::Data {}
 pub trait RawComplexFloatData: nd::RawData<Elem = ComplexFloat> + nd::Data {}

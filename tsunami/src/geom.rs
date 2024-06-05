@@ -32,20 +32,7 @@ impl Geometry {
     }
     pub fn height_grid(&self) -> nd::Array2<Float> {
         match &self.0 {
-            GeometryImpl::Sphere(sphere) => {
-                let height_spectral = sphere.solver.fields().height_spectral();
-                let height_spectral_norm = height_spectral
-                    .f_l_m
-                    .mapv(|x| x.norm())
-                    .slice(nd::s![1.., ..])
-                    .to_owned();
-                let (i, val) = height_spectral_norm
-                    .indexed_iter()
-                    .max_by(|(_, x), (_, y)| x.partial_cmp(y).unwrap())
-                    .unwrap();
-                log::info!("Largest spectral element: {i:?}, {val:?}");
-                sphere.solver.fields().height_grid()
-            }
+            GeometryImpl::Sphere(sphere) => sphere.solver.fields().height_grid(),
             GeometryImpl::Torus(torus) => torus.solver.fields().height_grid(),
         }
     }
@@ -176,7 +163,7 @@ impl Sphere {
 
         let mut mesh = CpuMesh {
             indices: Indices::U32(indices),
-            positions: Positions::F64(points),
+            positions: Positions::F32(points),
             ..Default::default()
         };
         mesh.compute_normals();
@@ -223,7 +210,7 @@ impl Sphere {
         let max_l = 2usize.pow(resolution_level);
         let base_height = 3.;
         let amplitude = 0.01;
-        let bump_size = 0.02;
+        let bump_size = 0.01;
         let kinematic_viscosity = 1e-4; // TODO
         let grav_accel = 9.8;
 
@@ -268,7 +255,7 @@ impl Sphere {
             terrain_height,
             grav_accel,
             kinematic_viscosity,
-            rtol: 1e-7,
+            rtol: 1e-2,
             atol: 1e-7,
         };
         (
@@ -383,7 +370,7 @@ impl Torus {
 
         let mut mesh = CpuMesh {
             indices: Indices::U32(indices),
-            positions: Positions::F64(points),
+            positions: Positions::F32(points),
             ..Default::default()
         };
         mesh.compute_normals();

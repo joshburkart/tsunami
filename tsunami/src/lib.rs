@@ -19,9 +19,9 @@ impl Default for Parameters {
         Self {
             kinematic_viscosity_rel_to_water: 1.,
             height_exaggeration_factor: 40.,
-            time_step: 100.,
+            time_step: 50.,
             resolution_level: 6,
-            show_point_cloud: true,
+            show_point_cloud: false,
         }
     }
 }
@@ -31,7 +31,7 @@ pub async fn run() {
     console_log::init().unwrap();
 
     let window = Window::new(WindowSettings {
-        title: "Tsunami Simulator".to_string(),
+        title: "Tsunami Playground".to_string(),
         max_size: None,
         ..Default::default()
     })
@@ -118,7 +118,7 @@ pub async fn run() {
         geometry: InstancedMesh::new(
             &context,
             &PointCloud {
-                positions: Positions::F64(
+                positions: Positions::F32(
                     geometry.make_points(&height_array, params.height_exaggeration_factor),
                 ),
                 colors: None,
@@ -154,7 +154,7 @@ pub async fn run() {
                 point_cloud_model.geometry = InstancedMesh::new(
                     &context,
                     &PointCloud {
-                        positions: Positions::F64(
+                        positions: Positions::F32(
                             geometry.make_points(&height_array, params.height_exaggeration_factor),
                         ),
                         colors: None,
@@ -244,15 +244,18 @@ pub async fn run() {
                                 ui.add_space(10.);
 
                                 ui.label(egui::RichText::new("Performance").strong());
-                                reset |= ui
-                                    .add(
-                                        egui::Slider::new(&mut params.resolution_level, 4..=7)
-                                            .fixed_decimals(0)
-                                            .step_by(1.)
-                                            .prefix("2^")
-                                            .text("num subdivisions"),
-                                    )
-                                    .changed();
+                                ui.horizontal(|ui| {
+                                    for n in 5..=8 {
+                                        reset |= ui
+                                            .radio_value(
+                                                &mut params.resolution_level,
+                                                n,
+                                                format!("{}", 2i32.pow(n)),
+                                            )
+                                            .changed();
+                                    }
+                                    ui.label("num subdivisions");
+                                });
                                 ui.add(
                                     egui::Slider::new(&mut params.time_step, 1e0..=1e3)
                                         .logarithmic(true)

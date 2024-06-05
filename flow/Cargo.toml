@@ -9,6 +9,7 @@ name = "flow"
 [dependencies]
 itertools = { workspace = true }
 gauss-quad = { workspace = true }
+log = { workspace = true }
 ndarray = { workspace = true }
 ndrustfft = { workspace = true }
 num-traits = { workspace = true }

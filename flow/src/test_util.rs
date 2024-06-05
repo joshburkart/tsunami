@@ -2,7 +2,6 @@ use crate::Float;
 
 use ndarray as nd;
 
-#[cfg(test)]
 pub struct AllCloseAssertion<'a, 'b, V, D: nd::Dimension>
 where
     V: std::fmt::Display
@@ -20,7 +19,7 @@ where
     print_ratio: bool,
     max_mismatching_elements: usize,
 }
-#[cfg(test)]
+
 impl<'a, 'b, V, D: nd::Dimension> AllCloseAssertion<'a, 'b, V, D>
 where
     V: std::fmt::Display
@@ -48,7 +47,6 @@ where
     }
 }
 
-#[cfg(test)]
 impl<'a, 'b, V, D: nd::Dimension> Drop for AllCloseAssertion<'a, 'b, V, D>
 where
     V: std::fmt::Display

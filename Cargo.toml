@@ -13,6 +13,7 @@ gauss-quad = "0.1.8"
 log = "0.4"
 nalgebra = "0.32.5"
 ndarray = { version = "0.15", features = ["approx-0_5"] }
+ndarray_einsum_beta = "0.7"
 ndarray-linalg = { version = "0.16", features = ["openblas-system"] }
 ndrustfft = "0.4.4"
 num-traits = "0.2"

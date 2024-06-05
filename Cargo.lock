@@ -614,6 +614,7 @@ dependencies = [
  "approx 0.5.1",
  "gauss-quad",
  "itertools",
+ "log",
  "ndarray",
  "ndrustfft",
  "num-traits",
