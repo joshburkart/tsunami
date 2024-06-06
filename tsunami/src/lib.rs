@@ -4,6 +4,7 @@ use wasm_bindgen::prelude::*;
 use flow::Float;
 
 mod geom;
+mod render;
 
 #[derive(Clone)]
 struct Parameters {

@@ -13,26 +13,20 @@ gauss-quad = "0.1.8"
 log = "0.4"
 nalgebra = "0.32.5"
 ndarray = { version = "0.15", features = ["approx-0_5"] }
-ndarray_einsum_beta = "0.7"
-ndarray-linalg = { version = "0.16", features = ["openblas-system"] }
 ndrustfft = "0.4.4"
 num-traits = "0.2"
 numpy = "0.21"
 ode_solvers = "0.4.0"
 pyo3 = { version = "0.21.1", features = ["extension-module"] }
+rayon = "1.10"
 three-d = { git = "https://github.com/joshburkart/three-d.git", rev = "255978cf6626887b24a5d5f66b0c0283874612b7", features = [
     "egui-gui",
 ] }
-three-d-asset = { version = "0.7", features = [
-    "gltf",
-    "jpeg",
-    "png",
-    "hdr",
-    "http",
-] }
+three-d-asset = { version = "0.7", features = ["jpeg", "http"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 wasm-bindgen = "0.2.92"
 wasm-bindgen-futures = "0.4"
+wasm-bindgen-rayon = { version = "1.2.1" }
 web-sys = { version = "0.3.4", features = [
     'Document',
     'Element',
