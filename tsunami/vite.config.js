@@ -17,5 +17,6 @@ export default defineConfig({
     build: {
         target: 'esnext'
     },
+    base: '/flow/',
     plugins: [viteHeaderPlugin],
 });
