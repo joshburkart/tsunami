@@ -15,8 +15,8 @@ pages:
     - cd tsunami
     - npm install
     - npm run build
-    - mkdir -p public
-    - cp -r dist/* public/
+    - mkdir -p ../public
+    - cp -r dist/* ../public/
   artifacts:
     paths:
       - public
