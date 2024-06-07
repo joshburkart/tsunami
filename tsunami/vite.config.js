@@ -7,6 +7,7 @@ const viteHeaderPlugin = {
             res.setHeader("Access-Control-Allow-Origin", "*");
             res.setHeader("Access-Control-Allow-Methods", "GET");
             res.setHeader("Cross-Origin-Opener-Policy", "same-origin");
+            res.setHeader("Cross-Origin-Resource-Policy", "same-site");
             res.setHeader("Cross-Origin-Embedder-Policy", "require-corp");
             next(); dddd
         });
