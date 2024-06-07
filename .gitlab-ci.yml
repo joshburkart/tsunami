@@ -6,14 +6,14 @@ workflow:
 
 pages:
   script:
-    - |
-      curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+    - curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
     - rustup update
     - rustup target add wasm32-unknown-unknown
     - cd tsunami
     - npm run build
     - mkdir -p public
     - cp -r dist/* public/
+  artifacts:
     paths:
       - public
   rules:
