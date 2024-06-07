@@ -11,6 +11,7 @@ pages:
     - rustup update
     - rustup target add wasm32-unknown-unknown
     - cargo install wasm-pack
+    - rustup component add rust-src
     - cd tsunami
     - npm run build
     - mkdir -p public
