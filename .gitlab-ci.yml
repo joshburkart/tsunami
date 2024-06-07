@@ -6,7 +6,7 @@ workflow:
 
 pages:
   script:
-    - apt install rustup
+    - curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
     - rustup update
     - rustup target add wasm32-unknown-unknown
     - cd tsunami
