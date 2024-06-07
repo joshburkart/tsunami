@@ -13,6 +13,7 @@ pages:
     - cargo install wasm-pack
     - rustup component add rust-src
     - cd tsunami
+    - npm install
     - npm run build
     - mkdir -p public
     - cp -r dist/* public/
