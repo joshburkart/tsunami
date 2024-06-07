@@ -2,6 +2,10 @@
 members = ["flow", "pyflow", "tsunami"]
 resolver = "2"
 
+[profile.release]
+debug = false
+lto = true
+
 [workspace.dependencies]
 approx = { version = "0.5", features = ["num-complex"] }
 console_error_panic_hook = "0.1"
@@ -16,16 +20,14 @@ ndarray = { version = "0.15", features = ["approx-0_5"] }
 ndrustfft = "0.4.4"
 num-traits = "0.2"
 numpy = "0.21"
-ode_solvers = "0.4.0"
 pyo3 = { version = "0.21.1", features = ["extension-module"] }
 rayon = "1.10"
-three-d = { git = "https://github.com/joshburkart/three-d.git", rev = "255978cf6626887b24a5d5f66b0c0283874612b7", features = [
+three-d = { git = "https://github.com/asny/three-d.git", rev = "a69b70874d93da231f5e4f8c35adb4d38134aeee", features = [
     "egui-gui",
 ] }
 three-d-asset = { version = "0.7", features = ["jpeg", "http"] }
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 wasm-bindgen = "0.2.92"
-wasm-bindgen-futures = "0.4"
+wasm-bindgen-futures = "0.4.42"
 wasm-bindgen-rayon = { version = "1.2.1" }
 web-sys = { version = "0.3.4", features = [
     'Document',
@@ -38,7 +40,3 @@ web-sys = { version = "0.3.4", features = [
     'WebGlShader',
     'Window',
 ] }
-
-[profile.release]
-debug = true
-lto = "thin"

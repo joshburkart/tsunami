@@ -15,10 +15,10 @@ egui_commonmark = { workspace = true }
 js-sys = { workspace = true }
 log = { workspace = true }
 ndarray = { workspace = true }
-# rayon = { workspace = true }
+rayon = { workspace = true }
 three-d = { workspace = true }
 three-d-asset = { workspace = true, features = ["obj"] }
 wasm-bindgen = { workspace = true }
 wasm-bindgen-futures = { workspace = true }
-# wasm-bindgen-rayon = { workspace = true }
+wasm-bindgen-rayon = { workspace = true }
 web-sys = { workspace = true }

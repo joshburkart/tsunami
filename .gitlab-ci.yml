@@ -1,4 +1,4 @@
-image: rust:1.78.0
+image: node:16.5.0
 
 workflow:
   rules:
@@ -6,11 +6,11 @@ workflow:
 
 pages:
   script:
+    - curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+    - rustup update
     - rustup target add wasm32-unknown-unknown
-    - cargo install trunk
     - cd tsunami
-    - trunk build --release -d ../public --public-url https://joshburkart.gitlab.io/flow/
-  artifacts:
+    - npm run build
     paths:
       - public
   rules:

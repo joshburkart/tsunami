@@ -1,10 +1,13 @@
+#![feature(stdarch_wasm_atomic_wait)]
+
+use flow::Float;
 use three_d::*;
 use wasm_bindgen::prelude::*;
 
-use flow::Float;
-
 mod geom;
 mod render;
+
+pub use wasm_bindgen_rayon::init_thread_pool;
 
 #[derive(Clone)]
 struct Parameters {
@@ -28,6 +31,7 @@ impl Default for Parameters {
 #[wasm_bindgen(start)]
 pub async fn run() {
     console_log::init().unwrap();
+    log::info!("{}", rayon::current_num_threads());
 
     let window = Window::new(WindowSettings {
         title: "Tsunami Playground".to_string(),
@@ -69,23 +73,30 @@ pub async fn run() {
 
     let mut frame_time_history = egui::util::History::new(50..1000, 500.);
 
-    let paths = [
-        "right.jpg",
-        "left.jpg",
-        "top.jpg",
-        "bottom.jpg",
-        "front.jpg",
-        "back.jpg",
-    ];
-    let mut loaded = three_d_asset::io::load_async(&paths).await.unwrap();
-    let skybox = Skybox::new(
-        &context,
-        &loaded.deserialize(&paths[0]).unwrap(),
-        &loaded.deserialize(&paths[1]).unwrap(),
-        &loaded.deserialize(&paths[2]).unwrap(),
-        &loaded.deserialize(&paths[3]).unwrap(),
-        &loaded.deserialize(&paths[4]).unwrap(),
-        &loaded.deserialize(&paths[5]).unwrap(),
+    macro_rules! load_skybox {
+        ($($path:literal),+) => {
+            {
+                let asset_bytes = [$(include_bytes!($path).to_vec()),+];
+                let mut raw_assets = three_d_asset::io::RawAssets::new();
+                for (path, bytes) in [$($path),+].iter().zip(asset_bytes.into_iter()) {
+                    raw_assets.insert(path, bytes);
+                }
+                Skybox::new(
+                    &context,
+                    $(
+                        &raw_assets.deserialize($path).unwrap()
+                    ),+
+                )
+            }
+        };
+    }
+    let skybox = load_skybox!(
+        "../assets/right.jpg",
+        "../assets/left.jpg",
+        "../assets/top.jpg",
+        "../assets/bottom.jpg",
+        "../assets/front.jpg",
+        "../assets/back.jpg"
     );
 
     let ambient =
@@ -176,12 +187,11 @@ pub async fn run() {
                                     ui,
                                     &mut commonmark_cache,
                                     "Alpha version -- please **do not share yet**! Many rough \
-                                    edges, e.g. viscosity slider has nothing to do with water's \
-                                    viscosity despite what it says, advection term not yet \
-                                    implemented in spherical geometry, etc.\n\
-                                    \n\
-                                    Planned features: realistic terrain (continents/sea floor/\
-                                    etc.), click to set off a tsunami, and more..."
+                                     edges, e.g. viscosity slider has nothing to do with water's \
+                                     viscosity despite what it says, advection term not yet \
+                                     implemented in spherical geometry, etc.\n\nPlanned features: \
+                                     realistic terrain (continents/sea floor/etc.), click to set \
+                                     off a tsunami, and more..."
                                 );
                             });
 
