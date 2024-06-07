@@ -7,6 +7,7 @@ workflow:
 pages:
   script:
     - curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+    - . "$HOME/.cargo/env"
     - rustup update
     - rustup target add wasm32-unknown-unknown
     - cd tsunami
