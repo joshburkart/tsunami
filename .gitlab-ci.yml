@@ -6,7 +6,7 @@ workflow:
 
 pages:
   script:
-    - sudo apt install rustup
+    - apt install rustup
     - rustup update
     - rustup target add wasm32-unknown-unknown
     - cd tsunami
