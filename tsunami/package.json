@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "prebuild": "wasm-pack build --target web --release"
+    "prebuild": "wasm-pack build --target web --release",
+    "postbuild": "cp coi-serviceworker.min.js dist/"
   },
   "devDependencies": {
     "vite": "^5.2.0"
