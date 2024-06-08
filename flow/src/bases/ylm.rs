@@ -1,5 +1,6 @@
-use crate::{bases::Basis, float_consts, ComplexFloat, Float};
 use ndarray as nd;
+
+use crate::{bases::Basis, float_consts, ComplexFloat, Float};
 
 pub struct SphericalHarmonicBasis {
     max_l: usize,
@@ -73,6 +74,7 @@ impl Basis for SphericalHarmonicBasis {
         assert_eq!(i, self.scalar_spectral_size());
         Self::SpectralScalarField { f_l_m }
     }
+
     fn vector_from_slice<'a>(&self, slice: &'a [ComplexFloat]) -> Self::SpectralVectorField {
         assert_eq!(self.vector_spectral_size(), slice.len());
         let split_point = slice.len() / 2;
@@ -93,6 +95,7 @@ impl Basis for SphericalHarmonicBasis {
         }
         assert_eq!(i, self.scalar_spectral_size());
     }
+
     fn vector_to_slice(&self, spectral: &Self::SpectralVectorField, slice: &mut [ComplexFloat]) {
         assert_eq!(self.vector_spectral_size(), slice.len());
         let scalar_spectral_size = self.scalar_spectral_size();
@@ -129,6 +132,7 @@ impl Basis for SphericalHarmonicBasis {
 
         f_mu_phi
     }
+
     fn vector_to_grid(&self, spectral: &VectorSphericalHarmonicField) -> nd::Array3<Float> {
         let Q_l_m_mu = &self.vector_spherical_harmonics.Q_l_m_mu;
         let iR_l_m_mu = &self.vector_spherical_harmonics.iR_l_m_mu;
@@ -190,6 +194,7 @@ impl Basis for SphericalHarmonicBasis {
         }
         SphericalHarmonicField { f_l_m }
     }
+
     fn vector_to_spectral(&self, grid: &nd::Array3<Float>) -> VectorSphericalHarmonicField {
         let mut f_comp_mu_m =
             nd::Array3::zeros((2, self.mu_gauss_legendre_quad.nodes.len(), self.max_l + 1));
@@ -241,11 +246,13 @@ impl Basis for SphericalHarmonicBasis {
             Phi: None,
         }
     }
+
     fn divergence(&self, spectral: &VectorSphericalHarmonicField) -> SphericalHarmonicField {
         SphericalHarmonicField {
             f_l_m: -&spectral.Psi.f_l_m * &self.Lambda_sq.slice(nd::s![.., nd::NewAxis]),
         }
     }
+
     fn vector_laplacian(
         &self,
         field: &VectorSphericalHarmonicField,
@@ -260,6 +267,7 @@ impl Basis for SphericalHarmonicBasis {
             }),
         }
     }
+
     fn vector_advection(
         &self,
         _grid: &nd::Array3<Float>,
@@ -322,9 +330,9 @@ impl std::ops::Mul<SphericalHarmonicField> for ComplexFloat {
 pub struct VectorSphericalHarmonicField {
     /// The $\mathbf{\Psi}$ spherical harmonic coefficients.
     Psi: SphericalHarmonicField,
-    /// The $\mathbf{\Phi}$ spherical harmonic coefficients, or [`None`] to indicate zero (as an
-    /// optimization, since e.g. the gradient of spherical harmonic field has zero $\mathbf{\Phi}$
-    /// component).
+    /// The $\mathbf{\Phi}$ spherical harmonic coefficients, or [`None`] to
+    /// indicate zero (as an optimization, since e.g. the gradient of
+    /// spherical harmonic field has zero $\mathbf{\Phi}$ component).
     Phi: Option<SphericalHarmonicField>,
 }
 
@@ -383,12 +391,14 @@ impl std::ops::Mul<VectorSphericalHarmonicField> for ComplexFloat {
 }
 
 struct VectorSphericalHarmonics {
-    /// Associated Legendre functions, evaluated on a grid, normalized as documented in
-    /// [`Self::compute_legendre_funcs`].
+    /// Associated Legendre functions, evaluated on a grid, normalized as
+    /// documented in [`Self::compute_legendre_funcs`].
     pub P_l_m_mu: nd::Array3<Float>,
-    /// First vector spherical harmonic function, normalized as per [`Self::P_l_m_mu`].
+    /// First vector spherical harmonic function, normalized as per
+    /// [`Self::P_l_m_mu`].
     pub Q_l_m_mu: nd::Array3<ComplexFloat>,
-    /// Second vector spherical harmonic function, normalized as per [`Self::P_l_m_mu`].
+    /// Second vector spherical harmonic function, normalized as per
+    /// [`Self::P_l_m_mu`].
     pub iR_l_m_mu: nd::Array3<ComplexFloat>,
 }
 
@@ -406,17 +416,18 @@ impl VectorSphericalHarmonics {
         }
     }
 
-    /// Compute the associated Legendre polynomials on a grid of input values up to a given max
-    /// order.
+    /// Compute the associated Legendre polynomials on a grid of input values up
+    /// to a given max order.
     ///
-    /// Uses the Legendre polynomial normalization geared towards simple normalized spherical
-    /// harmonic computation from: Schaeffer, Nathanaël. "Efficient spherical harmonic transforms
-    /// aimed at pseudospectral numerical simulations." Geochemistry, Geophysics, Geosystems 14.3
-    /// (2013): 751-758.
+    /// Uses the Legendre polynomial normalization geared towards simple
+    /// normalized spherical harmonic computation from: Schaeffer,
+    /// Nathanaël. "Efficient spherical harmonic transforms
+    /// aimed at pseudospectral numerical simulations." Geochemistry,
+    /// Geophysics, Geosystems 14.3 (2013): 751-758.
     ///
-    /// Note that eq. (2) from that paper erroneously includes a factor of $(-1)^m$, which is
-    /// inconsistent with the rest of its results. We do not include this Condon-Shortley phase
-    /// factor in this function.
+    /// Note that eq. (2) from that paper erroneously includes a factor of
+    /// $(-1)^m$, which is inconsistent with the rest of its results. We do
+    /// not include this Condon-Shortley phase factor in this function.
     fn compute_legendre_funcs(max_l: usize, mu_grid: &nd::Array1<Float>) -> nd::Array3<Float> {
         let a_lm = {
             let mut a_lm = nd::Array2::zeros((max_l + 1, max_l + 1));
@@ -494,11 +505,7 @@ impl VectorSphericalHarmonics {
         let mut R_l_m_mu = nd::Array::zeros(P_l_m_mu.raw_dim());
 
         let sqrt_i32 = |x: i32| {
-            if x > 0 {
-                (x as Float).sqrt()
-            } else {
-                0.
-            }
+            if x > 0 { (x as Float).sqrt() } else { 0. }
         };
 
         let max_l = P_l_m_mu.shape()[0] - 1;
@@ -520,11 +527,7 @@ impl VectorSphericalHarmonics {
                     let P_l_mm1 = if m > 0 {
                         P_l_m_mu[[l, m - 1, i]]
                     } else {
-                        if l > 0 {
-                            -P_l_m_mu[[l, 1, i]]
-                        } else {
-                            0.
-                        }
+                        if l > 0 { -P_l_m_mu[[l, 1, i]] } else { 0. }
                     };
                     let P_lm1_mp1 = if l > 0 {
                         if m < l - 1 {
@@ -590,10 +593,11 @@ impl GaussLegendreQuadrature {
 
 #[cfg(test)]
 mod test {
-    use super::*;
-    use crate::test_util::assert_all_close;
     use approx::assert_relative_eq;
     use float_consts::FRAC_1_PI;
+
+    use super::*;
+    use crate::test_util::assert_all_close;
 
     #[test]
     fn test_scalar_roundtrip_zeroth() {
@@ -731,8 +735,8 @@ mod test {
             }
         }
 
-        // Test that $\mathbf{\Psi}_{lm}$ is orthogonal to $\mathbf{\Psi}_{l'm}^*$ for $l \ne l'$
-        // and similarly with $\mathbf{\Phi}$.
+        // Test that $\mathbf{\Psi}_{lm}$ is orthogonal to $\mathbf{\Psi}_{l'm}^*$ for
+        // $l \ne l'$ and similarly with $\mathbf{\Phi}$.
         for l in [0, 3, 8] {
             for lp in [1, 2, 7] {
                 for m in 0..=l.min(lp) {

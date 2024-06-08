@@ -1,5 +1,4 @@
-use flow::float_consts::PI;
-use flow::{bases, physics, Float};
+use flow::{bases, float_consts::PI, physics, Float};
 use ndarray as nd;
 use numpy::IntoPyArray;
 use pyo3::prelude::*;
@@ -16,6 +15,7 @@ impl RectangularFields {
     pub fn height_py<'py>(&self, py: Python<'py>) -> Bound<'py, numpy::PyArray2<Float>> {
         self.height.clone().into_pyarray_bound(py)
     }
+
     #[getter]
     #[pyo3(name = "velocity")]
     pub fn velocity_py<'py>(&self, py: Python<'py>) -> Bound<'py, numpy::PyArray3<Float>> {
@@ -45,6 +45,7 @@ impl RectangularSolver {
             .clone()
             .into_pyarray_bound(py)
     }
+
     #[getter]
     pub fn y_axis<'py>(&self, py: Python<'py>) -> Bound<'py, numpy::PyArray1<Float>> {
         use bases::Basis;
@@ -65,17 +66,18 @@ pub fn bump_2d_spectral(
     use bases::Basis;
     let bump_size = 0.1;
 
-    // Want to generate a power so that a periodic "bump" is generated of width `bump_size`. Start
-    // from FWHM definition, given circumference = lengths[i]:
+    // Want to generate a power so that a periodic "bump" is generated of width
+    // `bump_size`. Start from FWHM definition, given circumference =
+    // lengths[i]:
     //
     // ```
-    // 1/2 = cos(pi * bump_size / lengths[i])^(2n)
+    // 1 / 2 = cos(pi * bump_size / lengths[i]) ^ (2n)
     // ```
     //
     // Solve for `n`:
     //
     // ```
-    // n = log(1/2) / (2 * log(cos(pi * bump_size / lengths[i])))
+    // n = log(1 / 2) / (2 * log(cos(pi * bump_size / lengths[i])))
     // ```
     let pow = |bump_size: Float, length: Float| {
         (0.5 as Float).ln() / (PI * (bump_size / length)).cos().ln() / 2.
@@ -120,23 +122,24 @@ pub fn bump_2d_spectral(
 //     };
 //     let static_geometry = geom::StaticGeometry::new(grid, &terrain_func);
 
-//     let initial_height = fields::AreaScalarField::new(static_geometry.grid(), |x, y| {
-//         // 0.1 * (x * PI / 5.).cos() + 1.
+//     let initial_height = fields::AreaScalarField::new(static_geometry.grid(),
+// |x, y| {         // 0.1 * (x * PI / 5.).cos() + 1.
 //         // -0.2 * (-((x - 2.5) / (0.3)).powi(6)).exp() + 0.8
-//         amplitude * (-((x - 1.) / (width)).powi(2)).exp() + 0.8 - terrain_func(x, y)
-//     });
+//         amplitude * (-((x - 1.) / (width)).powi(2)).exp() + 0.8 -
+// terrain_func(x, y)     });
 //     let initial_dynamic_geometry =
-//         geom::DynamicGeometry::new_from_height(static_geometry, &initial_height);
+//         geom::DynamicGeometry::new_from_height(static_geometry,
+// &initial_height);
 
 //     let mut problem = physics::Problem::default();
 //     problem.kinematic_viscosity = kinematic_viscosity;
-//     problem.horiz_velocity_boundary_conditions.x = fields::HorizBoundaryConditionPair {
-//         lower: fields::BoundaryCondition::NoPenetration,
-//         upper: fields::BoundaryCondition::NoPenetration,
-//     };
+//     problem.horiz_velocity_boundary_conditions.x =
+// fields::HorizBoundaryConditionPair {         lower:
+// fields::BoundaryCondition::NoPenetration,         upper:
+// fields::BoundaryCondition::NoPenetration,     };
 
-//     let velocity = fields::VolVectorField::new(&initial_dynamic_geometry, |_, _, _| {
-//         Vector3::new(0., 0., 0.)
+//     let velocity = fields::VolVectorField::new(&initial_dynamic_geometry, |_,
+// _, _| {         Vector3::new(0., 0., 0.)
 //     });
 //     let implicit_solver = problem.make_implicit_solver();
 //     // let implicit_solver = crate::implicit::ImplicitSolver {

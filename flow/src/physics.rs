@@ -7,24 +7,31 @@ pub struct FieldsSnapshot<B: bases::Basis> {
     pub fields: Fields<nd::OwnedRepr<ComplexFloat>, B>,
 }
 
-pub fn interp_between<B: bases::Basis>(
-    fields_prev: &FieldsSnapshot<B>,
-    fields_next: &FieldsSnapshot<B>,
-    t_between: Float,
-) -> FieldsSnapshot<B> {
-    assert!(fields_prev.t <= t_between);
-    assert!(t_between <= fields_next.t);
+pub fn interp_between<'a, B: bases::Basis>(
+    fields_prev: &'a FieldsSnapshot<B>,
+    fields_next: &'a FieldsSnapshot<B>,
+    num: usize,
+) -> impl Iterator<Item = FieldsSnapshot<B>> + 'a {
+    assert!(fields_prev.t <= fields_next.t);
 
     let delta_t = fields_next.t - fields_prev.t;
-    let weight_prev = (fields_next.t - t_between) / delta_t;
-    let weight_next = (t_between - fields_prev.t) / delta_t;
+    (0..num).map(move |substep| {
+        if substep == 0 {
+            fields_prev.clone()
+        } else {
+            let t = fields_prev.t + delta_t * (substep as Float) / (num as Float);
 
-    let storage_between =
-        &fields_prev.fields.storage * weight_prev + &fields_next.fields.storage * weight_next;
-    FieldsSnapshot {
-        t: t_between,
-        fields: Fields::new_owned(fields_prev.fields.basis.clone(), storage_between),
-    }
+            let weight_prev = (fields_next.t - t) / delta_t;
+            let weight_next = (t - fields_prev.t) / delta_t;
+
+            let storage_between = &fields_prev.fields.storage * weight_prev
+                + &fields_next.fields.storage * weight_next;
+            FieldsSnapshot {
+                t,
+                fields: Fields::new_owned(fields_prev.fields.basis.clone(), storage_between),
+            }
+        }
+    })
 }
 
 impl<B: bases::Basis> Clone for FieldsSnapshot<B> {
@@ -86,15 +93,18 @@ impl<S: RawComplexFloatData, B: bases::Basis> Fields<S, B> {
         self.basis
             .scalar_from_slice(&self.storage.as_slice().unwrap()[..scalar_size])
     }
+
     pub fn height_grid(&self) -> nd::Array2<Float> {
         let spectral = self.height_spectral();
         self.basis.scalar_to_grid(&spectral)
     }
+
     pub fn velocity_spectral(&self) -> B::SpectralVectorField {
         let scalar_size = self.basis.scalar_spectral_size();
         self.basis
             .vector_from_slice(&self.storage.as_slice().unwrap()[scalar_size..])
     }
+
     pub fn velocity_grid(&self) -> nd::Array3<Float> {
         let spectral = self.velocity_spectral();
         self.basis.vector_to_grid(&spectral)
@@ -108,6 +118,7 @@ impl<S: RawComplexFloatData + nd::DataMut, B: bases::Basis> Fields<S, B> {
             &mut self.storage.as_slice_mut().unwrap()[..self.basis.scalar_spectral_size()],
         )
     }
+
     pub fn assign_velocity(&mut self, velocity: &B::SpectralVectorField) {
         self.basis.vector_to_slice(
             velocity,
@@ -236,15 +247,20 @@ where
     pub fn problem(&self) -> &Problem<B> {
         &self.problem
     }
+
     pub fn problem_mut(&mut self) -> &mut Problem<B> {
         &mut self.problem
     }
 
-    pub fn integrate(&mut self) -> FieldsSnapshot<B> {
-        let odeint::Solution { t, y } = self.integrator.integrate(&self.problem);
+    pub fn fields_snapshot(&self) -> FieldsSnapshot<B> {
+        let odeint::Solution { t, y } = self.integrator.current_solution();
         FieldsSnapshot {
             t,
             fields: Fields::new_owned(self.problem.basis.clone(), y.clone()),
         }
+    }
+
+    pub fn integrate(&mut self) {
+        self.integrator.integrate(&self.problem);
     }
 }

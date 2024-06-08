@@ -77,13 +77,21 @@ where
     pub fn abs_tol(self, abs_tol: Float) -> Self {
         Self { abs_tol, ..self }
     }
+
     pub fn rel_tol(self, rel_tol: Float) -> Self {
         Self { rel_tol, ..self }
     }
 
-    pub fn integrate(&mut self, system: &S) -> Solution<'_, S::Value> {
-        // Put dummy values for these arrays to avoid violating borrowing rules. We'll swap the
-        // dummies out at the end.
+    pub fn current_solution(&self) -> Solution<'_, S::Value> {
+        Solution {
+            t: self.t,
+            y: &self.y,
+        }
+    }
+
+    pub fn integrate(&mut self, system: &S) {
+        // Put dummy values for these arrays to avoid violating borrowing rules. We'll
+        // swap the dummies out at the end.
         let mut y = nd::Array::zeros(0);
         let mut y_half_step = nd::Array::zeros(0);
         let mut y_full_step = nd::Array::zeros(0);
@@ -123,11 +131,6 @@ where
         std::mem::swap(&mut y, &mut self.y);
         std::mem::swap(&mut y_half_step, &mut self.y_half_step);
         std::mem::swap(&mut y_full_step, &mut self.y_full_step);
-
-        Solution {
-            t: self.t,
-            y: &self.y,
-        }
     }
 
     /// Take a single step. Only mutable since it uses the scratch `ki` arrays.
@@ -227,7 +230,8 @@ mod tests {
         .rel_tol(0.);
 
         loop {
-            let Solution { t, y } = integrator.integrate(&system);
+            integrator.integrate(&system);
+            let Solution { t, y } = integrator.current_solution();
             println!("{t:?}");
             if t >= 51.7 {
                 assert!(t < 55., "{:?}", t);

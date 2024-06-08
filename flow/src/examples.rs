@@ -1,6 +1,4 @@
-use crate::{bases, physics, Float};
-
-use crate::float_consts::PI;
+use crate::{bases, float_consts::PI, physics, Float};
 
 pub fn bump_2d_spectral(
     num_points: usize,
@@ -13,16 +11,17 @@ pub fn bump_2d_spectral(
     let lengths = [5., 15.];
     let bump_size = 0.3;
 
-    // Want to generate a power so that a periodic "bump" is generated of width `bump_size`. Start from FWHM definition:
+    // Want to generate a power so that a periodic "bump" is generated of width
+    // `bump_size`. Start from FWHM definition:
     //
     // ```
-    // 1/2 = sin(pi * (1/2 - bump_size / lengths[i]))^(2n)
+    // 1 / 2 = sin(pi * (1 / 2 - bump_size / lengths[i])) ^ (2n)
     // ```
     //
     // Solve for `n`:
     //
     // ```
-    // n = log(1/2) / (2 * log(sin(pi * (1/2 - bump_size / lengths[i]))))
+    // n = log(1 / 2) / (2 * log(sin(pi * (1 / 2 - bump_size / lengths[i]))))
     // ```
     let pow = |bump_size: Float, length: Float| {
         (0.5 as Float).ln() / (PI * (0.5 - bump_size / length)).sin().ln() / 2.

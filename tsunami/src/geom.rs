@@ -1,6 +1,7 @@
-use crate::render::{Renderable, SphereRenderable, TorusRenderable};
 use flow::{float_consts, Float};
 use ndarray as nd;
+
+use crate::render::{Renderable, SphereRenderable, TorusRenderable};
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum GeometryType {
@@ -23,24 +24,25 @@ impl Geometry {
         })
     }
 
-    pub fn integrate(&mut self) -> Renderable {
-        match &mut self.0 {
-            GeometryImpl::Sphere(sphere) => Renderable::Sphere(SphereRenderable {
-                base_height: sphere.base_height,
-                mu_grid: sphere.mu_grid.clone(),
-                phi_grid: sphere.phi_grid.clone(),
-                fields_snapshot: sphere.solver.integrate(),
-            }),
-            GeometryImpl::Torus(torus) => Renderable::Torus(TorusRenderable {
-                base_height: torus.base_height,
-                major_radius: torus.major_radius,
-                minor_radius: torus.minor_radius,
-                theta_grid: torus.theta_grid.clone(),
-                phi_grid: torus.phi_grid.clone(),
-                fields_snapshot: torus.solver.integrate(),
-            }),
+    pub fn make_renderables(&self, num: usize) -> Vec<Renderable> {
+        match &self.0 {
+            GeometryImpl::Sphere(sphere) => sphere
+                .make_renderables(num)
+                .map(Renderable::Sphere)
+                .collect(),
+            GeometryImpl::Torus(torus) => {
+                torus.make_renderables(num).map(Renderable::Torus).collect()
+            }
         }
     }
+
+    pub fn integrate(&mut self) {
+        match &mut self.0 {
+            GeometryImpl::Sphere(sphere) => sphere.integrate(),
+            GeometryImpl::Torus(torus) => torus.integrate(),
+        }
+    }
+
     pub fn set_kinematic_viscosity(&mut self, value: Float) {
         match &mut self.0 {
             GeometryImpl::Sphere(sphere) => sphere.solver.problem_mut().kinematic_viscosity = value,
@@ -53,6 +55,8 @@ struct SphereGeometry {
     base_height: Float,
 
     solver: flow::physics::Solver<flow::bases::ylm::SphericalHarmonicBasis>,
+    curr_fields_snapshot: flow::physics::FieldsSnapshot<flow::bases::ylm::SphericalHarmonicBasis>,
+    prev_fields_snapshot: flow::physics::FieldsSnapshot<flow::bases::ylm::SphericalHarmonicBasis>,
 
     mu_grid: nd::Array1<Float>,
     phi_grid: nd::Array1<Float>,
@@ -63,6 +67,8 @@ impl SphereGeometry {
         use flow::bases::Basis;
 
         let (base_height, solver) = Self::make_solver(resolution_level);
+        let prev_fields_snapshot = solver.fields_snapshot();
+        let curr_fields_snapshot = solver.fields_snapshot();
 
         let [mu_grid, phi_grid] = solver.problem().basis.axes();
 
@@ -70,20 +76,40 @@ impl SphereGeometry {
             base_height,
 
             solver,
+            curr_fields_snapshot,
+            prev_fields_snapshot,
 
             mu_grid,
             phi_grid,
         }
     }
 
-    pub fn make_solver(
+    pub fn integrate(&mut self) {
+        std::mem::swap(
+            &mut self.prev_fields_snapshot,
+            &mut self.curr_fields_snapshot,
+        );
+        self.solver.integrate();
+        self.curr_fields_snapshot = self.solver.fields_snapshot();
+    }
+
+    pub fn make_renderables(&self, num: usize) -> impl Iterator<Item = SphereRenderable> + '_ {
+        flow::physics::interp_between(&self.prev_fields_snapshot, &self.curr_fields_snapshot, num)
+            .map(|fields_snapshot| SphereRenderable {
+                base_height: self.base_height,
+                mu_grid: self.mu_grid.clone(),
+                phi_grid: self.phi_grid.clone(),
+                height_array: fields_snapshot.fields.height_grid(),
+            })
+    }
+
+    fn make_solver(
         resolution_level: u32,
     ) -> (
         Float,
         flow::physics::Solver<flow::bases::ylm::SphericalHarmonicBasis>,
     ) {
-        use flow::bases::Basis;
-        use flow::float_consts::PI;
+        use flow::{bases::Basis, float_consts::PI};
 
         let max_l = 2usize.pow(resolution_level);
         let base_height = 3.;
@@ -93,17 +119,17 @@ impl SphereGeometry {
         let grav_accel = 9.8;
 
         // TODO DRY
-        // Want to generate a power so that a periodic "bump" is generated of width `bump_size`. Start
-        // from FWHM definition:
+        // Want to generate a power so that a periodic "bump" is generated of width
+        // `bump_size`. Start from FWHM definition:
         //
         // ```
-        // 1/2 = sin(pi * (1/2 - bump_size / lengths[i]))^(2n)
+        // 1 / 2 = sin(pi * (1 / 2 - bump_size / lengths[i])) ^ (2n)
         // ```
         //
         // Solve for `n`:
         //
         // ```
-        // n = log(1/2) / (2 * log(sin(pi * (1/2 - bump_size / lengths[i]))))
+        // n = log(1 / 2) / (2 * log(sin(pi * (1 / 2 - bump_size / lengths[i]))))
         // ```
         let pow = |bump_size: flow::Float, length: flow::Float| {
             (0.5 as flow::Float).ln() / (PI * (0.5 - bump_size / length)).sin().ln() / 2.
@@ -133,8 +159,8 @@ impl SphereGeometry {
             terrain_height,
             grav_accel,
             kinematic_viscosity,
-            rtol: 1e-3,
-            atol: 1e-7,
+            rtol: 1e-5,
+            atol: 1e-8,
         };
         (
             base_height,
@@ -153,6 +179,10 @@ struct TorusGeometry {
     phi_grid: nd::Array1<Float>,
 
     solver: flow::physics::Solver<flow::bases::fourier::RectangularPeriodicBasis>,
+    prev_fields_snapshot:
+        flow::physics::FieldsSnapshot<flow::bases::fourier::RectangularPeriodicBasis>,
+    curr_fields_snapshot:
+        flow::physics::FieldsSnapshot<flow::bases::fourier::RectangularPeriodicBasis>,
 }
 
 impl TorusGeometry {
@@ -160,6 +190,8 @@ impl TorusGeometry {
         use flow::bases::Basis;
 
         let (base_height, solver) = Self::make_solver(resolution_level);
+        let prev_fields_snapshot = solver.fields_snapshot();
+        let curr_fields_snapshot = prev_fields_snapshot.clone();
 
         let axes = solver.problem().basis.axes();
 
@@ -178,7 +210,30 @@ impl TorusGeometry {
             phi_grid,
 
             solver,
+            prev_fields_snapshot,
+            curr_fields_snapshot,
         }
+    }
+
+    pub fn integrate(&mut self) {
+        std::mem::swap(
+            &mut self.prev_fields_snapshot,
+            &mut self.curr_fields_snapshot,
+        );
+        self.solver.integrate();
+        self.curr_fields_snapshot = self.solver.fields_snapshot();
+    }
+
+    pub fn make_renderables(&self, num: usize) -> impl Iterator<Item = TorusRenderable> + '_ {
+        flow::physics::interp_between(&self.prev_fields_snapshot, &self.curr_fields_snapshot, num)
+            .map(|fields_snapshot| TorusRenderable {
+                base_height: self.base_height,
+                theta_grid: self.theta_grid.clone(),
+                phi_grid: self.phi_grid.clone(),
+                major_radius: self.major_radius,
+                minor_radius: self.minor_radius,
+                height_array: fields_snapshot.fields.height_grid(),
+            })
     }
 
     fn make_solver(
@@ -187,8 +242,7 @@ impl TorusGeometry {
         Float,
         flow::physics::Solver<flow::bases::fourier::RectangularPeriodicBasis>,
     ) {
-        use flow::bases::Basis;
-        use flow::float_consts::PI;
+        use flow::{bases::Basis, float_consts::PI};
 
         let num_points = [
             2usize.pow(resolution_level + 1),
@@ -200,17 +254,17 @@ impl TorusGeometry {
         let bump_size = 0.15;
         let kinematic_viscosity = 1e-2;
 
-        // Want to generate a power so that a periodic "bump" is generated of width `bump_size`. Start
-        // from FWHM definition:
+        // Want to generate a power so that a periodic "bump" is generated of width
+        // `bump_size`. Start from FWHM definition:
         //
         // ```
-        // 1/2 = sin(pi * (1/2 - bump_size / lengths[i]))^(2n)
+        // 1 / 2 = sin(pi * (1 / 2 - bump_size / lengths[i])) ^ (2n)
         // ```
         //
         // Solve for `n`:
         //
         // ```
-        // n = log(1/2) / (2 * log(sin(pi * (1/2 - bump_size / lengths[i]))))
+        // n = log(1 / 2) / (2 * log(sin(pi * (1 / 2 - bump_size / lengths[i]))))
         // ```
         let pow = |bump_size: flow::Float, length: flow::Float| {
             (0.5 as flow::Float).ln() / (PI * (0.5 - bump_size / length)).sin().ln() / 2.

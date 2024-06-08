@@ -1,8 +1,9 @@
+use ndarray as nd;
+
 use crate::{
     bases::{Basis, FftDimension},
     float_consts, ComplexFloat, Float, RawFloatData,
 };
-use ndarray as nd;
 
 pub struct RectangularPeriodicBasis {
     pub num_points: [usize; 2],
@@ -140,6 +141,7 @@ impl Basis for RectangularPeriodicBasis {
             .unwrap()
             .to_owned()
     }
+
     fn vector_from_slice<'a>(&self, slice: &'a [ComplexFloat]) -> Self::SpectralVectorField {
         nd::ArrayView3::from_shape((2, self.num_points[0], self.rfft_output_size), slice)
             .unwrap()
@@ -152,6 +154,7 @@ impl Basis for RectangularPeriodicBasis {
                 .unwrap();
         array_mut.assign(spectral);
     }
+
     fn vector_to_slice(&self, spectral: &Self::SpectralVectorField, slice: &mut [ComplexFloat]) {
         let mut array_mut =
             nd::ArrayViewMut3::from_shape((2, self.num_points[0], self.rfft_output_size), slice)
@@ -162,6 +165,7 @@ impl Basis for RectangularPeriodicBasis {
     fn scalar_to_grid(&self, spectral: &Self::SpectralScalarField) -> nd::Array2<Float> {
         Self::to_grid(&self, spectral)
     }
+
     fn vector_to_grid(&self, spectral: &Self::SpectralVectorField) -> nd::Array3<Float> {
         Self::to_grid(&self, spectral)
     }
@@ -169,6 +173,7 @@ impl Basis for RectangularPeriodicBasis {
     fn scalar_to_spectral(&self, grid: &nd::Array2<Float>) -> Self::SpectralScalarField {
         Self::to_spectral(&self, grid)
     }
+
     fn vector_to_spectral(&self, grid: &nd::Array3<Float>) -> Self::SpectralVectorField {
         Self::to_spectral(&self, grid)
     }
@@ -176,12 +181,15 @@ impl Basis for RectangularPeriodicBasis {
     fn gradient(&self, spectral: &Self::SpectralScalarField) -> Self::SpectralVectorField {
         &spectral.slice(nd::s![nd::NewAxis, .., ..]) * &self.wavenumbers
     }
+
     fn divergence(&self, spectral: &Self::SpectralVectorField) -> Self::SpectralScalarField {
         (spectral * &self.wavenumbers).sum_axis(nd::Axis(0))
     }
+
     fn vector_laplacian(&self, spectral: &Self::SpectralVectorField) -> Self::SpectralVectorField {
         -spectral * &self.wavenumbers_sq
     }
+
     fn vector_advection(
         &self,
         grid: &nd::Array3<Float>,
@@ -201,11 +209,10 @@ impl Basis for RectangularPeriodicBasis {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
-    use crate::test_util::assert_all_close;
-
     use float_consts::PI;
+
+    use super::*;
+    use crate::test_util::assert_all_close;
 
     #[test]
     fn test_gradient() {

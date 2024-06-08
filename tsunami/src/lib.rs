@@ -11,27 +11,88 @@ pub use wasm_bindgen_rayon::init_thread_pool;
 
 #[derive(Clone)]
 struct Parameters {
-    pub kinematic_viscosity_rel_to_water: Float,
-    pub height_exaggeration_factor: Float,
+    pub geometry_type: geom::GeometryType,
     pub resolution_level: u32,
+
+    pub kinematic_viscosity_rel_to_water: Float,
+
+    pub frames_per_step: usize,
+
+    pub height_exaggeration_factor: Float,
     pub show_point_cloud: bool,
 }
 
 impl Default for Parameters {
     fn default() -> Self {
         Self {
-            kinematic_viscosity_rel_to_water: 1.,
-            height_exaggeration_factor: 40.,
+            geometry_type: geom::GeometryType::Sphere,
             resolution_level: 6,
+            kinematic_viscosity_rel_to_water: 1.,
+            frames_per_step: 3,
+            height_exaggeration_factor: 40.,
             show_point_cloud: false,
         }
     }
 }
 
-#[wasm_bindgen(start)]
+fn physics_loop(
+    mut geometry: geom::Geometry,
+    shared_params: std::sync::Arc<std::sync::RwLock<Parameters>>,
+    renderable_sender: std::sync::mpsc::SyncSender<render::Renderable>,
+) {
+    // Initialize.
+    log::info!("Initializing physics thread");
+    let mut params = { shared_params.read().unwrap().clone() };
+
+    // Physics loop.
+    loop {
+        // Send along renderable to rendering loop.
+        {
+            for renderable in geometry
+                .make_renderables(params.frames_per_step)
+                .into_iter()
+            {
+                renderable_sender.send(renderable).unwrap();
+            }
+        }
+
+        // Check for updated parameters.
+        {
+            let new_params = shared_params.read().unwrap();
+            if params.geometry_type != new_params.geometry_type
+                || params.resolution_level != new_params.resolution_level
+            {
+                geometry =
+                    geom::Geometry::new(new_params.geometry_type, new_params.resolution_level);
+            }
+            params = new_params.clone();
+
+            geometry.set_kinematic_viscosity(1e-3 * params.kinematic_viscosity_rel_to_water); // TODO
+        }
+
+        // Take physics timestep.
+        geometry.integrate();
+        log::info!("  Took physics timestep");
+    }
+}
+
+#[wasm_bindgen]
 pub async fn run() {
     console_log::init().unwrap();
-    log::info!("{}", rayon::current_num_threads());
+
+    log::info!(
+        "Spawning threads, {} available in pool",
+        rayon::current_num_threads()
+    );
+
+    let mut params = Parameters::default();
+    let geometry = geom::Geometry::new(params.geometry_type, params.resolution_level);
+    let mut renderable = geometry.make_renderables(1).pop().unwrap();
+    let (renderable_sender, renderable_reader) = std::sync::mpsc::sync_channel(5);
+    let shared_params_write = std::sync::Arc::new(std::sync::RwLock::new(params.clone()));
+    let shared_params_read = shared_params_write.clone();
+
+    log::info!("Initializing rendering");
 
     let window = Window::new(WindowSettings {
         title: "Tsunami Playground".to_string(),
@@ -52,11 +113,6 @@ pub async fn run() {
     );
     let mut control = OrbitControl::new(*camera.target(), 5. / 3., 5.);
 
-    let mut params = Parameters::default();
-
-    let mut geometry_type = geom::GeometryType::Sphere;
-    let mut geometry = geom::Geometry::new(geometry_type, params.resolution_level);
-
     let mut gui = GUI::new(&context);
     let mut fonts = egui::FontDefinitions::default();
     fonts.font_data.insert(
@@ -70,8 +126,6 @@ pub async fn run() {
         .insert(0, "Roboto".to_owned());
     gui.context().set_fonts(fonts);
     let mut commonmark_cache = egui_commonmark::CommonMarkCache::default();
-
-    let mut frame_time_history = egui::util::History::new(50..1000, 500.);
 
     macro_rules! load_skybox {
         ($($path:literal),+) => {
@@ -103,9 +157,11 @@ pub async fn run() {
         AmbientLight::new_with_environment(&context, 20.0, Srgba::WHITE, skybox.texture());
     let directional = DirectionalLight::new(&context, 5.0, Srgba::WHITE, &vec3(-1.0, -1.0, -1.0));
 
-    let rendering = geometry
-        .integrate()
-        .render(params.height_exaggeration_factor);
+    // let mut render_sim_time = 0.;
+    let mut wall_time_per_render_sec = 0.;
+
+    let rendering = renderable.make_rendering_data(params.height_exaggeration_factor);
+
     let mut mesh_model = Gm::new(
         Mesh::new(&context, &rendering.mesh.into()),
         PhysicalMaterial::new(
@@ -138,27 +194,29 @@ pub async fn run() {
         material: ColorMaterial::default(),
     };
 
-    let mut reset = false;
-
+    rayon::spawn(move || physics_loop(geometry, shared_params_read, renderable_sender));
     window.render_loop(move |mut frame_input| {
-        if reset {
-            geometry = geom::Geometry::new(geometry_type, params.resolution_level);
-            reset = false;
+        log::info!("  Rendering cycle");
+
+        // let start_time = std::time::Instant::now();
+
+        if let Ok(mut shared_params) = shared_params_write.try_write() {
+            *shared_params = params.clone();
         }
 
-        geometry.set_kinematic_viscosity(1e-3 * params.kinematic_viscosity_rel_to_water); // TODO
-        let rendering = geometry
-            .integrate()
-            .render(params.height_exaggeration_factor);
+        if let Ok(new_renderable) = renderable_reader.try_recv() {
+            renderable = new_renderable;
+        }
+        let rendering_data = renderable.make_rendering_data(params.height_exaggeration_factor);
 
         {
-            mesh_model.geometry = Mesh::new(&context, &rendering.mesh.into());
+            mesh_model.geometry = Mesh::new(&context, &rendering_data.mesh.into());
 
             if params.show_point_cloud {
                 point_cloud_model.geometry = InstancedMesh::new(
                     &context,
                     &PointCloud {
-                        positions: Positions::F32(rendering.points),
+                        positions: Positions::F32(rendering_data.points),
                         colors: None,
                     }
                     .into(),
@@ -200,19 +258,16 @@ pub async fn run() {
                             .show(ui, |ui| {
                                 ui.label(egui::RichText::new("Geometry").strong());
                                 ui.horizontal(|ui| {
-                                    reset |= ui
-                                        .radio_value(
-                                            &mut geometry_type,
-                                            geom::GeometryType::Sphere,
-                                            "Sphere",
-                                        )
-                                        .changed()
-                                        | ui.radio_value(
-                                            &mut geometry_type,
-                                            geom::GeometryType::Torus,
-                                            "Torus",
-                                        )
-                                        .changed();
+                                    ui.radio_value(
+                                        &mut params.geometry_type,
+                                        geom::GeometryType::Sphere,
+                                        "Sphere",
+                                    );
+                                    ui.radio_value(
+                                        &mut params.geometry_type,
+                                        geom::GeometryType::Torus,
+                                        "Torus",
+                                    );
                                 });
                                 ui.add_space(10.);
 
@@ -245,15 +300,18 @@ pub async fn run() {
                                 ui.add_space(10.);
 
                                 ui.label(egui::RichText::new("Performance").strong());
+                                ui.add(
+                                    egui::Slider::new(&mut params.frames_per_step, 1..=100)
+                                        .text("frames per time step"),
+                                );
                                 ui.horizontal(|ui| {
                                     for n in 5..=8 {
-                                        reset |= ui
-                                            .radio_value(
-                                                &mut params.resolution_level,
-                                                n,
-                                                format!("{}", 2i32.pow(n)),
-                                            )
-                                            .changed();
+                                        ui.radio_value(
+                                            &mut params.resolution_level,
+                                            n,
+                                            format!("{}", 2i32.pow(n)),
+                                        )
+                                        .changed();
                                     }
                                     ui.label("num subdivisions");
                                 });
@@ -263,9 +321,14 @@ pub async fn run() {
                                 //         .text("time step")
                                 //         .suffix(" s"),
                                 // );
+                                // ui.label(format!(
+                                //     "{:.0} ms/physics update, {:.0} ms/render",
+                                //     wall_time_per_physics_step_sec * 1000.,
+                                //     wall_time_per_render_sec * 1000.
+                                // ));
                                 ui.label(format!(
-                                    "{:.0} ms/time step",
-                                    frame_time_history.average().unwrap_or(0.)
+                                    "{:.0} ms/render",
+                                    wall_time_per_render_sec * 1000.
                                 ));
                             });
 
@@ -302,10 +365,9 @@ pub async fn run() {
             .write(|| gui.render())
             .unwrap();
 
-        frame_time_history.add(
-            frame_input.accumulated_time,
-            frame_input.elapsed_time as f32,
-        );
+        // Exponential moving average.
+        wall_time_per_render_sec =
+            0.5 * (wall_time_per_render_sec + frame_input.elapsed_time / 1000.);
 
         FrameOutput::default()
     });

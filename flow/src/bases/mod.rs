@@ -1,7 +1,8 @@
 #![allow(non_snake_case)]
 
-use crate::{ComplexFloat, Float};
 use ndarray as nd;
+
+use crate::{ComplexFloat, Float};
 pub mod fourier;
 pub mod ylm;
 

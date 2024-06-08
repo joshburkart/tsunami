@@ -1,6 +1,6 @@
-use crate::Float;
-
 use ndarray as nd;
+
+use crate::Float;
 
 pub struct AllCloseAssertion<'a, 'b, V, D: nd::Dimension>
 where
@@ -32,15 +32,18 @@ where
         self.rel_tol = rel_tol;
         self
     }
+
     pub fn with_abs_tol(mut self, abs_tol: Float) -> Self {
         self.abs_tol = abs_tol;
         self
     }
+
     #[allow(dead_code)]
     pub fn with_max_mismatching_elements(mut self, max_mismatching_elements: usize) -> Self {
         self.max_mismatching_elements = max_mismatching_elements;
         self
     }
+
     pub fn with_print_ratio(mut self, print_ratio: bool) -> Self {
         self.print_ratio = print_ratio;
         self
