@@ -379,7 +379,7 @@ pub async fn run() {
                                 Tech stack: Rust/Wasm/WebGL/[`egui`](https://www.egui.rs/)/\
                                 [`three-d`](https://github.com/asny/three-d).\n\
                                 \n\
-                                By Josh Burkart: [repo](https://gitlab.com/joshburkart/flow)."
+                                By Josh Burkart: [repo](https://github.com/joshburkart/tsunami)."
                             );
                         });
                     });
