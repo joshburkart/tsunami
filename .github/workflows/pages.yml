@@ -24,7 +24,6 @@ jobs:
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
-    runs-on: ubuntu-latest
     steps:
       - name: Check out Repo
         uses: actions/checkout@v4
@@ -42,12 +41,12 @@ jobs:
           cd tsunami &&
           npm install &&
           npm run build
-      - name: Setup Pages
+      - name: Set up Pages
         uses: actions/configure-pages@v5
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
           path: 'tsunami/dist'
-      - name: Deploy to GitHub Pages
+      - name: Deploy to Pages
         id: deployment
         uses: actions/deploy-pages@v4
