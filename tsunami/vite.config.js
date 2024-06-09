@@ -18,6 +18,6 @@ export default defineConfig({
     build: {
         target: 'esnext'
     },
-    base: 'https://joshburkart.gitlab.io/flow',
+    base: 'https://joshburkart.github.io/tsunami',
     plugins: [viteHeaderPlugin],
 });
