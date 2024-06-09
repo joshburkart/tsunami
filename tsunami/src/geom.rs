@@ -43,6 +43,57 @@ impl Geometry {
         }
     }
 
+    pub fn trigger_earthquake(&mut self, earthquake_position: three_d::Vec3) {
+        use flow::bases::Basis;
+
+        match &mut self.0 {
+            GeometryImpl::Sphere(sphere) => {
+                use three_d::InnerSpace;
+
+                let basis = sphere.solver.problem().basis.clone();
+                let mut fields = sphere.solver.fields_mut();
+                let mut new_height = fields.height_grid().to_owned();
+
+                // Want to generate a power so that a "bump" is generated of half-angle
+                // `half_angle_rad`. Start from FWHM definition:
+                //
+                // ```
+                // 1 / 2 = cos(half angle) ^ (2n)
+                // ```
+                //
+                // Solve for `n`:
+                //
+                // ```
+                // n = log(1 / 2) / (2 * log(cos(half angle)))
+                // ```
+                let pow = |half_angle_rad: Float| {
+                    ((0.5 as Float).ln() / half_angle_rad.cos().ln() / 2.) as f32
+                };
+                log::info!("Setting off tsunami");
+                let click_direction = earthquake_position.normalize();
+                new_height = &new_height
+                    - &basis.make_scalar(|mu, phi| {
+                        let cos_theta = mu as f32;
+                        let sin_theta = (1. - cos_theta.powi(2)).sqrt() as f32;
+                        let cos_phi = phi.cos() as f32;
+                        let sin_phi = phi.sin() as f32;
+                        let point_direction =
+                            three_d::Vec3::new(sin_theta * cos_phi, sin_theta * sin_phi, cos_theta);
+                        0.003
+                            * point_direction
+                                .dot(click_direction)
+                                .max(0.)
+                                .powi(2)
+                                .powf(pow(2.5 * float_consts::PI / 180.))
+                                as Float
+                    });
+
+                fields.assign_height(&basis.scalar_to_spectral(&new_height));
+            }
+            _ => {}
+        }
+    }
+
     pub fn set_kinematic_viscosity(&mut self, value: Float) {
         match &mut self.0 {
             GeometryImpl::Sphere(sphere) => sphere.solver.problem_mut().kinematic_viscosity = value,
@@ -109,50 +160,19 @@ impl SphereGeometry {
         Float,
         flow::physics::Solver<flow::bases::ylm::SphericalHarmonicBasis>,
     ) {
-        use flow::{bases::Basis, float_consts::PI};
+        use flow::bases::Basis;
 
         let max_l = 2usize.pow(resolution_level);
         let base_height = 3.;
-        let amplitude = 0.01;
-        let bump_size = 0.01;
         let kinematic_viscosity = 1e-4; // TODO
         let grav_accel = 9.8;
 
-        // TODO DRY
-        // Want to generate a power so that a periodic "bump" is generated of width
-        // `bump_size`. Start from FWHM definition:
-        //
-        // ```
-        // 1 / 2 = sin(pi * (1 / 2 - bump_size / lengths[i])) ^ (2n)
-        // ```
-        //
-        // Solve for `n`:
-        //
-        // ```
-        // n = log(1 / 2) / (2 * log(sin(pi * (1 / 2 - bump_size / lengths[i]))))
-        // ```
-        let pow = |bump_size: flow::Float, length: flow::Float| {
-            (0.5 as flow::Float).ln() / (PI * (0.5 - bump_size / length)).sin().ln() / 2.
-        };
         let basis = std::sync::Arc::new(flow::bases::ylm::SphericalHarmonicBasis::new(max_l));
         let terrain_height = basis.scalar_to_spectral(&basis.make_scalar(|_, _| 1.));
         let mut initial_fields = flow::physics::Fields::zeros(basis.clone());
-        let initial_height_grid = basis.make_scalar(|mu, phi| {
-            base_height
-                + amplitude
-                    * ((mu.acos() + float_consts::PI / 4.)
-                        .sin()
-                        .max(0.)
-                        .powi(2)
-                        .powf(pow(bump_size, 1.))
-                        * phi.sin().max(0.).powi(2).powf(pow(bump_size, 1.))
-                        + (mu.acos() - float_consts::PI / 4.)
-                            .sin()
-                            .max(0.)
-                            .powi(2)
-                            .powf(pow(bump_size, 1.))
-                            * phi.cos().max(0.).powi(2).powf(pow(bump_size, 1.)))
-        });
+        // TODO shouldn't need perturbation
+        let initial_height_grid =
+            basis.make_scalar(|mu, phi| base_height + 1e-5 * mu.powi(2) * phi.cos().powi(2));
         initial_fields.assign_height(&basis.scalar_to_spectral(&initial_height_grid));
         let problem = flow::physics::Problem {
             basis,
@@ -251,7 +271,7 @@ impl TorusGeometry {
         let lengths = [15., 5.];
         let base_height = 5.;
         let amplitude = base_height * 0.2;
-        let bump_size = 0.15;
+        let bump_size = 0.1;
         let kinematic_viscosity = 1e-2;
 
         // Want to generate a power so that a periodic "bump" is generated of width
@@ -276,7 +296,7 @@ impl TorusGeometry {
         let mut initial_fields = flow::physics::Fields::zeros(basis.clone());
         initial_fields.assign_height(&basis.scalar_to_spectral(&basis.make_scalar(|x, y| {
             base_height
-                + amplitude
+                - amplitude
                     * (PI * (x / lengths[0] - 0.11))
                         .sin()
                         .powi(2)

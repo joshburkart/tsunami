@@ -16,10 +16,14 @@ struct Parameters {
 
     pub kinematic_viscosity_rel_to_water: Float,
 
-    pub frames_per_physics_update: usize,
+    pub substeps_per_physics_step: usize,
 
     pub height_exaggeration_factor: Float,
     pub show_point_cloud: bool,
+
+    pub earthquake_position: Option<Vec3>,
+    // Response set by the physics thread after an earthquake trigger has been read and handled.
+    pub earthquake_triggered: bool,
 }
 
 impl Default for Parameters {
@@ -28,9 +32,11 @@ impl Default for Parameters {
             geometry_type: geom::GeometryType::Sphere,
             resolution_level: 6,
             kinematic_viscosity_rel_to_water: 1.,
-            frames_per_physics_update: 5,
+            substeps_per_physics_step: 10,
             height_exaggeration_factor: 40.,
             show_point_cloud: false,
+            earthquake_position: Some(three_d::Vec3::new(0.5, -0.5, 0.5)),
+            earthquake_triggered: false,
         }
     }
 }
@@ -46,10 +52,10 @@ fn physics_loop(
 
     // Physics loop.
     loop {
-        // Send along renderable to rendering loop.
+        // Send along renderables to main loop.
         {
             for renderable in geometry
-                .make_renderables(params.frames_per_physics_update)
+                .make_renderables(params.substeps_per_physics_step)
                 .into_iter()
             {
                 renderable_sender.send(renderable).unwrap();
@@ -70,6 +76,16 @@ fn physics_loop(
             geometry.set_kinematic_viscosity(1e-3 * params.kinematic_viscosity_rel_to_water); // TODO
         }
 
+        // Update parameters if needed.
+        if let Some(earthquake_position) = params.earthquake_position {
+            let mut shared_params_writer = shared_params.write().unwrap();
+            shared_params_writer.earthquake_position = None;
+            if !params.earthquake_triggered {
+                geometry.trigger_earthquake(earthquake_position);
+                shared_params_writer.earthquake_triggered = true;
+            }
+        }
+
         // Take physics timestep.
         geometry.integrate();
     }
@@ -87,7 +103,7 @@ pub async fn run() {
     let mut params = Parameters::default();
     let geometry = geom::Geometry::new(params.geometry_type, params.resolution_level);
     let mut renderable = geometry.make_renderables(1).pop().unwrap();
-    let (renderable_sender, renderable_reader) = std::sync::mpsc::sync_channel(5);
+    let (renderable_sender, renderable_reader) = std::sync::mpsc::sync_channel(30);
     let shared_params_write = std::sync::Arc::new(std::sync::RwLock::new(params.clone()));
     let shared_params_read = shared_params_write.clone();
 
@@ -184,7 +200,7 @@ pub async fn run() {
         geometry: InstancedMesh::new(
             &context,
             &PointCloud {
-                positions: Positions::F32(rendering.points),
+                positions: Positions::F64(rendering.points),
                 colors: None,
             }
             .into(),
@@ -193,21 +209,28 @@ pub async fn run() {
         material: ColorMaterial::default(),
     };
 
-    let mut time_of_last_physics_frame = web_time::Instant::now();
-    let mut wall_time_per_frame_sec = 0.5;
+    let mut wall_time_of_last_renderable = web_time::Instant::now();
+    let mut wall_time_per_renderable_sec = 0.5;
 
     rayon::spawn(move || physics_loop(geometry, shared_params_read, renderable_sender));
     window.render_loop(move |mut frame_input| {
         if let Ok(mut shared_params) = shared_params_write.try_write() {
+            if shared_params.earthquake_triggered && !params.earthquake_triggered {
+                params.earthquake_triggered = false;
+                params.earthquake_position = None;
+            }
             *shared_params = params.clone();
         }
 
         if let Ok(new_renderable) = renderable_reader.try_recv() {
             renderable = new_renderable;
             let now = web_time::Instant::now();
-            wall_time_per_frame_sec = 0.98 * wall_time_per_frame_sec
-                + 0.02 * now.duration_since(time_of_last_physics_frame).as_secs_f32();
-            time_of_last_physics_frame = now;
+            wall_time_per_renderable_sec = 0.98 * wall_time_per_renderable_sec
+                + 0.02
+                    * now
+                        .duration_since(wall_time_of_last_renderable)
+                        .as_secs_f32();
+            wall_time_of_last_renderable = now;
         }
         let rendering_data = renderable.make_rendering_data(params.height_exaggeration_factor);
 
@@ -218,7 +241,7 @@ pub async fn run() {
                 point_cloud_model.geometry = InstancedMesh::new(
                     &context,
                     &PointCloud {
-                        positions: Positions::F32(rendering_data.points),
+                        positions: Positions::F64(rendering_data.points),
                         colors: None,
                     }
                     .into(),
@@ -227,6 +250,23 @@ pub async fn run() {
                 point_cloud_model.material.render_states.cull = Cull::None;
             } else {
                 point_cloud_model.material.render_states.cull = Cull::FrontAndBack;
+            }
+        }
+
+        for event in frame_input.events.iter() {
+            if let Event::MousePress {
+                button: control::MouseButton::Right,
+                position: screen_position,
+                ..
+            } = event
+            {
+                if let Some(space_position) = pick(&context, &camera, *screen_position, &mesh_model)
+                {
+                    log::info!("{:?}", space_position);
+                    params.earthquake_position = Some(space_position);
+                    params.earthquake_triggered = false;
+                    break;
+                }
             }
         }
 
@@ -249,9 +289,9 @@ pub async fn run() {
                                     "Alpha version -- please **do not share yet**! Many rough \
                                      edges, e.g. viscosity slider has nothing to do with water's \
                                      viscosity despite what it says, advection term not yet \
-                                     implemented in spherical geometry, etc.\n\nPlanned features: \
-                                     realistic terrain (continents/sea floor/etc.), click to set \
-                                     off a tsunami, and more..."
+                                     implemented in spherical geometry, etc.\n\n**Right click** \
+                                     to set off a tsunami!\n\nPlanned features: realistic terrain \
+                                     (continents/sea floor/etc.), and more..."
                                 );
                             });
 
@@ -297,7 +337,7 @@ pub async fn run() {
                                 );
                                 ui.add(egui::Checkbox::new(
                                     &mut params.show_point_cloud,
-                                    "show points",
+                                    "show quadrature points",
                                 ));
                                 ui.add_space(10.);
 
@@ -315,14 +355,14 @@ pub async fn run() {
                                 });
                                 ui.add(
                                     egui::Slider::new(
-                                        &mut params.frames_per_physics_update,
-                                        1..=10,
+                                        &mut params.substeps_per_physics_step,
+                                        1..=30,
                                     )
-                                    .text("frames per physics update"),
+                                    .text("substeps per physics update"),
                                 );
                                 ui.label(format!(
-                                    "{:.0} ms/frame, {:.0} ms/render",
-                                    wall_time_per_frame_sec * 1000.,
+                                    "{:.0} ms/substep, {:.0} ms/render",
+                                    wall_time_per_renderable_sec * 1000.,
                                     wall_time_per_render_sec * 1000.
                                 ));
                             });

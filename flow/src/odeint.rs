@@ -2,9 +2,9 @@ use ndarray as nd;
 
 use crate::{ComplexFloat, Float};
 
-pub struct Solution<'a, V> {
+pub struct Solution<V, S: nd::RawData<Elem = V>> {
     pub t: Float,
-    pub y: &'a nd::Array1<V>,
+    pub y: nd::ArrayBase<S, nd::Ix1>,
 }
 
 pub trait System {
@@ -82,10 +82,17 @@ where
         Self { rel_tol, ..self }
     }
 
-    pub fn current_solution(&self) -> Solution<'_, S::Value> {
+    pub fn current_solution(&self) -> Solution<S::Value, nd::ViewRepr<&S::Value>> {
         Solution {
             t: self.t,
-            y: &self.y,
+            y: self.y.view(),
+        }
+    }
+
+    pub fn current_solution_mut(&mut self) -> Solution<S::Value, nd::ViewRepr<&mut S::Value>> {
+        Solution {
+            t: self.t,
+            y: self.y.view_mut(),
         }
     }
 

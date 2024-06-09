@@ -100,7 +100,7 @@ impl SphereRenderable {
 
         let mut mesh = CpuMesh {
             indices: Indices::U32(indices),
-            positions: Positions::F32(points.clone()),
+            positions: Positions::F64(points.clone()),
             ..Default::default()
         };
         mesh.compute_normals();
@@ -211,7 +211,7 @@ impl TorusRenderable {
 
         let mut mesh = CpuMesh {
             indices: Indices::U32(indices),
-            positions: Positions::F32(augmented_points),
+            positions: Positions::F64(augmented_points),
             ..Default::default()
         };
         mesh.compute_normals();

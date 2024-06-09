@@ -256,8 +256,13 @@ where
         let odeint::Solution { t, y } = self.integrator.current_solution();
         FieldsSnapshot {
             t,
-            fields: Fields::new_owned(self.problem.basis.clone(), y.clone()),
+            fields: Fields::new_owned(self.problem.basis.clone(), y.to_owned()),
         }
+    }
+
+    pub fn fields_mut(&mut self) -> Fields<nd::ViewRepr<&mut ComplexFloat>, B> {
+        let odeint::Solution { y, .. } = self.integrator.current_solution_mut();
+        Fields::new_mut(self.problem.basis.clone(), y)
     }
 
     pub fn integrate(&mut self) {
