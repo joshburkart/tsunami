@@ -20,27 +20,29 @@ concurrency:
 
 jobs:
   deploy:
-    runs-on: node:16.5.0
+    runs-on: ubuntu-latest
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.x'
+      - name: Use Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.x'
+
       - name: Check out Repo
-        uses: actions/checkout@v4
-      - name: Install Rust
-        run: |
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-      - name: Update Rust and Add Dependencies
-        run: |
-          rustup update &&
-          rustup target add wasm32-unknown-unknown &&
-          cargo install wasm-pack &&
-          rustup component add rust-src
+        uses: actions/checkout@v4x
+
       - name: Build
         run: |
           cd tsunami &&
           npm install &&
           npm run build
+
       - name: Set up Pages
         uses: actions/configure-pages@v5
       - name: Upload artifact
