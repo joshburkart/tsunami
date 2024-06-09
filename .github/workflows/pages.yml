@@ -34,6 +34,16 @@ jobs:
         with:
           node-version: '22.x'
 
+      - name: Install Rust
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+      - name: Update Rust and Add Dependencies
+        run: |
+          rustup update &&
+          rustup target add wasm32-unknown-unknown &&
+          cargo install wasm-pack &&
+          rustup component add rust-src
+
       - name: Check out Repo
         uses: actions/checkout@v4
 
