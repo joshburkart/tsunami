@@ -74,13 +74,13 @@ impl RectangularPeriodicBasis {
             temp_field_1.raw_dim(),
             self.num_points[1],
         ));
-        ndrustfft::ndifft(
+        ndrustfft::ndifft_par(
             &spectral,
             &mut temp_field_1,
             &mut self.fft_handler.lock().unwrap(),
             first_spatial_axis,
         );
-        ndrustfft::ndifft_r2c(
+        ndrustfft::ndifft_r2c_par(
             &temp_field_1,
             &mut temp_field_2,
             &mut self.rfft_handler.lock().unwrap(),
@@ -97,13 +97,13 @@ impl RectangularPeriodicBasis {
         let shape = D::change_last_axis(grid.raw_dim(), self.rfft_output_size);
         let mut temp_field_1 = nd::Array::zeros(shape);
         let mut temp_field_2 = temp_field_1.clone();
-        ndrustfft::ndfft_r2c(
+        ndrustfft::ndfft_r2c_par(
             &grid,
             &mut temp_field_1,
             &mut self.rfft_handler.lock().unwrap(),
             first_spatial_axis + 1,
         );
-        ndrustfft::ndfft(
+        ndrustfft::ndfft_par(
             &temp_field_1,
             &mut temp_field_2,
             &mut self.fft_handler.lock().unwrap(),

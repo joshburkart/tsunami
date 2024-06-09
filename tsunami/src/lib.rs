@@ -16,7 +16,7 @@ struct Parameters {
 
     pub kinematic_viscosity_rel_to_water: Float,
 
-    pub frames_per_step: usize,
+    pub frames_per_physics_update: usize,
 
     pub height_exaggeration_factor: Float,
     pub show_point_cloud: bool,
@@ -28,7 +28,7 @@ impl Default for Parameters {
             geometry_type: geom::GeometryType::Sphere,
             resolution_level: 6,
             kinematic_viscosity_rel_to_water: 1.,
-            frames_per_step: 3,
+            frames_per_physics_update: 5,
             height_exaggeration_factor: 40.,
             show_point_cloud: false,
         }
@@ -49,7 +49,7 @@ fn physics_loop(
         // Send along renderable to rendering loop.
         {
             for renderable in geometry
-                .make_renderables(params.frames_per_step)
+                .make_renderables(params.frames_per_physics_update)
                 .into_iter()
             {
                 renderable_sender.send(renderable).unwrap();
@@ -72,7 +72,6 @@ fn physics_loop(
 
         // Take physics timestep.
         geometry.integrate();
-        log::info!("  Took physics timestep");
     }
 }
 
@@ -194,18 +193,21 @@ pub async fn run() {
         material: ColorMaterial::default(),
     };
 
+    let mut time_of_last_physics_frame = web_time::Instant::now();
+    let mut wall_time_per_frame_sec = 0.5;
+
     rayon::spawn(move || physics_loop(geometry, shared_params_read, renderable_sender));
     window.render_loop(move |mut frame_input| {
-        log::info!("  Rendering cycle");
-
-        // let start_time = std::time::Instant::now();
-
         if let Ok(mut shared_params) = shared_params_write.try_write() {
             *shared_params = params.clone();
         }
 
         if let Ok(new_renderable) = renderable_reader.try_recv() {
             renderable = new_renderable;
+            let now = web_time::Instant::now();
+            wall_time_per_frame_sec = 0.98 * wall_time_per_frame_sec
+                + 0.02 * now.duration_since(time_of_last_physics_frame).as_secs_f32();
+            time_of_last_physics_frame = now;
         }
         let rendering_data = renderable.make_rendering_data(params.height_exaggeration_factor);
 
@@ -300,10 +302,6 @@ pub async fn run() {
                                 ui.add_space(10.);
 
                                 ui.label(egui::RichText::new("Performance").strong());
-                                ui.add(
-                                    egui::Slider::new(&mut params.frames_per_step, 1..=100)
-                                        .text("frames per time step"),
-                                );
                                 ui.horizontal(|ui| {
                                     for n in 5..=8 {
                                         ui.radio_value(
@@ -313,21 +311,18 @@ pub async fn run() {
                                         )
                                         .changed();
                                     }
-                                    ui.label("num subdivisions");
+                                    ui.label("resolution");
                                 });
-                                // ui.add(
-                                //     egui::Slider::new(&mut params.time_step, 1e0..=1e3)
-                                //         .logarithmic(true)
-                                //         .text("time step")
-                                //         .suffix(" s"),
-                                // );
-                                // ui.label(format!(
-                                //     "{:.0} ms/physics update, {:.0} ms/render",
-                                //     wall_time_per_physics_step_sec * 1000.,
-                                //     wall_time_per_render_sec * 1000.
-                                // ));
+                                ui.add(
+                                    egui::Slider::new(
+                                        &mut params.frames_per_physics_update,
+                                        1..=10,
+                                    )
+                                    .text("frames per physics update"),
+                                );
                                 ui.label(format!(
-                                    "{:.0} ms/render",
+                                    "{:.0} ms/frame, {:.0} ms/render",
+                                    wall_time_per_frame_sec * 1000.,
                                     wall_time_per_render_sec * 1000.
                                 ));
                             });
@@ -367,7 +362,7 @@ pub async fn run() {
 
         // Exponential moving average.
         wall_time_per_render_sec =
-            0.5 * (wall_time_per_render_sec + frame_input.elapsed_time / 1000.);
+            0.95 * wall_time_per_render_sec + 0.05 * frame_input.elapsed_time as Float / 1000.;
 
         FrameOutput::default()
     });

@@ -291,8 +291,8 @@ impl TorusGeometry {
             terrain_height,
             grav_accel: 9.8,
             kinematic_viscosity,
-            rtol: 1e-2,
-            atol: 1e-2,
+            rtol: 1e-3,
+            atol: 1e-3,
         };
         (
             base_height,
