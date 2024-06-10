@@ -9,12 +9,33 @@ mod render;
 
 pub use wasm_bindgen_rayon::init_thread_pool;
 
+const M_PER_MI: Float = 1_609.34;
+const GRAV_ACCEL_M_PER_S2: Float = 9.8;
+const EARTH_RADIUS_MI: Float = 3_958.8;
+const EARTH_RADIUS_M: Float = EARTH_RADIUS_MI * M_PER_MI;
+const OCEAN_DEPTH_M: Float = 3_682.;
+const WATER_KINEMATIC_VISCOSITY_M2_PER_S: Float = 1e-6;
+
+fn time_scale_s() -> Float {
+    EARTH_RADIUS_M / (GRAV_ACCEL_M_PER_S2 * OCEAN_DEPTH_M).sqrt()
+}
+
+fn time_scale_hr() -> Float {
+    time_scale_s() / 60. / 60.
+}
+
+fn water_kinematic_viscosity_nondimen() -> Float {
+    WATER_KINEMATIC_VISCOSITY_M2_PER_S / EARTH_RADIUS_M.powi(2) * time_scale_s()
+}
+
 #[derive(Clone)]
 struct Parameters {
     pub geometry_type: geom::GeometryType,
     pub resolution_level: u32,
 
-    pub kinematic_viscosity_rel_to_water: Float,
+    pub log10_kinematic_viscosity_rel_to_water: Float,
+    pub earthquake_region_size_mi: Float,
+    pub earthquake_height_m: Float,
 
     pub substeps_per_physics_step: usize,
 
@@ -31,9 +52,11 @@ impl Default for Parameters {
         Self {
             geometry_type: geom::GeometryType::Sphere,
             resolution_level: 6,
-            kinematic_viscosity_rel_to_water: 1.,
+            log10_kinematic_viscosity_rel_to_water: 0.,
+            earthquake_region_size_mi: 300.,
+            earthquake_height_m: -1.,
             substeps_per_physics_step: 10,
-            height_exaggeration_factor: 40.,
+            height_exaggeration_factor: 1000.,
             show_point_cloud: false,
             earthquake_position: Some(three_d::Vec3::new(0.5, -0.5, 0.5)),
             earthquake_triggered: false,
@@ -73,7 +96,10 @@ fn physics_loop(
             }
             params = new_params.clone();
 
-            geometry.set_kinematic_viscosity(1e-3 * params.kinematic_viscosity_rel_to_water); // TODO
+            geometry.set_kinematic_viscosity(
+                water_kinematic_viscosity_nondimen()
+                    * (10 as Float).powf(params.log10_kinematic_viscosity_rel_to_water),
+            );
         }
 
         // Update parameters if needed.
@@ -81,7 +107,11 @@ fn physics_loop(
             let mut shared_params_writer = shared_params.write().unwrap();
             shared_params_writer.earthquake_position = None;
             if !params.earthquake_triggered {
-                geometry.trigger_earthquake(earthquake_position);
+                geometry.trigger_earthquake(
+                    earthquake_position,
+                    params.earthquake_region_size_mi / EARTH_RADIUS_MI,
+                    params.earthquake_height_m / OCEAN_DEPTH_M,
+                );
                 shared_params_writer.earthquake_triggered = true;
             }
         }
@@ -172,7 +202,6 @@ pub async fn run() {
         AmbientLight::new_with_environment(&context, 20.0, Srgba::WHITE, skybox.texture());
     let directional = DirectionalLight::new(&context, 5.0, Srgba::WHITE, &vec3(-1.0, -1.0, -1.0));
 
-    // let mut render_sim_time = 0.;
     let mut wall_time_per_render_sec = 0.;
 
     let rendering = renderable.make_rendering_data(params.height_exaggeration_factor);
@@ -262,7 +291,6 @@ pub async fn run() {
             {
                 if let Some(space_position) = pick(&context, &camera, *screen_position, &mesh_model)
                 {
-                    log::info!("{:?}", space_position);
                     params.earthquake_position = Some(space_position);
                     params.earthquake_triggered = false;
                     break;
@@ -270,13 +298,15 @@ pub async fn run() {
             }
         }
 
+        let mut geom_change = false;
+
         gui.update(
             &mut frame_input.events,
             frame_input.accumulated_time,
             frame_input.viewport,
             frame_input.device_pixel_ratio,
             |gui_context| {
-                egui::Window::new("Tsunami Simulator")
+                egui::Window::new("Tsunami Playground")
                     .vscroll(true)
                     .show(gui_context, |ui| {
                         egui::CollapsingHeader::new(egui::RichText::from("Info").heading())
@@ -287,49 +317,52 @@ pub async fn run() {
                                     ui,
                                     &mut commonmark_cache,
                                     "Alpha version -- please **do not share yet**! Many rough \
-                                     edges, e.g. viscosity slider has nothing to do with water's \
-                                     viscosity despite what it says, advection term not yet \
-                                     implemented in spherical geometry, etc.\n\n**Right click** \
-                                     to set off a tsunami!\n\nPlanned features: realistic terrain \
-                                     (continents/sea floor/etc.), and more..."
+                                     edges, e.g. advection term not yet implemented in spherical \
+                                     geometry.\n\n**Right click** to set off a tsunami! Increase \
+                                     \"substeps per physics update\" below if the simulation is \
+                                     stuttering.\n\nPlanned features: realistic terrain \
+                                     (continents/sea floor/etc.), Coriolis force, tides, and \
+                                     more..."
                                 );
                             });
 
                         egui::CollapsingHeader::new(egui::RichText::from("Settings").heading())
                             .default_open(true)
                             .show(ui, |ui| {
-                                ui.label(egui::RichText::new("Geometry").strong());
-                                ui.horizontal(|ui| {
-                                    ui.radio_value(
-                                        &mut params.geometry_type,
-                                        geom::GeometryType::Sphere,
-                                        "Sphere",
-                                    );
-                                    ui.radio_value(
-                                        &mut params.geometry_type,
-                                        geom::GeometryType::Torus,
-                                        "Torus",
-                                    );
-                                });
-                                ui.add_space(10.);
-
                                 ui.label(egui::RichText::new("Physics").strong());
                                 ui.add(
                                     egui::Slider::new(
-                                        &mut params.kinematic_viscosity_rel_to_water,
-                                        1e-1..=1e2,
+                                        &mut params.log10_kinematic_viscosity_rel_to_water,
+                                        (0.)..=(13.),
                                     )
-                                    .logarithmic(true)
                                     .text("kinematic viscosity")
-                                    .suffix("× water"),
+                                    .prefix("10^")
+                                    .suffix(" × water"),
                                 );
+                                ui.add(
+                                    egui::Slider::new(
+                                        &mut params.earthquake_region_size_mi,
+                                        1e2..=5e2,
+                                    )
+                                    .text("earthquake region size")
+                                    .suffix(" mi"),
+                                );
+                                ui.add(
+                                    egui::Slider::new(&mut params.earthquake_height_m, -5e0..=5e0)
+                                        .text("earthquake height")
+                                        .suffix(" m"),
+                                );
+                                ui.label(format!(
+                                    "{:.1} hr elapsed sim time",
+                                    renderable.t_nondimen() * time_scale_hr()
+                                ));
                                 ui.add_space(10.);
 
                                 ui.label(egui::RichText::new("Visualization").strong());
                                 ui.add(
                                     egui::Slider::new(
                                         &mut params.height_exaggeration_factor,
-                                        1e0..=1e3,
+                                        1e0..=1e4,
                                     )
                                     .logarithmic(true)
                                     .text("height exaggeration")
@@ -344,12 +377,13 @@ pub async fn run() {
                                 ui.label(egui::RichText::new("Performance").strong());
                                 ui.horizontal(|ui| {
                                     for n in 5..=8 {
-                                        ui.radio_value(
-                                            &mut params.resolution_level,
-                                            n,
-                                            format!("{}", 2i32.pow(n)),
-                                        )
-                                        .changed();
+                                        geom_change |= ui
+                                            .radio_value(
+                                                &mut params.resolution_level,
+                                                n,
+                                                format!("{}", 2i32.pow(n)),
+                                            )
+                                            .changed();
                                     }
                                     ui.label("resolution");
                                 });
@@ -365,6 +399,25 @@ pub async fn run() {
                                     wall_time_per_renderable_sec * 1000.,
                                     wall_time_per_render_sec * 1000.
                                 ));
+                                ui.add_space(10.);
+
+                                ui.label(egui::RichText::new("Geometry").strong());
+                                ui.horizontal(|ui| {
+                                    geom_change |= ui
+                                        .radio_value(
+                                            &mut params.geometry_type,
+                                            geom::GeometryType::Sphere,
+                                            "Sphere",
+                                        )
+                                        .changed();
+                                    geom_change |= ui
+                                        .radio_value(
+                                            &mut params.geometry_type,
+                                            geom::GeometryType::Torus,
+                                            "Torus",
+                                        )
+                                        .changed();
+                                });
                             });
 
                         ui.collapsing(egui::RichText::from("Details").heading(), |ui| {
@@ -385,6 +438,11 @@ pub async fn run() {
                     });
             },
         );
+
+        if geom_change {
+            params.earthquake_triggered = false;
+            params.earthquake_position = Some(three_d::Vec3::new(0.5, -0.5, 0.5));
+        }
 
         control.handle_events(&mut camera, &mut frame_input.events);
         frame_input

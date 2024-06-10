@@ -43,7 +43,12 @@ impl Geometry {
         }
     }
 
-    pub fn trigger_earthquake(&mut self, earthquake_position: three_d::Vec3) {
+    pub fn trigger_earthquake(
+        &mut self,
+        position: three_d::Vec3,
+        region_size_rad: Float,
+        height_nondimen: Float,
+    ) {
         use flow::bases::Basis;
 
         match &mut self.0 {
@@ -66,11 +71,10 @@ impl Geometry {
                 // ```
                 // n = log(1 / 2) / (2 * log(cos(half angle)))
                 // ```
-                let pow = |half_angle_rad: Float| {
-                    ((0.5 as Float).ln() / half_angle_rad.cos().ln() / 2.) as f32
-                };
-                log::info!("Setting off tsunami");
-                let click_direction = earthquake_position.normalize();
+                let half_angle_rad = region_size_rad / 2.;
+                let pow = ((0.5 as Float).ln() / half_angle_rad.cos().ln() / 2.) as f32;
+                log::info!("Setting off earthquake");
+                let click_direction = position.normalize();
                 new_height = &new_height
                     - &basis.make_scalar(|mu, phi| {
                         let cos_theta = mu as f32;
@@ -79,13 +83,12 @@ impl Geometry {
                         let sin_phi = phi.sin() as f32;
                         let point_direction =
                             three_d::Vec3::new(sin_theta * cos_phi, sin_theta * sin_phi, cos_theta);
-                        0.003
+                        height_nondimen
                             * point_direction
                                 .dot(click_direction)
                                 .max(0.)
                                 .powi(2)
-                                .powf(pow(2.5 * float_consts::PI / 180.))
-                                as Float
+                                .powf(pow) as Float
                     });
 
                 fields.assign_height(&basis.scalar_to_spectral(&new_height));
@@ -147,6 +150,7 @@ impl SphereGeometry {
     pub fn make_renderables(&self, num: usize) -> impl Iterator<Item = SphereRenderable> + '_ {
         flow::physics::interp_between(&self.prev_fields_snapshot, &self.curr_fields_snapshot, num)
             .map(|fields_snapshot| SphereRenderable {
+                t: fields_snapshot.t,
                 base_height: self.base_height,
                 mu_grid: self.mu_grid.clone(),
                 phi_grid: self.phi_grid.clone(),
@@ -163,21 +167,18 @@ impl SphereGeometry {
         use flow::bases::Basis;
 
         let max_l = 2usize.pow(resolution_level);
-        let base_height = 3.;
-        let kinematic_viscosity = 1e-4; // TODO
-        let grav_accel = 9.8;
+        let base_height = 1.;
+        let kinematic_viscosity = 0.;
 
         let basis = std::sync::Arc::new(flow::bases::ylm::SphericalHarmonicBasis::new(max_l));
         let terrain_height = basis.scalar_to_spectral(&basis.make_scalar(|_, _| 1.));
         let mut initial_fields = flow::physics::Fields::zeros(basis.clone());
         // TODO shouldn't need perturbation
-        let initial_height_grid =
-            basis.make_scalar(|mu, phi| base_height + 1e-5 * mu.powi(2) * phi.cos().powi(2));
+        let initial_height_grid = basis.make_scalar(|_, _| base_height);
         initial_fields.assign_height(&basis.scalar_to_spectral(&initial_height_grid));
         let problem = flow::physics::Problem {
             basis,
             terrain_height,
-            grav_accel,
             kinematic_viscosity,
             rtol: 1e-5,
             atol: 1e-8,
@@ -247,6 +248,7 @@ impl TorusGeometry {
     pub fn make_renderables(&self, num: usize) -> impl Iterator<Item = TorusRenderable> + '_ {
         flow::physics::interp_between(&self.prev_fields_snapshot, &self.curr_fields_snapshot, num)
             .map(|fields_snapshot| TorusRenderable {
+                t: fields_snapshot.t,
                 base_height: self.base_height,
                 theta_grid: self.theta_grid.clone(),
                 phi_grid: self.phi_grid.clone(),
@@ -309,7 +311,6 @@ impl TorusGeometry {
         let problem = flow::physics::Problem {
             basis,
             terrain_height,
-            grav_accel: 9.8,
             kinematic_viscosity,
             rtol: 1e-3,
             atol: 1e-3,

@@ -21,11 +21,52 @@ impl Renderable {
             Renderable::Torus(torus) => torus.make_rendering_data(height_exaggeration_factor),
         }
     }
+
+    pub fn t_nondimen(&self) -> Float {
+        match self {
+            Renderable::Sphere(sphere) => sphere.t,
+            Renderable::Torus(torus) => torus.t,
+        }
+    }
+
+    // pub fn height_range(&self) -> [Float; 2] {
+    //     match self {
+    //         Renderable::Sphere(sphere) => {
+    //             log::info!("{:?}", sphere.height_array);
+    //             [
+    //                 *sphere
+    //                     .height_array
+    //                     .iter()
+    //                     .min_by(|x, y| x.partial_cmp(y).unwrap())
+    //                     .unwrap(),
+    //                 *sphere
+    //                     .height_array
+    //                     .iter()
+    //                     .max_by(|x, y| x.partial_cmp(y).unwrap())
+    //                     .unwrap(),
+    //             ]
+    //         }
+    //         Renderable::Torus(torus) => [
+    //             *torus
+    //                 .height_array
+    //                 .iter()
+    //                 .min_by(|x, y| x.partial_cmp(y).unwrap())
+    //                 .unwrap(),
+    //             *torus
+    //                 .height_array
+    //                 .iter()
+    //                 .max_by(|x, y| x.partial_cmp(y).unwrap())
+    //                 .unwrap(),
+    //         ],
+    //     }
+    // }
 }
 
 #[derive(Clone)]
 pub struct SphereRenderable {
     pub base_height: Float,
+
+    pub t: Float,
 
     pub mu_grid: nd::Array1<Float>,
     pub phi_grid: nd::Array1<Float>,
@@ -136,6 +177,8 @@ impl SphereRenderable {
 #[derive(Clone)]
 pub struct TorusRenderable {
     pub base_height: Float,
+
+    pub t: Float,
 
     pub theta_grid: nd::Array1<Float>,
     pub phi_grid: nd::Array1<Float>,

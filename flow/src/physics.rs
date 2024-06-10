@@ -141,7 +141,6 @@ pub struct Problem<B: bases::Basis> {
 
     pub terrain_height: B::SpectralScalarField,
 
-    pub grav_accel: Float,
     pub kinematic_viscosity: Float,
 
     pub rtol: Float,
@@ -191,8 +190,7 @@ where
         let viscous =
             ComplexFloat::from(self.kinematic_viscosity) * self.basis.vector_laplacian(&velocity);
         let advection = -self.basis.vector_advection(&velocity_grid, &velocity);
-        let gravity = -ComplexFloat::from(self.grav_accel)
-            * self.basis.gradient(&(&height + &self.terrain_height));
+        let gravity = -self.basis.gradient(&(&height + &self.terrain_height));
         fields_time_deriv.assign_velocity(&(viscous + advection + gravity));
     }
 }
