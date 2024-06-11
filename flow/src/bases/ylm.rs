@@ -307,6 +307,23 @@ impl Basis for SphericalHarmonicBasis {
             Phi: None,
         }
     }
+
+    fn z_cross(&self, grid: &nd::Array3<Float>) -> nd::Array3<Float> {
+        let mut output = nd::Array3::zeros(grid.raw_dim());
+        output
+            .slice_mut(nd::s![Component::Theta as usize, .., ..])
+            .assign(&grid.slice(nd::s![Component::Phi as usize, .., ..]));
+        output
+            .slice_mut(nd::s![Component::Phi as usize, .., ..])
+            .assign(&grid.slice(nd::s![Component::Theta as usize, .., ..]));
+        for (i, &mu) in self.mu_gauss_legendre_quad.nodes.iter().enumerate() {
+            for j in 0..self.phi_grid.len() {
+                output[[Component::Theta as usize, i, j]] *= -mu;
+                output[[Component::Phi as usize, i, j]] *= mu;
+            }
+        }
+        output
+    }
 }
 
 #[derive(Clone, Debug)]

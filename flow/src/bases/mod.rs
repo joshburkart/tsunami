@@ -62,6 +62,7 @@ pub trait Basis {
         grid: &nd::Array3<Float>,
         spectral: &Self::SpectralVectorField,
     ) -> Self::SpectralVectorField;
+    fn z_cross(&self, spectral: &nd::Array3<Float>) -> nd::Array3<Float>;
 }
 
 trait FftDimension: nd::Dimension {

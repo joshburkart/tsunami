@@ -34,6 +34,7 @@ struct Parameters {
     pub resolution_level: u32,
 
     pub log10_kinematic_viscosity_rel_to_water: Float,
+    pub rotation_period_hr: Float,
     pub earthquake_region_size_mi: Float,
     pub earthquake_height_m: Float,
 
@@ -53,6 +54,7 @@ impl Default for Parameters {
             geometry_type: geom::GeometryType::Sphere,
             resolution_level: 6,
             log10_kinematic_viscosity_rel_to_water: 0.,
+            rotation_period_hr: 24.,
             earthquake_region_size_mi: 300.,
             earthquake_height_m: -1.,
             substeps_per_physics_step: 10,
@@ -100,6 +102,9 @@ fn physics_loop(
                 water_kinematic_viscosity_nondimen()
                     * (10 as Float).powf(params.log10_kinematic_viscosity_rel_to_water),
             );
+            geometry.set_rotation_angular_speed(
+                flow::float_consts::TAU / params.rotation_period_hr * time_scale_hr(),
+            );
         }
 
         // Update parameters if needed.
@@ -133,7 +138,7 @@ pub async fn run() {
     let mut params = Parameters::default();
     let geometry = geom::Geometry::new(params.geometry_type, params.resolution_level);
     let mut renderable = geometry.make_renderables(1).pop().unwrap();
-    let (renderable_sender, renderable_reader) = std::sync::mpsc::sync_channel(30);
+    let (renderable_sender, renderable_reader) = std::sync::mpsc::sync_channel(50);
     let shared_params_write = std::sync::Arc::new(std::sync::RwLock::new(params.clone()));
     let shared_params_read = shared_params_write.clone();
 
@@ -306,24 +311,30 @@ pub async fn run() {
             frame_input.viewport,
             frame_input.device_pixel_ratio,
             |gui_context| {
-                egui::Window::new("Tsunami Playground")
+                egui::Window::new("Ocean Wave Playground")
                     .vscroll(true)
                     .show(gui_context, |ui| {
                         egui::CollapsingHeader::new(egui::RichText::from("Info").heading())
                             .default_open(true)
                             .show(ui, |ui| {
-                                egui_commonmark::commonmark!(
-                                    "info",
+                                let markdown = indoc::indoc! {"
+                                    Alpha version -- please **do not share yet**! Many rough
+                                    edges, e.g. advection term not yet implemented in spherical
+                                    geometry.
+                                        
+                                    **Right click** to set off a tsunami! Increase \"substeps per
+                                    physics update\" below if the simulation is stuttering.
+                                    
+                                    Planned features: realistic terrain (continents/sea floor/
+                                        etc.), tides, and more...
+                                "};
+                                ui.add_space(-10.);
+                                egui_commonmark::CommonMarkViewer::new("info").show(
                                     ui,
                                     &mut commonmark_cache,
-                                    "Alpha version -- please **do not share yet**! Many rough \
-                                     edges, e.g. advection term not yet implemented in spherical \
-                                     geometry.\n\n**Right click** to set off a tsunami! Increase \
-                                     \"substeps per physics update\" below if the simulation is \
-                                     stuttering.\n\nPlanned features: realistic terrain \
-                                     (continents/sea floor/etc.), Coriolis force, tides, and \
-                                     more..."
+                                    markdown,
                                 );
+                                ui.add_space(-10.);
                             });
 
                         egui::CollapsingHeader::new(egui::RichText::from("Settings").heading())
@@ -338,6 +349,14 @@ pub async fn run() {
                                     .text("kinematic viscosity")
                                     .prefix("10^")
                                     .suffix(" × water"),
+                                );
+                                ui.add(
+                                    egui::Slider::new(
+                                        &mut params.rotation_period_hr,
+                                        (5.)..=(100.),
+                                    )
+                                    .text("rotation period")
+                                    .suffix(" hr"),
                                 );
                                 ui.add(
                                     egui::Slider::new(
@@ -421,19 +440,29 @@ pub async fn run() {
                             });
 
                         ui.collapsing(egui::RichText::from("Details").heading(), |ui| {
-                            egui_commonmark::commonmark!(
-                                "details",
+                            let markdown = indoc::indoc! {"
+                                Solves the shallow water equations pseudospectrally using a
+                                spherical harmonic basis. (Torus uses a rectangular domain with
+                                periodic conditions and a Fourier basis.) Physical effects included:
+                                
+                                * Viscosity (negligible for tsunamis but can be artifically \
+                                increased)
+                                * Coriolis force
+                                * Tides (Sun ignored, Moon taken to be stationary) (planned)
+                                
+                                Tech stack: Rust/WebAssembly/WebGL/[`egui`](https://www.egui.rs/)/
+                                [`three-d`](https://github.com/asny/three-d).
+
+                                By Josh Burkart. View and contribute to the code on
+                                [GitHub](https://github.com/joshburkart/tsunami)!
+                            "};
+                            ui.add_space(-10.);
+                            egui_commonmark::CommonMarkViewer::new("details").show(
                                 ui,
                                 &mut commonmark_cache,
-                                "Solves the shallow water equations pseudospectrally. Torus \
-                                uses a rectangular domain with periodic boundary conditions and a \
-                                Fourier basis. Sphere uses a spherical harmonic basis.\n\
-                                \n\
-                                Tech stack: Rust/Wasm/WebGL/[`egui`](https://www.egui.rs/)/\
-                                [`three-d`](https://github.com/asny/three-d).\n\
-                                \n\
-                                By Josh Burkart: [repo](https://github.com/joshburkart/tsunami)."
+                                markdown,
                             );
+                            ui.add_space(-10.);
                         });
                     });
             },

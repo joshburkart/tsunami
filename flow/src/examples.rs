@@ -48,6 +48,7 @@ pub fn bump_2d_spectral(
         basis,
         terrain_height,
         kinematic_viscosity,
+        rotation_angular_speed: 0.,
         rtol: 1e-3,
         atol: 1e-4,
     };

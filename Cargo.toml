@@ -11,6 +11,7 @@ approx = { version = "0.5", features = ["num-complex"] }
 console_error_panic_hook = "0.1"
 console_log = "1"
 egui_commonmark = { version = "0.16", features = ["macros"] }
+indoc = "2.0.5"
 itertools = "0.13"
 js-sys = "0.3.69"
 gauss-quad = "0.1.8"

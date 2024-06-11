@@ -205,6 +205,11 @@ impl Basis for RectangularPeriodicBasis {
             &(&grid.slice(nd::s![.., nd::NewAxis, .., ..]) * &grad_grid).sum_axis(nd::Axis(1)),
         )
     }
+
+    fn z_cross(&self, spectral: &nd::Array3<Float>) -> nd::Array3<Float> {
+        // Not implemented.
+        nd::Array3::zeros(spectral.raw_dim())
+    }
 }
 
 #[cfg(test)]

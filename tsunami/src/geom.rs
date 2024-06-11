@@ -103,6 +103,15 @@ impl Geometry {
             GeometryImpl::Torus(torus) => torus.solver.problem_mut().kinematic_viscosity = value,
         }
     }
+
+    pub fn set_rotation_angular_speed(&mut self, value: Float) {
+        match &mut self.0 {
+            GeometryImpl::Sphere(sphere) => {
+                sphere.solver.problem_mut().rotation_angular_speed = value
+            }
+            GeometryImpl::Torus(_) => {}
+        }
+    }
 }
 
 struct SphereGeometry {
@@ -169,6 +178,7 @@ impl SphereGeometry {
         let max_l = 2usize.pow(resolution_level);
         let base_height = 1.;
         let kinematic_viscosity = 0.;
+        let rotation_angular_speed = 0.;
 
         let basis = std::sync::Arc::new(flow::bases::ylm::SphericalHarmonicBasis::new(max_l));
         let terrain_height = basis.scalar_to_spectral(&basis.make_scalar(|_, _| 1.));
@@ -180,8 +190,9 @@ impl SphereGeometry {
             basis,
             terrain_height,
             kinematic_viscosity,
+            rotation_angular_speed,
             rtol: 1e-5,
-            atol: 1e-8,
+            atol: 1e-9,
         };
         (
             base_height,
@@ -274,7 +285,8 @@ impl TorusGeometry {
         let base_height = 5.;
         let amplitude = base_height * 0.2;
         let bump_size = 0.1;
-        let kinematic_viscosity = 1e-2;
+        let kinematic_viscosity = 0.;
+        let rotation_angular_speed = 0.;
 
         // Want to generate a power so that a periodic "bump" is generated of width
         // `bump_size`. Start from FWHM definition:
@@ -312,6 +324,7 @@ impl TorusGeometry {
             basis,
             terrain_height,
             kinematic_viscosity,
+            rotation_angular_speed,
             rtol: 1e-3,
             atol: 1e-3,
         };
