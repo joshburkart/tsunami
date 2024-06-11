@@ -30,7 +30,8 @@ pub struct RectangularSolver {
 #[pymethods]
 impl RectangularSolver {
     pub fn integrate(&mut self) -> RectangularFields {
-        let fields_snapshot = self.solver.integrate();
+        self.solver.integrate();
+        let fields_snapshot = self.solver.fields_snapshot();
         RectangularFields {
             height: fields_snapshot.fields.height_grid(),
             velocity: fields_snapshot.fields.velocity_grid(),
@@ -97,6 +98,7 @@ pub fn bump_2d_spectral(
         basis,
         terrain_height,
         kinematic_viscosity,
+        rotation_angular_speed: 0.,
         rtol: 1e-3,
         atol: 1e-4,
     };

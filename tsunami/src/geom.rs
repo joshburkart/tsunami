@@ -334,3 +334,17 @@ impl TorusGeometry {
         )
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_sphere_no_crash() {
+        let mut sphere = SphereGeometry::new(6);
+        let _: Vec<_> = sphere.make_renderables(3).collect();
+        for _ in 0..20 {
+            sphere.integrate();
+        }
+    }
+}

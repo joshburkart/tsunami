@@ -28,38 +28,6 @@ impl Renderable {
             Renderable::Torus(torus) => torus.t,
         }
     }
-
-    // pub fn height_range(&self) -> [Float; 2] {
-    //     match self {
-    //         Renderable::Sphere(sphere) => {
-    //             log::info!("{:?}", sphere.height_array);
-    //             [
-    //                 *sphere
-    //                     .height_array
-    //                     .iter()
-    //                     .min_by(|x, y| x.partial_cmp(y).unwrap())
-    //                     .unwrap(),
-    //                 *sphere
-    //                     .height_array
-    //                     .iter()
-    //                     .max_by(|x, y| x.partial_cmp(y).unwrap())
-    //                     .unwrap(),
-    //             ]
-    //         }
-    //         Renderable::Torus(torus) => [
-    //             *torus
-    //                 .height_array
-    //                 .iter()
-    //                 .min_by(|x, y| x.partial_cmp(y).unwrap())
-    //                 .unwrap(),
-    //             *torus
-    //                 .height_array
-    //                 .iter()
-    //                 .max_by(|x, y| x.partial_cmp(y).unwrap())
-    //                 .unwrap(),
-    //         ],
-    //     }
-    // }
 }
 
 #[derive(Clone)]

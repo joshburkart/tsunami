@@ -1,4 +1,4 @@
-#![feature(stdarch_wasm_atomic_wait)]
+#![cfg_attr(feature = "wasm-bindgen-rayon", feature(stdarch_wasm_atomic_wait))]
 
 use flow::Float;
 use three_d::*;
@@ -7,6 +7,7 @@ use wasm_bindgen::prelude::*;
 mod geom;
 mod render;
 
+#[cfg(feature = "wasm-bindgen-rayon")]
 pub use wasm_bindgen_rayon::init_thread_pool;
 
 const M_PER_MI: Float = 1_609.34;
@@ -15,6 +16,8 @@ const EARTH_RADIUS_MI: Float = 3_958.8;
 const EARTH_RADIUS_M: Float = EARTH_RADIUS_MI * M_PER_MI;
 const OCEAN_DEPTH_M: Float = 3_682.;
 const WATER_KINEMATIC_VISCOSITY_M2_PER_S: Float = 1e-6;
+
+const TITLE: &'static str = "Tsunami Playground";
 
 fn time_scale_s() -> Float {
     EARTH_RADIUS_M / (GRAV_ACCEL_M_PER_S2 * OCEAN_DEPTH_M).sqrt()
@@ -145,7 +148,7 @@ pub async fn run() {
     log::info!("Initializing rendering");
 
     let window = Window::new(WindowSettings {
-        title: "Tsunami Playground".to_string(),
+        title: TITLE.to_string(),
         max_size: None,
         ..Default::default()
     })
@@ -208,6 +211,7 @@ pub async fn run() {
     let directional = DirectionalLight::new(&context, 5.0, Srgba::WHITE, &vec3(-1.0, -1.0, -1.0));
 
     let mut wall_time_per_render_sec = 0.;
+    let mut sim_time_per_renderable = 0.;
 
     let rendering = renderable.make_rendering_data(params.height_exaggeration_factor);
 
@@ -245,6 +249,7 @@ pub async fn run() {
 
     let mut wall_time_of_last_renderable = web_time::Instant::now();
     let mut wall_time_per_renderable_sec = 0.5;
+    let mut sim_time_of_last_renderable = 0.;
 
     rayon::spawn(move || physics_loop(geometry, shared_params_read, renderable_sender));
     window.render_loop(move |mut frame_input| {
@@ -264,7 +269,11 @@ pub async fn run() {
                     * now
                         .duration_since(wall_time_of_last_renderable)
                         .as_secs_f32();
+            sim_time_per_renderable = 0.9 * sim_time_per_renderable
+                + 0.1 * (renderable.t_nondimen() - sim_time_of_last_renderable);
+
             wall_time_of_last_renderable = now;
+            sim_time_of_last_renderable = renderable.t_nondimen();
         }
         let rendering_data = renderable.make_rendering_data(params.height_exaggeration_factor);
 
@@ -311,7 +320,7 @@ pub async fn run() {
             frame_input.viewport,
             frame_input.device_pixel_ratio,
             |gui_context| {
-                egui::Window::new("Ocean Wave Playground")
+                egui::Window::new(TITLE)
                     .vscroll(true)
                     .show(gui_context, |ui| {
                         egui::CollapsingHeader::new(egui::RichText::from("Info").heading())
@@ -414,9 +423,11 @@ pub async fn run() {
                                     .text("substeps per physics update"),
                                 );
                                 ui.label(format!(
-                                    "{:.0} ms/substep, {:.0} ms/render",
+                                    "{:.0} wall ms/substep, {:.0} wall ms/render, {:.0} sim \
+                                     s/substep",
                                     wall_time_per_renderable_sec * 1000.,
-                                    wall_time_per_render_sec * 1000.
+                                    wall_time_per_render_sec * 1000.,
+                                    sim_time_per_renderable * time_scale_s()
                                 ));
                                 ui.add_space(10.);
 

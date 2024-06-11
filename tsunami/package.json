@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "prebuild": "wasm-pack build --target web --release",
+    "prebuild": "wasm-pack build --target web --features=wasm-bindgen-rayon --release",
     "postbuild": "cp coi-serviceworker.min.js dist/"
   },
   "devDependencies": {
