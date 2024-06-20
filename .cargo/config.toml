@@ -3,3 +3,4 @@ rustflags = ["-C", "link-arg=-undefined", "-C", "link-arg=dynamic_lookup"]
 
 [env]
 PYO3_PYTHON = "/usr/local/bin/python3"
+PYO3_CROSS_PYTHON_VERSION = "3.11"

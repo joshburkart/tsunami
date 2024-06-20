@@ -1,9 +1,8 @@
 *.mp4
 .ipynb_checkpoints
 .venv
-
-# Added by cargo
-
-/target
 tsunami/dist
 tsunami/node_modules
+
+# Added by cargo
+/target

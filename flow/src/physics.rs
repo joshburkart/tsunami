@@ -1,6 +1,10 @@
 use ndarray as nd;
 
-use crate::{bases, odeint, ComplexFloat, Float, RawComplexFloatData};
+use crate::{
+    bases,
+    odeint::{self, Integrator},
+    ComplexFloat, Float, RawComplexFloatData,
+};
 
 pub struct FieldsSnapshot<B: bases::Basis> {
     pub t: Float,
@@ -144,8 +148,8 @@ pub struct Problem<B: bases::Basis> {
     pub kinematic_viscosity: Float,
     pub rotation_angular_speed: Float,
 
-    pub rtol: Float,
-    pub atol: Float,
+    pub rel_tol: Float,
+    pub abs_tol: Float,
 }
 
 impl<B: bases::Basis> odeint::System for Problem<B>
@@ -164,8 +168,8 @@ where
 
     fn system<S: nd::RawDataMut<Elem = Self::Value> + nd::Data + nd::DataMut>(
         &self,
-        y: &nd::Array1<Self::Value>,
-        dy: &mut nd::ArrayBase<S, nd::Ix1>,
+        y: nd::ArrayView1<Self::Value>,
+        mut dy: nd::ArrayBase<S, nd::Ix1>,
     ) {
         let fields = Fields::new(self.basis.clone(), y.view());
         let mut fields_time_deriv = Fields::new_mut(self.basis.clone(), dy.view_mut());
@@ -176,9 +180,12 @@ where
         let height_grid = self.basis.scalar_to_grid(&height);
         let velocity_grid = self.basis.vector_to_grid(&velocity);
 
-        height_grid
-            .iter()
-            .for_each(|&h| assert!(h >= 0., "Water column height became negative"));
+        height_grid.iter().for_each(|&h| {
+            if h < 0. {
+                log::error!("Water column height became negative: {h:?}");
+                panic!()
+            }
+        });
 
         // Height time derivative.
         fields_time_deriv.assign_height(
@@ -212,7 +219,8 @@ where
         + Sized,
 {
     problem: Problem<B>,
-    integrator: odeint::Integrator<Problem<B>>,
+    integrator:
+        odeint::IntegratorNordsieckAdamsBashforth<Problem<B>, odeint::AdaptiveStepSizeManager>,
 }
 
 impl<B: bases::Basis> Solver<B>
@@ -236,9 +244,15 @@ where
         fields.assign_height(&initial_fields.height_spectral());
         fields.assign_velocity(&initial_fields.velocity_spectral());
 
-        let integrator = odeint::Integrator::new(storage, 1e-2, 1e-5)
-            .abs_tol(problem.atol)
-            .rel_tol(problem.rtol);
+        let order = 3;
+        let integrator = odeint::IntegratorNordsieckAdamsBashforth::new(
+            order,
+            &problem,
+            storage,
+            odeint::AdaptiveStepSizeManager::new(order, 1e-2)
+                .with_abs_tol(problem.abs_tol)
+                .with_rel_tol(problem.rel_tol),
+        );
 
         Self {
             problem,
@@ -267,7 +281,7 @@ where
         Fields::new_mut(self.problem.basis.clone(), y)
     }
 
-    pub fn integrate(&mut self) {
-        self.integrator.integrate(&self.problem);
+    pub fn step(&mut self) {
+        self.integrator.step(&self.problem);
     }
 }

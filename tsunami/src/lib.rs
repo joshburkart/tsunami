@@ -60,7 +60,7 @@ impl Default for Parameters {
             rotation_period_hr: 24.,
             earthquake_region_size_mi: 300.,
             earthquake_height_m: -1.,
-            substeps_per_physics_step: 10,
+            substeps_per_physics_step: 3,
             height_exaggeration_factor: 1000.,
             show_point_cloud: false,
             earthquake_position: Some(three_d::Vec3::new(0.5, -0.5, 0.5)),
@@ -263,6 +263,9 @@ pub async fn run() {
 
         if let Ok(new_renderable) = renderable_reader.try_recv() {
             renderable = new_renderable;
+            if renderable.t_nondimen() < sim_time_of_last_renderable {
+                sim_time_of_last_renderable = 0.;
+            }
             let now = web_time::Instant::now();
             wall_time_per_renderable_sec = 0.98 * wall_time_per_renderable_sec
                 + 0.02
@@ -355,7 +358,7 @@ pub async fn run() {
                                         &mut params.log10_kinematic_viscosity_rel_to_water,
                                         (0.)..=(13.),
                                     )
-                                    .text("kinematic viscosity")
+                                    .text("viscosity")
                                     .prefix("10^")
                                     .suffix(" × water"),
                                 );
@@ -478,11 +481,6 @@ pub async fn run() {
                     });
             },
         );
-
-        if geom_change {
-            params.earthquake_triggered = false;
-            params.earthquake_position = Some(three_d::Vec3::new(0.5, -0.5, 0.5));
-        }
 
         control.handle_events(&mut camera, &mut frame_input.events);
         frame_input

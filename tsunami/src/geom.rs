@@ -76,7 +76,7 @@ impl Geometry {
                 log::info!("Setting off earthquake");
                 let click_direction = position.normalize();
                 new_height = &new_height
-                    - &basis.make_scalar(|mu, phi| {
+                    + &basis.make_scalar(|mu, phi| {
                         let cos_theta = mu as f32;
                         let sin_theta = (1. - cos_theta.powi(2)).sqrt() as f32;
                         let cos_phi = phi.cos() as f32;
@@ -152,7 +152,7 @@ impl SphereGeometry {
             &mut self.prev_fields_snapshot,
             &mut self.curr_fields_snapshot,
         );
-        self.solver.integrate();
+        self.solver.step();
         self.curr_fields_snapshot = self.solver.fields_snapshot();
     }
 
@@ -183,7 +183,6 @@ impl SphereGeometry {
         let basis = std::sync::Arc::new(flow::bases::ylm::SphericalHarmonicBasis::new(max_l));
         let terrain_height = basis.scalar_to_spectral(&basis.make_scalar(|_, _| 1.));
         let mut initial_fields = flow::physics::Fields::zeros(basis.clone());
-        // TODO shouldn't need perturbation
         let initial_height_grid = basis.make_scalar(|_, _| base_height);
         initial_fields.assign_height(&basis.scalar_to_spectral(&initial_height_grid));
         let problem = flow::physics::Problem {
@@ -191,8 +190,8 @@ impl SphereGeometry {
             terrain_height,
             kinematic_viscosity,
             rotation_angular_speed,
-            rtol: 1e-5,
-            atol: 1e-9,
+            rel_tol: 1e-5,
+            abs_tol: 1e-10,
         };
         (
             base_height,
@@ -252,7 +251,7 @@ impl TorusGeometry {
             &mut self.prev_fields_snapshot,
             &mut self.curr_fields_snapshot,
         );
-        self.solver.integrate();
+        self.solver.step();
         self.curr_fields_snapshot = self.solver.fields_snapshot();
     }
 
@@ -325,8 +324,8 @@ impl TorusGeometry {
             terrain_height,
             kinematic_viscosity,
             rotation_angular_speed,
-            rtol: 1e-3,
-            atol: 1e-3,
+            rel_tol: 1e-3,
+            abs_tol: 1e-3,
         };
         (
             base_height,

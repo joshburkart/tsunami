@@ -49,18 +49,20 @@ impl SphereRenderable {
 
         let make_index = |i, j| (i * num_phi + (j % num_phi)) as u32;
 
-        let mut points = self.make_points(height_exaggeration_factor);
+        let points = self.make_points(height_exaggeration_factor);
+
+        let mut augmented_points = points.clone();
         // Add bottom point.
-        let bottom = points.len() as u32;
-        points.push(self.make_point(
+        let bottom = augmented_points.len() as u32;
+        augmented_points.push(self.make_point(
             -1.,
             0.,
             self.height_array.slice(nd::s![0, ..]).iter().sum::<Float>() / num_phi as Float,
             height_exaggeration_factor,
         ));
         // Add top point.
-        let top = points.len() as u32;
-        points.push(
+        let top = augmented_points.len() as u32;
+        augmented_points.push(
             self.make_point(
                 1.,
                 0.,
@@ -109,7 +111,7 @@ impl SphereRenderable {
 
         let mut mesh = CpuMesh {
             indices: Indices::U32(indices),
-            positions: Positions::F64(points.clone()),
+            positions: Positions::F64(augmented_points),
             ..Default::default()
         };
         mesh.compute_normals();
