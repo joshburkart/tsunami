@@ -264,6 +264,8 @@ pub async fn run() {
     let mut wall_time_per_renderable_sec = 0.5;
     let mut sim_time_of_last_renderable = 0.;
 
+    let mut double_click_detector = DoubleClickDetector::default();
+
     rayon::spawn(move || physics_loop(geometry, shared_params_read, renderable_sender));
     window.render_loop(move |mut frame_input| {
         if let Ok(mut shared_params) = shared_params_write.try_write() {
@@ -315,15 +317,23 @@ pub async fn run() {
         for event in frame_input.events.iter() {
             match event {
                 &Event::MousePress {
-                    button: control::MouseButton::Right,
+                    button: control::MouseButton::Left,
+                    ..
+                } => {
+                    double_click_detector.process_press();
+                }
+                &Event::MouseRelease {
+                    button: control::MouseButton::Left,
                     position: screen_position,
                     ..
                 } => {
-                    if let Some(space_position) =
-                        pick(&context, &camera, screen_position, &mesh_model)
-                    {
-                        params.earthquake_position = Some(space_position);
-                        params.earthquake_triggered = false;
+                    if let DoubleClickResult::Detected = double_click_detector.process_release() {
+                        if let Some(space_position) =
+                            pick(&context, &camera, screen_position, &mesh_model)
+                        {
+                            params.earthquake_position = Some(space_position);
+                            params.earthquake_triggered = false;
+                        }
                     }
                 }
                 &Event::MouseMotion {
@@ -353,6 +363,24 @@ pub async fn run() {
             }
         }
 
+        // Set hint sphere color to yellow if in the middle of a double click, red if
+        // completing a double click.
+        double_click_detector.process_idle();
+        match double_click_detector.state {
+            DoubleClickDetectorState::Idle => {
+                tsunami_hint_sphere_object.material.color.g = u8::MAX;
+                tsunami_hint_sphere_object.material.color.b = u8::MAX;
+            }
+            DoubleClickDetectorState::FirstPress(_) | DoubleClickDetectorState::FirstRelease(_) => {
+                tsunami_hint_sphere_object.material.color.g = u8::MAX;
+                tsunami_hint_sphere_object.material.color.b = 0;
+            }
+            DoubleClickDetectorState::SecondPress => {
+                tsunami_hint_sphere_object.material.color.g = 0;
+                tsunami_hint_sphere_object.material.color.b = 0;
+            }
+        }
+
         let mut geom_change = false;
 
         gui.update(
@@ -372,11 +400,11 @@ pub async fn run() {
                                     edges, e.g. advection term not yet implemented in spherical
                                     geometry.
                                         
-                                    **Right click** to set off a tsunami! Increase \"substeps per
+                                    **Double click** to set off a tsunami! Increase \"substeps per
                                     physics update\" below if the simulation is stuttering.
                                     
                                     Planned features: realistic terrain (continents/sea floor/
-                                        etc.), tides, and more...
+                                    etc.), tides, and more...
                                 "};
                                 ui.add_space(-10.);
                                 egui_commonmark::CommonMarkViewer::new("info").show(
@@ -541,4 +569,87 @@ pub async fn run() {
 
         FrameOutput::default()
     });
+}
+
+#[derive(Clone, Copy, Default)]
+enum DoubleClickDetectorState {
+    #[default]
+    Idle,
+    FirstPress(web_time::Instant),
+    FirstRelease(web_time::Instant),
+    SecondPress,
+}
+
+enum DoubleClickResult {
+    Detected,
+    NotDetected,
+}
+
+#[derive(Default)]
+struct DoubleClickDetector {
+    state: DoubleClickDetectorState,
+}
+
+impl DoubleClickDetector {
+    const MAX_WAIT_TIME_MS: u128 = 300;
+
+    pub fn process_idle(&mut self) {
+        let now = web_time::Instant::now();
+        self.state = match self.state {
+            DoubleClickDetectorState::Idle => DoubleClickDetectorState::Idle,
+            DoubleClickDetectorState::FirstPress(prev_time)
+            | DoubleClickDetectorState::FirstRelease(prev_time) => {
+                if Self::within_wait_time(prev_time, now) {
+                    self.state
+                } else {
+                    DoubleClickDetectorState::Idle
+                }
+            }
+            DoubleClickDetectorState::SecondPress => self.state,
+        };
+    }
+
+    pub fn process_press(&mut self) {
+        let now = web_time::Instant::now();
+        self.state = match self.state {
+            DoubleClickDetectorState::Idle => DoubleClickDetectorState::FirstPress(now),
+            DoubleClickDetectorState::FirstPress(_) => DoubleClickDetectorState::Idle,
+            DoubleClickDetectorState::FirstRelease(prev_time) => {
+                if Self::within_wait_time(prev_time, now) {
+                    DoubleClickDetectorState::SecondPress
+                } else {
+                    DoubleClickDetectorState::Idle
+                }
+            }
+            DoubleClickDetectorState::SecondPress => DoubleClickDetectorState::Idle,
+        };
+    }
+
+    pub fn process_release(&mut self) -> DoubleClickResult {
+        let mut result = DoubleClickResult::NotDetected;
+        let now = web_time::Instant::now();
+        self.state = match self.state {
+            DoubleClickDetectorState::Idle => DoubleClickDetectorState::Idle,
+            DoubleClickDetectorState::FirstPress(prev_time) => {
+                if Self::within_wait_time(prev_time, now) {
+                    DoubleClickDetectorState::FirstRelease(now)
+                } else {
+                    DoubleClickDetectorState::Idle
+                }
+            }
+            DoubleClickDetectorState::FirstRelease(_) => DoubleClickDetectorState::Idle,
+            DoubleClickDetectorState::SecondPress => {
+                result = DoubleClickResult::Detected;
+                DoubleClickDetectorState::Idle
+            }
+        };
+        result
+    }
+
+    fn within_wait_time(prev_time: web_time::Instant, now: web_time::Instant) -> bool {
+        now.checked_duration_since(prev_time)
+            .unwrap_or(web_time::Duration::ZERO)
+            .as_millis()
+            <= Self::MAX_WAIT_TIME_MS
+    }
 }
