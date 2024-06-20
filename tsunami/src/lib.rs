@@ -247,6 +247,19 @@ pub async fn run() {
         material: ColorMaterial::default(),
     };
 
+    let mut tsunami_hint_sphere_object = Gm {
+        geometry: Mesh::new(&context, &point_mesh),
+        material: ColorMaterial::new_transparent(
+            &context,
+            &CpuMaterial {
+                roughness: 1.,
+                albedo: Srgba::new(u8::MAX, u8::MAX, u8::MAX, u8::MAX / 3),
+                transmission: 0.5,
+                ..Default::default()
+            },
+        ),
+    };
+
     let mut wall_time_of_last_renderable = web_time::Instant::now();
     let mut wall_time_per_renderable_sec = 0.5;
     let mut sim_time_of_last_renderable = 0.;
@@ -300,18 +313,43 @@ pub async fn run() {
         }
 
         for event in frame_input.events.iter() {
-            if let Event::MousePress {
-                button: control::MouseButton::Right,
-                position: screen_position,
-                ..
-            } = event
-            {
-                if let Some(space_position) = pick(&context, &camera, *screen_position, &mesh_model)
-                {
-                    params.earthquake_position = Some(space_position);
-                    params.earthquake_triggered = false;
-                    break;
+            match event {
+                &Event::MousePress {
+                    button: control::MouseButton::Right,
+                    position: screen_position,
+                    ..
+                } => {
+                    if let Some(space_position) =
+                        pick(&context, &camera, screen_position, &mesh_model)
+                    {
+                        params.earthquake_position = Some(space_position);
+                        params.earthquake_triggered = false;
+                    }
                 }
+                &Event::MouseMotion {
+                    position: screen_position,
+                    ..
+                } => {
+                    if let Some(space_position) =
+                        pick(&context, &camera, screen_position, &mesh_model)
+                    {
+                        let mut tsunami_hint_sphere = CpuMesh::sphere(10);
+                        tsunami_hint_sphere
+                            .transform(&Matrix4::from_scale(
+                                (params.earthquake_region_size_mi / EARTH_RADIUS_MI) as f32,
+                            ))
+                            .unwrap();
+                        tsunami_hint_sphere
+                            .transform(&Matrix4::from_translation(space_position))
+                            .unwrap();
+                        tsunami_hint_sphere_object.geometry =
+                            Mesh::new(&context, &tsunami_hint_sphere);
+                        tsunami_hint_sphere_object.material.render_states.cull = Cull::None;
+                    } else {
+                        tsunami_hint_sphere_object.material.render_states.cull = Cull::FrontAndBack;
+                    }
+                }
+                _ => {}
             }
         }
 
@@ -487,9 +525,10 @@ pub async fn run() {
             .screen()
             .render(
                 &camera,
-                mesh_model
-                    .into_iter()
+                std::iter::empty()
+                    .chain(&mesh_model)
                     .chain(&point_cloud_model)
+                    .chain(&tsunami_hint_sphere_object)
                     .chain(&skybox),
                 &[&ambient, &directional],
             )
