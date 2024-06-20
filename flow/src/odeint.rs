@@ -54,7 +54,7 @@ pub struct IntegratorBulirschStoer<S: System> {
     t: Float,
     y: nd::Array1<S::Value>,
 
-    step_size: Float,
+    delta_t: Float,
 
     abs_tol: Float,
     rel_tol: Float,
@@ -70,7 +70,7 @@ where
         Self {
             t: 0.,
             y: y_init,
-            step_size: delta_t,
+            delta_t,
             abs_tol: 1e-5,
             rel_tol: 1e-5,
             max_iterations: 10,
@@ -98,7 +98,7 @@ where
         n: usize,
         f_init: &nd::Array1<S::Value>,
     ) -> nd::Array1<S::Value> {
-        let sub_step_size = self.step_size / n as Float;
+        let step_size = self.delta_t / n as Float;
 
         // 0    1    2    3    4    5    6    n
         //                  ..
@@ -108,17 +108,17 @@ where
         //                  ..
         //                               zi  zip1
         let mut zi = self.y.clone();
-        let mut zip1 = &zi + f_init * S::Value::from(sub_step_size);
+        let mut zip1 = &zi + f_init * S::Value::from(step_size);
         let mut fi = f_init.clone();
 
         for _i in 1..n {
             std::mem::swap(&mut zi, &mut zip1);
             system.system(zi.view(), fi.view_mut());
-            zip1 += &(&fi * S::Value::from(2. * sub_step_size));
+            zip1 += &(&fi * S::Value::from(2. * step_size));
         }
 
         system.system(zip1.view(), fi.view_mut());
-        (&zi + &zip1 + fi * S::Value::from(sub_step_size)) * S::Value::from(0.5)
+        (&zi + &zip1 + fi * S::Value::from(step_size)) * S::Value::from(0.5)
     }
 }
 
@@ -174,7 +174,8 @@ where
                 );
                 if error <= 1. {
                     self.y = last_two[1].to_owned();
-                    self.t += self.step_size;
+                    self.t += self.delta_t;
+                    log::info!("Converged at step {k}, n={n}, last error was: {error:?}");
                     return;
                 }
             }
@@ -198,7 +199,7 @@ where
 }
 
 /// An explicit, adaptive-stepsize ODE integrator using a Nordsieck (multivalue)
-/// version of Adams-Bashforth.
+/// version Adams-Bashforth.
 ///
 /// Uses the implementation/notation from:
 /// <https://www.hipparchus.org/apidocs/org/hipparchus/ode/nonstiff/AdamsNordsieckFieldTransformer.html>
