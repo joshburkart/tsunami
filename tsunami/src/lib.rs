@@ -395,22 +395,11 @@ pub async fn run() {
                         egui::CollapsingHeader::new(egui::RichText::from("Info").heading())
                             .default_open(true)
                             .show(ui, |ui| {
-                                let markdown = indoc::indoc! {"
-                                    Alpha version -- please **do not share yet**! Many rough
-                                    edges, e.g. advection term not yet implemented in spherical
-                                    geometry.
-                                        
-                                    **Double click** to set off a tsunami! Increase \"substeps per
-                                    physics update\" below if the simulation is stuttering.
-                                    
-                                    Planned features: realistic terrain (continents/sea floor/
-                                    etc.), tides, and more...
-                                "};
                                 ui.add_space(-10.);
                                 egui_commonmark::CommonMarkViewer::new("info").show(
                                     ui,
                                     &mut commonmark_cache,
-                                    markdown,
+                                    INFO_MARKDOWN,
                                 );
                                 ui.add_space(-10.);
                             });
@@ -517,34 +506,28 @@ pub async fn run() {
                                         )
                                         .changed();
                                 });
+                                ui.add_space(10.);
                             });
 
                         ui.collapsing(egui::RichText::from("Details").heading(), |ui| {
-                            let markdown = indoc::indoc! {"
-                                Solves the shallow water equations pseudospectrally using a
-                                spherical harmonic basis. (Torus uses a rectangular domain with
-                                periodic conditions and a Fourier basis.) Physical effects included:
-                                
-                                * Viscosity (negligible for tsunamis but can be artifically \
-                                increased)
-                                * Coriolis force
-                                * Tides (Sun ignored, Moon taken to be stationary) (planned)
-                                
-                                Tech stack: Rust/WebAssembly/WebGL/[`egui`](https://www.egui.rs/)/
-                                [`three-d`](https://github.com/asny/three-d).
-
-                                By Josh Burkart. View and contribute to the code on
-                                [GitHub](https://github.com/joshburkart/tsunami)!
-                            "};
                             ui.add_space(-10.);
                             egui_commonmark::CommonMarkViewer::new("details").show(
                                 ui,
                                 &mut commonmark_cache,
-                                markdown,
+                                DETAILS_MARKDOWN,
                             );
                             ui.add_space(-10.);
                         });
                     });
+
+                gui_context.output(|output| {
+                    if let Some(url) = &output.open_url {
+                        web_sys::window()
+                            .unwrap()
+                            .open_with_url_and_target(&url.url, "_blank")
+                            .unwrap();
+                    }
+                });
             },
         );
 
@@ -653,3 +636,33 @@ impl DoubleClickDetector {
             <= Self::MAX_WAIT_TIME_MS
     }
 }
+
+const INFO_MARKDOWN: &'static str = indoc::indoc! {"
+    Alpha version -- please **do not share yet**! Many rough edges, e.g. advection term not yet
+    implemented in spherical geometry.
+        
+    **Double click** to set off a tsunami! Increase \"substeps per physics update\" below if the
+    simulation is stuttering.
+
+    Planned features: realistic terrain (continents/sea floor/etc.), tides, and more...
+"};
+
+const DETAILS_MARKDOWN: &'static str = indoc::indoc! {"
+    Solves the [shallow water equations](https://en.wikipedia.org/wiki/Shallow_water_equations)
+    [pseudospectrally](https://en.wikipedia.org/wiki/Pseudo-spectral_method) using a
+    [spherical harmonic](https://en.wikipedia.org/wiki/Spherical_harmonics) basis. (Toroidal
+    geometry also included for fun, which uses a rectangular domain with periodic boundary
+    conditions and a Fourier basis.)
+    
+    Physical effects included:
+    
+    * Viscosity (negligible for tsunamis but can be artifically increased)
+    * Coriolis force
+    * Lunar tides (planned)
+    
+    Tech stack: Rust/WebAssembly/WebGL/[`egui`](https://www.egui.rs/)/
+    [`three-d`](https://github.com/asny/three-d).
+
+    By Josh Burkart. View and contribute to the code on
+    [GitHub](https://github.com/joshburkart/tsunami)!
+"};
