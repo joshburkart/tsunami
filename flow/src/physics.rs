@@ -276,9 +276,14 @@ where
         }
     }
 
-    pub fn fields_mut(&mut self) -> Fields<nd::ViewRepr<&mut ComplexFloat>, B> {
-        let odeint::Solution { y, .. } = self.integrator.current_solution_mut();
-        Fields::new_mut(self.problem.basis.clone(), y)
+    pub fn fields_mut<F: FnOnce(Fields<nd::ViewRepr<&mut ComplexFloat>, B>)>(&mut self, f: F) {
+        self.integrator.current_solution_mut(
+            |current_solution| {
+                let odeint::Solution { y, .. } = current_solution;
+                f(Fields::new_mut(self.problem.basis.clone(), y))
+            },
+            &self.problem,
+        );
     }
 
     pub fn step(&mut self) {

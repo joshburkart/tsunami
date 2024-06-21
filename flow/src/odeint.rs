@@ -36,7 +36,13 @@ pub trait Integrator<S: System> {
     fn step(&mut self, system: &S);
 
     fn current_solution(&self) -> Solution<S::Value, nd::ViewRepr<&S::Value>>;
-    fn current_solution_mut(&mut self) -> Solution<S::Value, nd::ViewRepr<&mut S::Value>>;
+    fn current_solution_mut<
+        F: FnOnce(Solution<<S as System>::Value, ndarray::ViewRepr<&mut <S as System>::Value>>),
+    >(
+        &mut self,
+        modifier: F,
+        system: &S,
+    );
 }
 
 pub trait System {
@@ -133,11 +139,17 @@ where
         }
     }
 
-    fn current_solution_mut(&mut self) -> Solution<S::Value, nd::ViewRepr<&mut S::Value>> {
-        Solution {
+    fn current_solution_mut<
+        F: FnOnce(Solution<<S as System>::Value, ndarray::ViewRepr<&mut <S as System>::Value>>),
+    >(
+        &mut self,
+        modifier: F,
+        _system: &S,
+    ) {
+        modifier(Solution {
             t: self.t,
             y: self.y.view_mut(),
-        }
+        });
     }
 
     fn step(&mut self, system: &S) {
@@ -299,13 +311,25 @@ where
         }
     }
 
-    fn current_solution_mut(
+    fn current_solution_mut<
+        F: FnOnce(Solution<<S as System>::Value, ndarray::ViewRepr<&mut <S as System>::Value>>),
+    >(
         &mut self,
-    ) -> Solution<<S as System>::Value, ndarray::ViewRepr<&mut <S as System>::Value>> {
-        Solution {
+        modifier: F,
+        system: &S,
+    ) {
+        modifier(Solution {
             t: self.t,
             y: self.y_nordsieck.data.slice_mut(nd::s![0, ..]),
-        }
+        });
+        // Since the caller has modified the solution vector, the Nordsieck vector has
+        // been invalidated and needs to be reinitialized.
+        self.y_nordsieck = self.stepper.initialize_y_nordsieck(
+            system,
+            self.y_nordsieck.data.shape()[0] - 1,
+            self.y_nordsieck.step_size,
+            self.y_nordsieck.y(),
+        );
     }
 }
 
@@ -557,7 +581,7 @@ impl AdaptiveStepSizeManager {
             beta: 0.4 / order as Float,
             safety_factor: 0.95,
             multiplier_bounds: [1. / 5., 5.],
-            max_error: 2.,
+            max_error: 1.5,
             abs_tol: 1e-5,
             rel_tol: 1e-5,
             step_size: init_step_size,
@@ -572,6 +596,10 @@ impl AdaptiveStepSizeManager {
 
     pub fn with_rel_tol(self, rel_tol: Float) -> Self {
         Self { rel_tol, ..self }
+    }
+
+    pub fn with_max_error(self, max_error: Float) -> Self {
+        Self { max_error, ..self }
     }
 
     pub fn with_step_size_bounds(self, step_size_bounds: [Float; 2]) -> Self {

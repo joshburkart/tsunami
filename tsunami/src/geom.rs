@@ -56,42 +56,46 @@ impl Geometry {
                 use three_d::InnerSpace;
 
                 let basis = sphere.solver.problem().basis.clone();
-                let mut fields = sphere.solver.fields_mut();
-                let mut new_height = fields.height_grid().to_owned();
+                sphere.solver.fields_mut(|mut fields| {
+                    let mut new_height = fields.height_grid().to_owned();
 
-                // Want to generate a power so that a "bump" is generated of half-angle
-                // `half_angle_rad`. Start from FWHM definition:
-                //
-                // ```
-                // 1 / 2 = cos(half angle) ^ (2n)
-                // ```
-                //
-                // Solve for `n`:
-                //
-                // ```
-                // n = log(1 / 2) / (2 * log(cos(half angle)))
-                // ```
-                let half_angle_rad = region_size_rad / 2.;
-                let pow = ((0.5 as Float).ln() / half_angle_rad.cos().ln() / 2.) as f32;
-                log::info!("Setting off earthquake");
-                let click_direction = position.normalize();
-                new_height = &new_height
-                    + &basis.make_scalar(|mu, phi| {
-                        let cos_theta = mu as f32;
-                        let sin_theta = (1. - cos_theta.powi(2)).sqrt() as f32;
-                        let cos_phi = phi.cos() as f32;
-                        let sin_phi = phi.sin() as f32;
-                        let point_direction =
-                            three_d::Vec3::new(sin_theta * cos_phi, sin_theta * sin_phi, cos_theta);
-                        height_nondimen
-                            * point_direction
-                                .dot(click_direction)
-                                .max(0.)
-                                .powi(2)
-                                .powf(pow) as Float
-                    });
+                    // Want to generate a power so that a "bump" is generated of half-angle
+                    // `half_angle_rad`. Start from FWHM definition:
+                    //
+                    // ```
+                    // 1 / 2 = cos(half angle) ^ (2n)
+                    // ```
+                    //
+                    // Solve for `n`:
+                    //
+                    // ```
+                    // n = log(1 / 2) / (2 * log(cos(half angle)))
+                    // ```
+                    let half_angle_rad = region_size_rad / 2.;
+                    let pow = ((0.5 as Float).ln() / half_angle_rad.cos().ln() / 2.) as f32;
+                    log::info!("Setting off earthquake");
+                    let click_direction = position.normalize();
+                    new_height = &new_height
+                        + &basis.make_scalar(|mu, phi| {
+                            let cos_theta = mu as f32;
+                            let sin_theta = (1. - cos_theta.powi(2)).sqrt() as f32;
+                            let cos_phi = phi.cos() as f32;
+                            let sin_phi = phi.sin() as f32;
+                            let point_direction = three_d::Vec3::new(
+                                sin_theta * cos_phi,
+                                sin_theta * sin_phi,
+                                cos_theta,
+                            );
+                            height_nondimen
+                                * point_direction
+                                    .dot(click_direction)
+                                    .max(0.)
+                                    .powi(2)
+                                    .powf(pow) as Float
+                        });
 
-                fields.assign_height(&basis.scalar_to_spectral(&new_height));
+                    fields.assign_height(&basis.scalar_to_spectral(&new_height));
+                });
             }
             _ => {}
         }

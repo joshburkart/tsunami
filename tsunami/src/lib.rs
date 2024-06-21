@@ -343,7 +343,7 @@ pub async fn run() {
                     if let Some(space_position) =
                         pick(&context, &camera, screen_position, &mesh_model)
                     {
-                        let mut tsunami_hint_circle = CpuMesh::sphere(10);
+                        let mut tsunami_hint_circle = CpuMesh::circle(20);
                         let axis = space_position.cross(Vector3::unit_z()).normalize();
                         let angle = space_position.angle(Vector3::unit_z());
                         tsunami_hint_circle
@@ -352,11 +352,8 @@ pub async fn run() {
                             ))
                             .unwrap();
                         tsunami_hint_circle
-                            .transform(&Matrix4::from_nonuniform_scale(1., 1., 0.01))
-                            .unwrap();
-                        tsunami_hint_circle
                             .transform(&Matrix4::from_translation(
-                                Vector3::unit_z().normalize_to(space_position.magnitude()),
+                                Vector3::unit_z().normalize_to(space_position.magnitude() * 1.01),
                             ))
                             .unwrap();
                         tsunami_hint_circle
@@ -411,6 +408,16 @@ pub async fn run() {
                                 );
                                 ui.add_space(-10.);
                             });
+
+                        ui.collapsing(egui::RichText::from("Details").heading(), |ui| {
+                            ui.add_space(-10.);
+                            egui_commonmark::CommonMarkViewer::new("details").show(
+                                ui,
+                                &mut commonmark_cache,
+                                DETAILS_MARKDOWN,
+                            );
+                            ui.add_space(-10.);
+                        });
 
                         egui::CollapsingHeader::new(egui::RichText::from("Settings").heading())
                             .default_open(true)
@@ -518,16 +525,6 @@ pub async fn run() {
                                 });
                                 ui.add_space(10.);
                             });
-
-                        ui.collapsing(egui::RichText::from("Details").heading(), |ui| {
-                            ui.add_space(-10.);
-                            egui_commonmark::CommonMarkViewer::new("details").show(
-                                ui,
-                                &mut commonmark_cache,
-                                DETAILS_MARKDOWN,
-                            );
-                            ui.add_space(-10.);
-                        });
                     });
 
                 gui_context.output(|output| {
@@ -648,10 +645,10 @@ impl DoubleClickDetector {
 }
 
 const INFO_MARKDOWN: &'static str = indoc::indoc! {"
+    Interactive ocean simulations in a web browser. **Double click** to set off a tsunami!
+
     Alpha version — please **do not share yet**! Many rough edges, e.g. advection term not yet
     implemented in spherical geometry.
-        
-    **Double click** to set off a tsunami!
 
     Planned features: realistic terrain (continents/sea floor/etc.), tides, and more...
 "};
@@ -660,8 +657,8 @@ const DETAILS_MARKDOWN: &'static str = indoc::indoc! {"
     Solves the [shallow water equations](https://en.wikipedia.org/wiki/Shallow_water_equations)
     [pseudospectrally](https://en.wikipedia.org/wiki/Pseudo-spectral_method) using a
     [spherical harmonic](https://en.wikipedia.org/wiki/Spherical_harmonics) basis. (Toroidal
-    geometry also included for fun, which uses a rectangular domain with periodic boundary
-    conditions and a Fourier basis.)
+    geometry with more limited functionality also included for fun, which uses a rectangular domain
+    with periodic boundary conditions and a Fourier basis.)
     
     Physical effects included:
     
