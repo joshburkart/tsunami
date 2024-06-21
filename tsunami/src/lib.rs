@@ -157,7 +157,7 @@ pub async fn run() {
 
     let mut camera = Camera::new_perspective(
         window.viewport(),
-        vec3(7.0, 7.0, 7.0) / 3.,
+        vec3(1., 1., 1.) * 2.,
         vec3(0., 0., 0.),
         vec3(0.0, 0.0, 1.0),
         degrees(45.0),
@@ -247,7 +247,7 @@ pub async fn run() {
         material: ColorMaterial::default(),
     };
 
-    let mut tsunami_hint_sphere_object = Gm {
+    let mut tsunami_hint_circle_object = Gm {
         geometry: Mesh::new(&context, &point_mesh),
         material: ColorMaterial::new_transparent(
             &context,
@@ -343,41 +343,48 @@ pub async fn run() {
                     if let Some(space_position) =
                         pick(&context, &camera, screen_position, &mesh_model)
                     {
-                        let mut tsunami_hint_sphere = CpuMesh::sphere(10);
-                        tsunami_hint_sphere
+                        let mut tsunami_hint_circle = CpuMesh::sphere(10);
+                        let axis = space_position.cross(Vector3::unit_z()).normalize();
+                        let angle = space_position.angle(Vector3::unit_z());
+                        tsunami_hint_circle
                             .transform(&Matrix4::from_scale(
                                 (params.earthquake_region_size_mi / EARTH_RADIUS_MI) as f32,
                             ))
                             .unwrap();
-                        tsunami_hint_sphere
-                            .transform(&Matrix4::from_translation(space_position))
+                        tsunami_hint_circle
+                            .transform(&Matrix4::from_nonuniform_scale(1., 1., 0.01))
                             .unwrap();
-                        tsunami_hint_sphere_object.geometry =
-                            Mesh::new(&context, &tsunami_hint_sphere);
-                        tsunami_hint_sphere_object.material.render_states.cull = Cull::None;
+                        tsunami_hint_circle
+                            .transform(&Matrix4::from_translation(
+                                Vector3::unit_z().normalize_to(space_position.magnitude()),
+                            ))
+                            .unwrap();
+                        tsunami_hint_circle
+                            .transform(&Matrix4::from_axis_angle(axis, -angle))
+                            .unwrap();
+                        tsunami_hint_circle_object.geometry =
+                            Mesh::new(&context, &tsunami_hint_circle);
+                        tsunami_hint_circle_object.material.render_states.cull = Cull::None;
                     } else {
-                        tsunami_hint_sphere_object.material.render_states.cull = Cull::FrontAndBack;
+                        tsunami_hint_circle_object.material.render_states.cull = Cull::FrontAndBack;
                     }
                 }
                 _ => {}
             }
         }
 
-        // Set hint sphere color to yellow if in the middle of a double click, red if
-        // completing a double click.
+        // Set hint circle color to red if completing a double click.
         double_click_detector.process_idle();
         match double_click_detector.state {
-            DoubleClickDetectorState::Idle => {
-                tsunami_hint_sphere_object.material.color.g = u8::MAX;
-                tsunami_hint_sphere_object.material.color.b = u8::MAX;
-            }
-            DoubleClickDetectorState::FirstPress(_) | DoubleClickDetectorState::FirstRelease(_) => {
-                tsunami_hint_sphere_object.material.color.g = u8::MAX;
-                tsunami_hint_sphere_object.material.color.b = 0;
+            DoubleClickDetectorState::Idle
+            | DoubleClickDetectorState::FirstPress(_)
+            | DoubleClickDetectorState::FirstRelease(_) => {
+                tsunami_hint_circle_object.material.color.g = u8::MAX;
+                tsunami_hint_circle_object.material.color.b = u8::MAX;
             }
             DoubleClickDetectorState::SecondPress => {
-                tsunami_hint_sphere_object.material.color.g = 0;
-                tsunami_hint_sphere_object.material.color.b = 0;
+                tsunami_hint_circle_object.material.color.g = 0;
+                tsunami_hint_circle_object.material.color.b = 0;
             }
         }
 
@@ -391,6 +398,7 @@ pub async fn run() {
             |gui_context| {
                 egui::Window::new(TITLE)
                     .vscroll(true)
+                    .default_height(600.)
                     .show(gui_context, |ui| {
                         egui::CollapsingHeader::new(egui::RichText::from("Info").heading())
                             .default_open(true)
@@ -481,10 +489,12 @@ pub async fn run() {
                                     .text("substeps per physics update"),
                                 );
                                 ui.label(format!(
-                                    "{:.0} wall ms/substep, {:.0} wall ms/render, {:.0} sim \
-                                     s/substep",
+                                    "{:.0} wall ms/substep, {:.0} wall ms/render",
                                     wall_time_per_renderable_sec * 1000.,
                                     wall_time_per_render_sec * 1000.,
+                                ));
+                                ui.label(format!(
+                                    "{:.0} sim s/substep",
                                     sim_time_per_renderable * time_scale_s()
                                 ));
                                 ui.add_space(10.);
@@ -539,7 +549,7 @@ pub async fn run() {
                 std::iter::empty()
                     .chain(&mesh_model)
                     .chain(&point_cloud_model)
-                    .chain(&tsunami_hint_sphere_object)
+                    .chain(&tsunami_hint_circle_object)
                     .chain(&skybox),
                 &[&ambient, &directional],
             )
@@ -638,11 +648,10 @@ impl DoubleClickDetector {
 }
 
 const INFO_MARKDOWN: &'static str = indoc::indoc! {"
-    Alpha version -- please **do not share yet**! Many rough edges, e.g. advection term not yet
+    Alpha version — please **do not share yet**! Many rough edges, e.g. advection term not yet
     implemented in spherical geometry.
         
-    **Double click** to set off a tsunami! Increase \"substeps per physics update\" below if the
-    simulation is stuttering.
+    **Double click** to set off a tsunami!
 
     Planned features: realistic terrain (continents/sea floor/etc.), tides, and more...
 "};
