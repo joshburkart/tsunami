@@ -49,8 +49,9 @@ pub fn bump_2d_spectral(
         terrain_height,
         kinematic_viscosity,
         rotation_angular_speed: 0.,
-        rel_tol: 1e-3,
-        abs_tol: 1e-4,
+        height_tolerances: Default::default(),
+        velocity_tolerances: Default::default(),
+        tracers_tolerances: Default::default(),
     };
     physics::Solver::new(problem, initial_fields)
 }

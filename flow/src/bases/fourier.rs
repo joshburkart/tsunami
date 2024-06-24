@@ -1,7 +1,7 @@
 use ndarray as nd;
 
 use crate::{
-    bases::{linear_periodic_interpolate, periodic_grid_search, Basis, FftDimension},
+    bases::{periodic_grid_search, periodic_linear_interpolate, Basis, FftDimension},
     float_consts, ComplexFloat, Float, RawFloatData,
 };
 
@@ -14,15 +14,15 @@ pub struct RectangularPeriodicBasis {
     wavenumbers: nd::Array3<ComplexFloat>,
     wavenumbers_sq: nd::Array3<Float>,
 
-    rfft_handler: std::sync::Mutex<ndrustfft::R2cFftHandler<Float>>,
-    fft_handler: std::sync::Mutex<ndrustfft::FftHandler<Float>>,
+    rfft_handler: ndrustfft::R2cFftHandler<Float>,
+    fft_handler: ndrustfft::FftHandler<Float>,
     rfft_output_size: usize,
 }
 
 impl RectangularPeriodicBasis {
     pub fn new(num_points: [usize; 2], lengths: [Float; 2]) -> Self {
-        let rfft_handler = std::sync::Mutex::new(ndrustfft::R2cFftHandler::new(num_points[1]));
-        let fft_handler = std::sync::Mutex::new(ndrustfft::FftHandler::new(num_points[0]));
+        let rfft_handler = ndrustfft::R2cFftHandler::new(num_points[1]);
+        let fft_handler = ndrustfft::FftHandler::new(num_points[0]);
         let rfft_output_size = num_points[1] / 2 + 1;
         // See https://math.mit.edu/~stevenj/fft-deriv.pdf
         let reflect = |index: i64, num_points: i64| {
@@ -92,13 +92,13 @@ impl RectangularPeriodicBasis {
         ndrustfft::ndifft_par(
             &spectral,
             &mut temp_field_1,
-            &mut self.fft_handler.lock().unwrap(),
+            &self.fft_handler,
             first_spatial_axis,
         );
         ndrustfft::ndifft_r2c_par(
             &temp_field_1,
             &mut temp_field_2,
-            &mut self.rfft_handler.lock().unwrap(),
+            &self.rfft_handler,
             first_spatial_axis + 1,
         );
         temp_field_2
@@ -115,13 +115,13 @@ impl RectangularPeriodicBasis {
         ndrustfft::ndfft_r2c_par(
             &grid,
             &mut temp_field_1,
-            &mut self.rfft_handler.lock().unwrap(),
+            &self.rfft_handler,
             first_spatial_axis + 1,
         );
         ndrustfft::ndfft_par(
             &temp_field_1,
             &mut temp_field_2,
-            &mut self.fft_handler.lock().unwrap(),
+            &self.fft_handler,
             first_spatial_axis,
         );
         temp_field_2
@@ -207,7 +207,7 @@ impl Basis for RectangularPeriodicBasis {
             .axis_iter(nd::Axis(1))
             .zip(output.axis_iter_mut(nd::Axis(0)))
         {
-            output_value[[]] = linear_periodic_interpolate(
+            output_value[[]] = periodic_linear_interpolate(
                 point,
                 &periodic_grid_search(self, point),
                 grid.view(),
@@ -229,7 +229,7 @@ impl Basis for RectangularPeriodicBasis {
         {
             let grid_search_result = periodic_grid_search(self, point);
             for k in 0..2 {
-                output_value[[k]] = linear_periodic_interpolate(
+                output_value[[k]] = periodic_linear_interpolate(
                     point,
                     &grid_search_result,
                     velocity_grid.slice(nd::s![k, .., ..]),
@@ -237,7 +237,8 @@ impl Basis for RectangularPeriodicBasis {
                 );
             }
         }
-        output
+        // Scaling hack.
+        output / 2e3
     }
 
     fn gradient(&self, spectral: &Self::SpectralScalarField) -> Self::SpectralVectorField {

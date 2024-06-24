@@ -6,9 +6,9 @@ use crate::{ComplexFloat, Float};
 pub mod fourier;
 pub mod ylm;
 
-pub trait Basis: Sync {
-    type SpectralScalarField;
-    type SpectralVectorField;
+pub trait Basis: Sync + Send {
+    type SpectralScalarField: Sync + Send;
+    type SpectralVectorField: Sync + Send;
 
     fn scalar_spectral_size(&self) -> usize;
     fn vector_spectral_size(&self) -> usize {
@@ -145,7 +145,7 @@ fn periodic_grid_search<B: Basis>(basis: &B, point: nd::ArrayView1<'_, Float>) -
     [make_bracket(0), make_bracket(1)]
 }
 
-fn linear_periodic_interpolate(
+fn periodic_linear_interpolate(
     point: nd::ArrayView1<Float>,
     grid_search_result: &GridSearchResult,
     grid: nd::ArrayView2<'_, Float>,

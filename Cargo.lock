@@ -1300,8 +1300,7 @@ dependencies = [
 [[package]]
 name = "ndrustfft"
 version = "0.4.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0370e069751d4fc8c1a273252323aaa3ac0107eea1e428913facdfedeb9f5fc1"
+source = "git+https://github.com/joshburkart/ndrustfft.git?rev=4b8b8c91ad6e9f81b70cc06723719d031a2e780c#4b8b8c91ad6e9f81b70cc06723719d031a2e780c"
 dependencies = [
  "ndarray",
  "num-traits",

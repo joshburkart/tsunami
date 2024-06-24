@@ -3,7 +3,7 @@ use ndarray as nd;
 use crate::{
     bases,
     odeint::{self, Integrator},
-    ComplexFloat, Float, RawComplexFloatData,
+    ComplexFloat, Float, RawComplexFloatData, RawFloatData,
 };
 
 pub const NUM_TRACER_POINTS: usize = 2000;
@@ -49,7 +49,7 @@ impl<B: bases::Basis> Clone for FieldsSnapshot<B> {
     }
 }
 
-pub struct Fields<S: RawComplexFloatData, B: bases::Basis> {
+pub struct Fields<S: nd::RawData + nd::Data, B: bases::Basis> {
     basis: std::sync::Arc<B>,
     storage: nd::ArrayBase<S, nd::Ix1>,
 }
@@ -63,10 +63,10 @@ impl<'a, B: bases::Basis> Fields<nd::ViewRepr<&'a ComplexFloat>, B> {
     }
 }
 
-impl<'a, B: bases::Basis> Fields<nd::ViewRepr<&'a mut ComplexFloat>, B> {
+impl<'a, A, B: bases::Basis> Fields<nd::ViewRepr<&'a mut A>, B> {
     pub fn new_mut(
         basis: std::sync::Arc<B>,
-        storage: nd::ArrayBase<nd::ViewRepr<&'a mut ComplexFloat>, nd::Ix1>,
+        storage: nd::ArrayBase<nd::ViewRepr<&'a mut A>, nd::Ix1>,
     ) -> Self {
         Self { basis, storage }
     }
@@ -148,11 +148,31 @@ impl<S: RawComplexFloatData + nd::DataMut, B: bases::Basis> Fields<S, B> {
         )
     }
 
-    pub fn assign_tracer_points(&mut self, tracer_points: nd::ArrayView2<Float>) {
+    pub fn assign_tracers(&mut self, tracer_points: nd::ArrayView2<Float>) {
         let offset = self.basis.scalar_spectral_size() + self.basis.vector_spectral_size();
         for (i, point) in tracer_points.axis_iter(nd::Axis(1)).enumerate() {
             self.storage[[offset + i]] = ComplexFloat::new(point[[0]], point[[1]]);
         }
+    }
+}
+
+impl<S: RawFloatData + nd::DataMut, B: bases::Basis> Fields<S, B> {
+    pub fn height_flat_mut(&mut self) -> nd::ArrayViewMut1<'_, Float> {
+        self.storage
+            .slice_mut(nd::s![..self.basis.scalar_spectral_size()])
+    }
+
+    pub fn velocity_flat_mut(&mut self) -> nd::ArrayViewMut1<'_, Float> {
+        self.storage.slice_mut(nd::s![
+            self.basis.scalar_spectral_size()
+                ..self.basis.scalar_spectral_size() + self.basis.vector_spectral_size()
+        ])
+    }
+
+    pub fn tracers_flat_mut(&mut self) -> nd::ArrayViewMut1<'_, Float> {
+        self.storage.slice_mut(nd::s![
+            self.basis.scalar_spectral_size() + self.basis.vector_spectral_size()..
+        ])
     }
 }
 
@@ -173,8 +193,23 @@ pub struct Problem<B: bases::Basis> {
     pub kinematic_viscosity: Float,
     pub rotation_angular_speed: Float,
 
-    pub rel_tol: Float,
-    pub abs_tol: Float,
+    pub height_tolerances: Tolerances,
+    pub velocity_tolerances: Tolerances,
+    pub tracers_tolerances: Tolerances,
+}
+
+pub struct Tolerances {
+    pub rel: Float,
+    pub abs: Float,
+}
+
+impl Default for Tolerances {
+    fn default() -> Self {
+        Self {
+            rel: 1e-5,
+            abs: 1e-5,
+        }
+    }
 }
 
 impl<B: bases::Basis> odeint::System for Problem<B>
@@ -212,30 +247,60 @@ where
             }
         });
 
-        // Height time derivative.
-        fields_time_deriv.assign_height(
-            &(-self.basis.divergence(&self.basis.vector_to_spectral(
-                &(&height_grid.slice(nd::s![nd::NewAxis, .., ..]) * &velocity_grid),
-            ))),
-        );
+        // Compute derivatives in parallel.
+        let height_time_deriv = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let velocity_time_deriv = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let tracers_time_deriv = std::sync::Arc::new(std::sync::Mutex::new(None));
+        rayon::scope(|s| {
+            let velocity_grid = &velocity_grid;
 
-        // Velocity time derivative.
-        let viscous =
-            ComplexFloat::from(self.kinematic_viscosity) * self.basis.vector_laplacian(&velocity);
-        let advection = -self.basis.vector_advection(&velocity_grid, &velocity);
-        let gravity = -self.basis.gradient(&(&height + &self.terrain_height));
-        let coriolis = self.basis.vector_to_spectral(
-            &((-2. * self.rotation_angular_speed) * &self.basis.z_cross(&velocity_grid)),
-        );
-        fields_time_deriv.assign_velocity(&(viscous + advection + gravity + coriolis));
+            // Height time derivative.
+            {
+                let height_time_deriv = height_time_deriv.clone();
+                s.spawn(move |_| {
+                    let mut height_time_deriv = height_time_deriv.lock().unwrap();
+                    *height_time_deriv =
+                        Some(-self.basis.divergence(&self.basis.vector_to_spectral(
+                            &(&height_grid.slice(nd::s![nd::NewAxis, .., ..]) * velocity_grid),
+                        )));
+                });
+            }
 
-        // Tracer points time derivative.
-        fields_time_deriv.assign_tracer_points(
-            (5e5 * self
-                .basis
-                .velocity_to_points(&velocity_grid, fields.tracer_points().view()))
-            .view(),
-        );
+            // Velocity time derivative.
+            {
+                let velocity_time_deriv = velocity_time_deriv.clone();
+                // let velocity_grid = velocity_grid.clone();
+                s.spawn(move |_| {
+                    let viscous = ComplexFloat::from(self.kinematic_viscosity)
+                        * self.basis.vector_laplacian(&velocity);
+                    let advection = -self.basis.vector_advection(&velocity_grid, &velocity);
+                    let gravity = -self.basis.gradient(&(&height + &self.terrain_height));
+                    let coriolis = self.basis.vector_to_spectral(
+                        &((-2. * self.rotation_angular_speed)
+                            * &self.basis.z_cross(&velocity_grid)),
+                    );
+                    let mut velocity_time_deriv = velocity_time_deriv.lock().unwrap();
+                    *velocity_time_deriv = Some(viscous + advection + gravity + coriolis);
+                });
+            }
+
+            // Tracer points time derivative.
+            {
+                let tracers_time_deriv = tracers_time_deriv.clone();
+                s.spawn(move |_| {
+                    let mut tracers_time_deriv = tracers_time_deriv.lock().unwrap();
+                    *tracers_time_deriv = Some(
+                        3e5 * self
+                            .basis
+                            .velocity_to_points(velocity_grid, fields.tracer_points().view()),
+                    );
+                });
+            }
+        });
+        fields_time_deriv.assign_height(&height_time_deriv.lock().unwrap().as_ref().unwrap());
+        fields_time_deriv.assign_velocity(&velocity_time_deriv.lock().unwrap().as_ref().unwrap());
+        fields_time_deriv
+            .assign_tracers(tracers_time_deriv.lock().unwrap().as_ref().unwrap().view());
     }
 }
 
@@ -272,20 +337,34 @@ where
         problem: Problem<B>,
         initial_fields: Fields<nd::OwnedRepr<ComplexFloat>, B>,
     ) -> Self {
-        let mut storage = nd::Array1::zeros(initial_fields.size());
+        let size = initial_fields.size();
+
+        let mut storage = nd::Array1::zeros(size);
         let mut fields = Fields::new_mut(problem.basis.clone(), storage.view_mut());
         fields.assign_height(&initial_fields.height_spectral());
         fields.assign_velocity(&initial_fields.velocity_spectral());
-        fields.assign_tracer_points(problem.basis.make_random_points().view());
+        fields.assign_tracers(problem.basis.make_random_points().view());
+
+        let mut abs_tol_storage = nd::Array1::<Float>::zeros(size);
+        let mut abs_tol_fields = Fields::new_mut(problem.basis.clone(), abs_tol_storage.view_mut());
+        *&mut abs_tol_fields.height_flat_mut() += problem.height_tolerances.abs;
+        *&mut abs_tol_fields.velocity_flat_mut() += problem.velocity_tolerances.abs;
+        *&mut abs_tol_fields.tracers_flat_mut() += problem.tracers_tolerances.abs;
+
+        let mut rel_tol_storage = nd::Array1::<Float>::zeros(size);
+        let mut rel_tol_fields = Fields::new_mut(problem.basis.clone(), rel_tol_storage.view_mut());
+        *&mut rel_tol_fields.height_flat_mut() += problem.height_tolerances.rel;
+        *&mut rel_tol_fields.velocity_flat_mut() += problem.velocity_tolerances.rel;
+        *&mut rel_tol_fields.tracers_flat_mut() += problem.tracers_tolerances.rel;
 
         let order = 3;
         let integrator = odeint::IntegratorNordsieckAdamsBashforth::new(
             order,
             &problem,
             storage,
-            odeint::AdaptiveStepSizeManager::new(order, 1e-2)
-                .with_abs_tol(problem.abs_tol)
-                .with_rel_tol(problem.rel_tol),
+            odeint::AdaptiveStepSizeManager::new(order, size, 1e-2)
+                .with_abs_tol(abs_tol_storage)
+                .with_rel_tol(rel_tol_storage),
         );
 
         Self {

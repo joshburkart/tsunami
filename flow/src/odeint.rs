@@ -55,161 +55,6 @@ pub trait System {
     );
 }
 
-/// An explicit ODE integrator using Bulirsch-Stoer.
-pub struct IntegratorBulirschStoer<S: System> {
-    t: Float,
-    y: nd::Array1<S::Value>,
-
-    delta_t: Float,
-
-    abs_tol: Float,
-    rel_tol: Float,
-
-    max_iterations: usize,
-}
-
-impl<S: System> IntegratorBulirschStoer<S>
-where
-    S::Value: Value,
-{
-    pub fn new(y_init: nd::Array1<S::Value>, delta_t: Float) -> Self {
-        Self {
-            t: 0.,
-            y: y_init,
-            delta_t,
-            abs_tol: 1e-5,
-            rel_tol: 1e-5,
-            max_iterations: 10,
-        }
-    }
-
-    pub fn with_abs_tol(self, abs_tol: Float) -> Self {
-        Self { abs_tol, ..self }
-    }
-
-    pub fn with_rel_tol(self, rel_tol: Float) -> Self {
-        Self { rel_tol, ..self }
-    }
-
-    pub fn with_max_iterations(self, max_iterations: usize) -> Self {
-        Self {
-            max_iterations,
-            ..self
-        }
-    }
-
-    fn midpoint_step(
-        &self,
-        system: &S,
-        n: usize,
-        f_init: &nd::Array1<S::Value>,
-    ) -> nd::Array1<S::Value> {
-        let step_size = self.delta_t / n as Float;
-
-        // 0    1    2    3    4    5    6    n
-        //                  ..
-        //           zi  zip1
-        //           zip1 zi
-        //                zi zip1
-        //                  ..
-        //                               zi  zip1
-        let mut zi = self.y.clone();
-        let mut zip1 = &zi + f_init * S::Value::from(step_size);
-        let mut fi = f_init.clone();
-
-        for _i in 1..n {
-            std::mem::swap(&mut zi, &mut zip1);
-            system.system(zi.view(), fi.view_mut());
-            zip1 += &(&fi * S::Value::from(2. * step_size));
-        }
-
-        system.system(zip1.view(), fi.view_mut());
-        (&zi + &zip1 + fi * S::Value::from(step_size)) * S::Value::from(0.5)
-    }
-}
-
-impl<S: System> Integrator<S> for IntegratorBulirschStoer<S>
-where
-    S::Value: Value,
-{
-    fn current_solution(&self) -> Solution<S::Value, nd::ViewRepr<&S::Value>> {
-        Solution {
-            t: self.t,
-            y: self.y.view(),
-        }
-    }
-
-    fn current_solution_mut<
-        F: FnOnce(Solution<<S as System>::Value, ndarray::ViewRepr<&mut <S as System>::Value>>),
-    >(
-        &mut self,
-        modifier: F,
-        _system: &S,
-    ) {
-        modifier(Solution {
-            t: self.t,
-            y: self.y.view_mut(),
-        });
-    }
-
-    fn step(&mut self, system: &S) {
-        let f_init = {
-            let mut f_init = nd::Array1::zeros(self.y.raw_dim());
-            system.system(self.y.view(), f_init.view_mut());
-            f_init
-        };
-
-        let compute_n = |k| 2 * (k + 1);
-
-        let mut T = Vec::<Vec<nd::Array1<S::Value>>>::new();
-        for k in 0..self.max_iterations {
-            let n = compute_n(k);
-            let mut Tk = Vec::with_capacity(k + 1);
-            Tk.push(self.midpoint_step(system, n, &f_init));
-            for j in 0..k {
-                Tk.push(
-                    &Tk[j]
-                        + (&Tk[j] - &T[k - 1][j])
-                            / S::Value::from(
-                                (n as Float / compute_n(k - j - 1) as Float).powi(2) - 1.,
-                            ),
-                );
-            }
-
-            if k > 0 {
-                let last_two = Tk.last_chunk::<2>().unwrap();
-                let error = compute_scaled_truncation_error(
-                    last_two[0].view(),
-                    last_two[1].view(),
-                    self.abs_tol,
-                    self.rel_tol,
-                );
-                if error <= 1. {
-                    self.y = last_two[1].to_owned();
-                    self.t += self.delta_t;
-                    log::info!("Converged at step {k}, n={n}, last error was: {error:?}");
-                    return;
-                }
-            }
-
-            T.push(Tk);
-        }
-
-        let last_two = T.last().unwrap().last_chunk::<2>().unwrap();
-        let error = compute_scaled_truncation_error(
-            last_two[0].view(),
-            last_two[1].view(),
-            self.abs_tol,
-            self.rel_tol,
-        );
-        panic!(
-            "Failed to converge at step {}, n={}, last error was: {error:?}, T:\n{T:?}",
-            self.max_iterations - 1,
-            compute_n(self.max_iterations - 1)
-        );
-    }
-}
-
 /// An explicit, adaptive-stepsize ODE integrator using a Nordsieck (multivalue)
 /// version Adams-Bashforth.
 ///
@@ -565,8 +410,8 @@ pub struct AdaptiveStepSizeManager {
     multiplier_bounds: [Float; 2],
     max_error: Float,
 
-    abs_tol: Float,
-    rel_tol: Float,
+    abs_tol: nd::Array1<Float>,
+    rel_tol: nd::Array1<Float>,
 
     step_size: Float,
     prev_error: Option<Float>,
@@ -575,26 +420,26 @@ pub struct AdaptiveStepSizeManager {
 }
 
 impl AdaptiveStepSizeManager {
-    pub fn new(order: usize, init_step_size: Float) -> Self {
+    pub fn new(order: usize, solution_dim: usize, init_step_size: Float) -> Self {
         Self {
             alpha: 0.7 / order as Float,
             beta: 0.4 / order as Float,
             safety_factor: 0.95,
             multiplier_bounds: [1. / 5., 5.],
             max_error: 1.5,
-            abs_tol: 1e-5,
-            rel_tol: 1e-5,
+            abs_tol: nd::Array1::from_elem(solution_dim, 1e-5),
+            rel_tol: nd::Array1::from_elem(solution_dim, 1e-5),
             step_size: init_step_size,
             prev_error: None,
             step_size_bounds: [1e-7, Float::INFINITY],
         }
     }
 
-    pub fn with_abs_tol(self, abs_tol: Float) -> Self {
+    pub fn with_abs_tol(self, abs_tol: nd::Array1<Float>) -> Self {
         Self { abs_tol, ..self }
     }
 
-    pub fn with_rel_tol(self, rel_tol: Float) -> Self {
+    pub fn with_rel_tol(self, rel_tol: nd::Array1<Float>) -> Self {
         Self { rel_tol, ..self }
     }
 
@@ -620,7 +465,7 @@ impl StepSizePolicy for AdaptiveStepSizeManager {
         y: nd::ArrayView1<V>,
         y_alt: nd::ArrayView1<V>,
     ) -> StepResult {
-        let error = compute_scaled_truncation_error(y, y_alt, self.abs_tol, self.rel_tol);
+        let error = compute_scaled_truncation_error(y, y_alt, &self.abs_tol, &self.rel_tol);
         let multiplier = if let Some(prev_error) = self.prev_error {
             let upper = if prev_error > 1. {
                 1.
@@ -679,12 +524,14 @@ impl StepSizePolicy for FixedStepSize {
 fn compute_scaled_truncation_error<V: Value>(
     y: nd::ArrayView1<V>,
     y_alt: nd::ArrayView1<V>,
-    abs_tol: Float,
-    rel_tol: Float,
+    abs_tol: &nd::Array1<Float>,
+    rel_tol: &nd::Array1<Float>,
 ) -> Float {
     (y.iter()
         .zip(y_alt.iter())
-        .map(|(&yi, &yi_alt)| {
+        .zip(abs_tol.iter())
+        .zip(rel_tol.iter())
+        .map(|(((&yi, &yi_alt), &abs_tol), &rel_tol)| {
             let scale = abs_tol + rel_tol * yi_alt.norm_sq().max(yi.norm_sq()).sqrt();
             (yi - yi_alt).norm_sq() / scale.powi(2)
         })
@@ -745,12 +592,6 @@ mod tests {
 
     #[test]
     fn test_exp() {
-        test_exp_impl(|_system| {
-            IntegratorBulirschStoer::<ExpSystem>::new(nd::array![1.], 2.)
-                .with_abs_tol(1e-4)
-                .with_rel_tol(1e-4)
-        });
-
         for order in 2..=5 {
             test_exp_impl(|system| {
                 let fixed_step_size = FixedStepSize::new(1e-3);
@@ -784,14 +625,6 @@ mod tests {
 
     #[test]
     fn test_trig() {
-        test_trig_impl(
-            |_system, y_init| {
-                IntegratorBulirschStoer::new(y_init, 1.)
-                    .with_abs_tol(1e-6)
-                    .with_rel_tol(0.)
-            },
-            1612,
-        );
         for (order, expected_num_system_evals) in [(2, 3906), (3, 1390), (4, 766), (5, 526)] {
             test_trig_impl(
                 |system, y_init| {
@@ -799,9 +632,9 @@ mod tests {
                         order,
                         system,
                         y_init,
-                        AdaptiveStepSizeManager::new(order, 1e-2)
-                            .with_abs_tol(1e-6)
-                            .with_rel_tol(1e-6),
+                        AdaptiveStepSizeManager::new(order, 2, 1e-2)
+                            .with_abs_tol(nd::Array1::from_elem(2, 1e-6))
+                            .with_rel_tol(nd::Array1::from_elem(2, 1e-6)),
                     );
                     println!("{:?}", integrator.y_nordsieck);
                     integrator

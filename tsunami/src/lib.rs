@@ -62,7 +62,7 @@ impl Default for Parameters {
             earthquake_height_m: -1.,
             substeps_per_physics_step: 1,
             height_exaggeration_factor: 1000.,
-            show_points: ShowPoints::None,
+            show_points: ShowPoints::Tracer,
             earthquake_position: Some(three_d::Vec3::new(0.5, -0.5, 0.5)),
             earthquake_triggered: false,
         }

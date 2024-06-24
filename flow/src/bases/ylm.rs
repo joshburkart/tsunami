@@ -2,7 +2,7 @@ use ndarray as nd;
 use ndarray::parallel::prelude::*;
 
 use crate::{
-    bases::{linear_periodic_interpolate, periodic_grid_search, Basis},
+    bases::{periodic_grid_search, periodic_linear_interpolate, Basis},
     float_consts, ComplexFloat, Float,
 };
 
@@ -12,7 +12,7 @@ pub struct SphericalHarmonicBasis {
 
     mu_gauss_legendre_quad: GaussLegendreQuadrature,
     phi_grid: nd::Array1<Float>,
-    rfft_handler: std::sync::Mutex<ndrustfft::R2cFftHandler<Float>>,
+    rfft_handler: ndrustfft::R2cFftHandler<Float>,
 
     vector_spherical_harmonics: VectorSphericalHarmonics,
 }
@@ -41,7 +41,7 @@ impl SphericalHarmonicBasis {
             Lambda_sq,
             mu_gauss_legendre_quad,
             phi_grid,
-            rfft_handler: rfft_handler.into(),
+            rfft_handler,
             vector_spherical_harmonics,
         }
     }
@@ -150,12 +150,7 @@ impl Basis for SphericalHarmonicBasis {
 
         let mut f_mu_phi =
             nd::Array2::zeros((self.mu_gauss_legendre_quad.nodes.len(), self.phi_grid.len()));
-        ndrustfft::ndifft_r2c_par(
-            &f_mu_m,
-            &mut f_mu_phi,
-            &mut *self.rfft_handler.lock().unwrap(),
-            1,
-        );
+        ndrustfft::ndifft_r2c_par(&f_mu_m, &mut f_mu_phi, &self.rfft_handler, 1);
 
         f_mu_phi
     }
@@ -194,12 +189,7 @@ impl Basis for SphericalHarmonicBasis {
             self.mu_gauss_legendre_quad.nodes.len(),
             self.phi_grid.len(),
         ));
-        ndrustfft::ndifft_r2c_par(
-            &f_comp_mu_m,
-            &mut f_comp_mu_phi,
-            &mut *self.rfft_handler.lock().unwrap(),
-            2,
-        );
+        ndrustfft::ndifft_r2c_par(&f_comp_mu_m, &mut f_comp_mu_phi, &self.rfft_handler, 2);
 
         f_comp_mu_phi
     }
@@ -207,12 +197,7 @@ impl Basis for SphericalHarmonicBasis {
     fn scalar_to_spectral(&self, grid: &nd::Array2<Float>) -> SphericalHarmonicField {
         let mut f_mu_m =
             nd::Array2::zeros((self.mu_gauss_legendre_quad.nodes.len(), self.max_l + 1));
-        ndrustfft::ndfft_r2c_par(
-            &grid,
-            &mut f_mu_m,
-            &mut *self.rfft_handler.lock().unwrap(),
-            1,
-        );
+        ndrustfft::ndfft_r2c_par(&grid, &mut f_mu_m, &self.rfft_handler, 1);
         f_mu_m *= ComplexFloat::from(float_consts::TAU / (2 * self.max_l + 1) as Float);
 
         let P_l_m_mu = &self.vector_spherical_harmonics.P_l_m_mu;
@@ -236,12 +221,7 @@ impl Basis for SphericalHarmonicBasis {
     fn vector_to_spectral(&self, grid: &nd::Array3<Float>) -> VectorSphericalHarmonicField {
         let mut f_comp_mu_m =
             nd::Array3::zeros((2, self.mu_gauss_legendre_quad.nodes.len(), self.max_l + 1));
-        ndrustfft::ndfft_r2c_par(
-            &grid,
-            &mut f_comp_mu_m,
-            &mut *self.rfft_handler.lock().unwrap(),
-            2,
-        );
+        ndrustfft::ndfft_r2c_par(&grid, &mut f_comp_mu_m, &self.rfft_handler, 2);
         f_comp_mu_m *= ComplexFloat::from(float_consts::TAU / (2 * self.max_l + 1) as Float);
         let fw_comp_mu_m = {
             f_comp_mu_m.zip_mut_with(
@@ -291,26 +271,27 @@ impl Basis for SphericalHarmonicBasis {
         let mut output = nd::Array1::zeros(points.shape()[1]);
         let top_value = grid.slice(nd::s![0, ..]).mean().unwrap();
         let bottom_value = grid.slice(nd::s![-1, ..]).mean().unwrap();
-        for (point, mut output_value) in points
-            .axis_iter(nd::Axis(1))
-            .zip(output.axis_iter_mut(nd::Axis(0)))
-        {
-            let grid_search_result = periodic_grid_search(self, point);
-            output_value[[]] = if grid_search_result[0][1].index == 0 {
-                if grid_search_result[0][1].value > 0. {
-                    top_value
+        output
+            .axis_iter_mut(nd::Axis(0))
+            .into_par_iter()
+            .zip_eq(points.axis_iter(nd::Axis(1)))
+            .for_each(|(mut output_value, point)| {
+                let grid_search_result = periodic_grid_search(self, point);
+                output_value[[]] = if grid_search_result[0][1].index == 0 {
+                    if grid_search_result[0][1].value > 0. {
+                        top_value
+                    } else {
+                        bottom_value
+                    }
                 } else {
-                    bottom_value
-                }
-            } else {
-                linear_periodic_interpolate(
-                    point,
-                    &grid_search_result,
-                    grid.view(),
-                    &self.lengths(),
-                )
-            };
-        }
+                    periodic_linear_interpolate(
+                        point,
+                        &grid_search_result,
+                        grid.view(),
+                        &self.lengths(),
+                    )
+                };
+            });
         output
     }
 
@@ -351,7 +332,7 @@ impl Basis for SphericalHarmonicBasis {
         output
             .axis_iter_mut(nd::Axis(1))
             .into_par_iter()
-            .zip_eq(points.axis_iter(nd::Axis(1)).into_par_iter())
+            .zip_eq(points.axis_iter(nd::Axis(1)))
             .for_each(|(mut output_value, point)| {
                 let grid_search_result = periodic_grid_search(self, point);
                 let mut interpolated_cartesian_velocity = nd::Array1::zeros(3);
@@ -364,7 +345,7 @@ impl Basis for SphericalHarmonicBasis {
                     };
                 } else {
                     for k in 0..3 {
-                        interpolated_cartesian_velocity[[k]] = linear_periodic_interpolate(
+                        interpolated_cartesian_velocity[[k]] = periodic_linear_interpolate(
                             point,
                             &grid_search_result,
                             cartesian_velocity_grid.slice(nd::s![k, .., ..]),

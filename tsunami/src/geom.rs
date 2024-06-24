@@ -205,14 +205,24 @@ impl SphereGeometry {
         let mut initial_fields = flow::physics::Fields::zeros(basis.clone());
         let initial_height_grid = basis.make_scalar(|_, _| base_height);
         initial_fields.assign_height(&basis.scalar_to_spectral(&initial_height_grid));
-        initial_fields.assign_tracer_points(basis.make_random_points().view());
+        initial_fields.assign_tracers(basis.make_random_points().view());
         let problem = flow::physics::Problem {
             basis,
             terrain_height,
             kinematic_viscosity,
             rotation_angular_speed,
-            rel_tol: 1e-5,
-            abs_tol: 1e-10,
+            height_tolerances: flow::physics::Tolerances {
+                rel: 1e-5,
+                abs: 1e-10,
+            },
+            velocity_tolerances: flow::physics::Tolerances {
+                rel: 1e-4,
+                abs: 1e-4,
+            },
+            tracers_tolerances: flow::physics::Tolerances {
+                rel: 1e-2,
+                abs: 1e-2,
+            },
         };
         (
             base_height,
@@ -358,14 +368,24 @@ impl TorusGeometry {
                         .powi(2)
                         .powf(pow(bump_size, lengths[1]))
         })));
-        initial_fields.assign_tracer_points(basis.make_random_points().view());
+        initial_fields.assign_tracers(basis.make_random_points().view());
         let problem = flow::physics::Problem {
             basis,
             terrain_height,
             kinematic_viscosity,
             rotation_angular_speed,
-            rel_tol: 1e-3,
-            abs_tol: 1e-3,
+            height_tolerances: flow::physics::Tolerances {
+                rel: 1e-3,
+                abs: 1e-3,
+            },
+            velocity_tolerances: flow::physics::Tolerances {
+                rel: 1e-3,
+                abs: 1e-3,
+            },
+            tracers_tolerances: flow::physics::Tolerances {
+                rel: 1e-3,
+                abs: 1e-3,
+            },
         };
         (
             base_height,
