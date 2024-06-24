@@ -6,6 +6,8 @@ use crate::{
     ComplexFloat, Float, RawComplexFloatData,
 };
 
+pub const NUM_TRACER_POINTS: usize = 2000;
+
 pub struct FieldsSnapshot<B: bases::Basis> {
     pub t: Float,
     pub fields: Fields<nd::OwnedRepr<ComplexFloat>, B>,
@@ -81,7 +83,7 @@ impl<B: bases::Basis> Fields<nd::OwnedRepr<ComplexFloat>, B> {
 
 impl<B: bases::Basis> Fields<nd::OwnedRepr<ComplexFloat>, B> {
     pub fn zeros(basis: std::sync::Arc<B>) -> Self {
-        let len = basis.scalar_spectral_size() + basis.vector_spectral_size();
+        let len = basis.scalar_spectral_size() + basis.vector_spectral_size() + NUM_TRACER_POINTS;
         let storage = nd::Array1::zeros([len]);
         Self { basis, storage }
     }
@@ -89,7 +91,7 @@ impl<B: bases::Basis> Fields<nd::OwnedRepr<ComplexFloat>, B> {
 
 impl<S: RawComplexFloatData, B: bases::Basis> Fields<S, B> {
     pub fn size(&self) -> usize {
-        self.basis.scalar_spectral_size() + self.basis.vector_spectral_size()
+        self.basis.scalar_spectral_size() + self.basis.vector_spectral_size() + NUM_TRACER_POINTS
     }
 
     pub fn height_spectral(&self) -> B::SpectralScalarField {
@@ -105,13 +107,27 @@ impl<S: RawComplexFloatData, B: bases::Basis> Fields<S, B> {
 
     pub fn velocity_spectral(&self) -> B::SpectralVectorField {
         let scalar_size = self.basis.scalar_spectral_size();
-        self.basis
-            .vector_from_slice(&self.storage.as_slice().unwrap()[scalar_size..])
+        let vector_size = self.basis.vector_spectral_size();
+        self.basis.vector_from_slice(
+            &self.storage.as_slice().unwrap()[scalar_size..scalar_size + vector_size],
+        )
     }
 
     pub fn velocity_grid(&self) -> nd::Array3<Float> {
         let spectral = self.velocity_spectral();
         self.basis.vector_to_grid(&spectral)
+    }
+
+    pub fn tracer_points(&self) -> nd::Array2<Float> {
+        let scalar_size = self.basis.scalar_spectral_size();
+        let vector_size = self.basis.vector_spectral_size();
+        let points_complex = &self.storage.as_slice().unwrap()[scalar_size + vector_size..];
+        let mut points = nd::Array2::zeros((2, points_complex.len()));
+        for (i, point_complex) in points_complex.iter().enumerate() {
+            points[[0, i]] = point_complex.re;
+            points[[1, i]] = point_complex.im;
+        }
+        points
     }
 }
 
@@ -124,10 +140,19 @@ impl<S: RawComplexFloatData + nd::DataMut, B: bases::Basis> Fields<S, B> {
     }
 
     pub fn assign_velocity(&mut self, velocity: &B::SpectralVectorField) {
+        let scalar_size = self.basis.scalar_spectral_size();
+        let vector_size = self.basis.vector_spectral_size();
         self.basis.vector_to_slice(
             velocity,
-            &mut self.storage.as_slice_mut().unwrap()[self.basis.scalar_spectral_size()..],
+            &mut self.storage.as_slice_mut().unwrap()[scalar_size..scalar_size + vector_size],
         )
+    }
+
+    pub fn assign_tracer_points(&mut self, tracer_points: nd::ArrayView2<Float>) {
+        let offset = self.basis.scalar_spectral_size() + self.basis.vector_spectral_size();
+        for (i, point) in tracer_points.axis_iter(nd::Axis(1)).enumerate() {
+            self.storage[[offset + i]] = ComplexFloat::new(point[[0]], point[[1]]);
+        }
     }
 }
 
@@ -203,6 +228,14 @@ where
             &((-2. * self.rotation_angular_speed) * &self.basis.z_cross(&velocity_grid)),
         );
         fields_time_deriv.assign_velocity(&(viscous + advection + gravity + coriolis));
+
+        // Tracer points time derivative.
+        fields_time_deriv.assign_tracer_points(
+            (5e5 * self
+                .basis
+                .velocity_to_points(&velocity_grid, fields.tracer_points().view()))
+            .view(),
+        );
     }
 }
 
@@ -243,6 +276,7 @@ where
         let mut fields = Fields::new_mut(problem.basis.clone(), storage.view_mut());
         fields.assign_height(&initial_fields.height_spectral());
         fields.assign_velocity(&initial_fields.velocity_spectral());
+        fields.assign_tracer_points(problem.basis.make_random_points().view());
 
         let order = 3;
         let integrator = odeint::IntegratorNordsieckAdamsBashforth::new(

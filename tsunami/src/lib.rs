@@ -44,7 +44,7 @@ struct Parameters {
     pub substeps_per_physics_step: usize,
 
     pub height_exaggeration_factor: Float,
-    pub show_point_cloud: bool,
+    pub show_points: ShowPoints,
 
     pub earthquake_position: Option<Vec3>,
     // Response set by the physics thread after an earthquake trigger has been read and handled.
@@ -60,13 +60,20 @@ impl Default for Parameters {
             rotation_period_hr: 24.,
             earthquake_region_size_mi: 300.,
             earthquake_height_m: -1.,
-            substeps_per_physics_step: 3,
+            substeps_per_physics_step: 1,
             height_exaggeration_factor: 1000.,
-            show_point_cloud: false,
+            show_points: ShowPoints::None,
             earthquake_position: Some(three_d::Vec3::new(0.5, -0.5, 0.5)),
             earthquake_triggered: false,
         }
     }
+}
+
+#[derive(Clone, PartialEq)]
+enum ShowPoints {
+    Quadrature,
+    Tracer,
+    None,
 }
 
 fn physics_loop(
@@ -234,11 +241,23 @@ pub async fn run() {
 
     let mut point_mesh = CpuMesh::sphere(10);
     point_mesh.transform(&Mat4::from_scale(0.002)).unwrap();
-    let mut point_cloud_model = Gm {
+    let mut quadrature_point_cloud_model = Gm {
         geometry: InstancedMesh::new(
             &context,
             &PointCloud {
-                positions: Positions::F64(rendering.points),
+                positions: Positions::F64(rendering.quadrature_points),
+                colors: None,
+            }
+            .into(),
+            &point_mesh,
+        ),
+        material: ColorMaterial::default(),
+    };
+    let mut tracer_point_cloud_model = Gm {
+        geometry: InstancedMesh::new(
+            &context,
+            &PointCloud {
+                positions: Positions::F64(rendering.tracer_points),
                 colors: None,
             }
             .into(),
@@ -286,7 +305,7 @@ pub async fn run() {
                 + 0.02
                     * now
                         .duration_since(wall_time_of_last_renderable)
-                        .as_secs_f32();
+                        .as_secs_f64();
             sim_time_per_renderable = 0.9 * sim_time_per_renderable
                 + 0.1 * (renderable.t_nondimen() - sim_time_of_last_renderable);
 
@@ -298,19 +317,34 @@ pub async fn run() {
         {
             mesh_model.geometry = Mesh::new(&context, &rendering_data.mesh.into());
 
-            if params.show_point_cloud {
-                point_cloud_model.geometry = InstancedMesh::new(
+            if let ShowPoints::Quadrature = params.show_points {
+                quadrature_point_cloud_model.geometry = InstancedMesh::new(
                     &context,
                     &PointCloud {
-                        positions: Positions::F64(rendering_data.points),
+                        positions: Positions::F64(rendering_data.quadrature_points),
                         colors: None,
                     }
                     .into(),
                     &point_mesh,
                 );
-                point_cloud_model.material.render_states.cull = Cull::None;
+                quadrature_point_cloud_model.material.render_states.cull = Cull::None;
             } else {
-                point_cloud_model.material.render_states.cull = Cull::FrontAndBack;
+                quadrature_point_cloud_model.material.render_states.cull = Cull::FrontAndBack;
+            }
+
+            if let ShowPoints::Tracer = params.show_points {
+                tracer_point_cloud_model.geometry = InstancedMesh::new(
+                    &context,
+                    &PointCloud {
+                        positions: Positions::F64(rendering_data.tracer_points),
+                        colors: None,
+                    }
+                    .into(),
+                    &point_mesh,
+                );
+                tracer_point_cloud_model.material.render_states.cull = Cull::None;
+            } else {
+                tracer_point_cloud_model.material.render_states.cull = Cull::FrontAndBack;
             }
         }
 
@@ -340,9 +374,10 @@ pub async fn run() {
                     position: screen_position,
                     ..
                 } => {
-                    if let Some(space_position) =
-                        pick(&context, &camera, screen_position, &mesh_model)
-                    {
+                    if let (Some(space_position), geom::GeometryType::Sphere) = (
+                        pick(&context, &camera, screen_position, &mesh_model),
+                        params.geometry_type,
+                    ) {
                         let mut tsunami_hint_circle = CpuMesh::circle(20);
                         let axis = space_position.cross(Vector3::unit_z()).normalize();
                         let angle = space_position.angle(Vector3::unit_z());
@@ -469,10 +504,24 @@ pub async fn run() {
                                     .text("height exaggeration")
                                     .suffix("×"),
                                 );
-                                ui.add(egui::Checkbox::new(
-                                    &mut params.show_point_cloud,
-                                    "show quadrature points",
-                                ));
+                                ui.horizontal(|ui| {
+                                    ui.radio_value(
+                                        &mut params.show_points,
+                                        ShowPoints::Quadrature,
+                                        "quadrature",
+                                    );
+                                    ui.radio_value(
+                                        &mut params.show_points,
+                                        ShowPoints::Tracer,
+                                        "tracer",
+                                    );
+                                    ui.radio_value(
+                                        &mut params.show_points,
+                                        ShowPoints::None,
+                                        "none",
+                                    );
+                                    ui.label("show points");
+                                });
                                 ui.add_space(10.);
 
                                 ui.label(egui::RichText::new("Performance").strong());
@@ -496,13 +545,15 @@ pub async fn run() {
                                     .text("substeps per physics update"),
                                 );
                                 ui.label(format!(
-                                    "{:.0} wall ms/substep, {:.0} wall ms/render",
+                                    "({:.0}, {:.0}) wall ms/(substep, render)",
                                     wall_time_per_renderable_sec * 1000.,
                                     wall_time_per_render_sec * 1000.,
                                 ));
                                 ui.label(format!(
-                                    "{:.0} sim s/substep",
+                                    "({:.0}, {:.1}) sim s/(substep, wall ms)",
+                                    sim_time_per_renderable * time_scale_s(),
                                     sim_time_per_renderable * time_scale_s()
+                                        / (wall_time_per_renderable_sec * 1000.),
                                 ));
                                 ui.add_space(10.);
 
@@ -545,7 +596,8 @@ pub async fn run() {
                 &camera,
                 std::iter::empty()
                     .chain(&mesh_model)
-                    .chain(&point_cloud_model)
+                    .chain(&quadrature_point_cloud_model)
+                    .chain(&tracer_point_cloud_model)
                     .chain(&tsunami_hint_circle_object)
                     .chain(&skybox),
                 &[&ambient, &directional],

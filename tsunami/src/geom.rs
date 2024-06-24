@@ -138,6 +138,8 @@ impl SphereGeometry {
         let curr_fields_snapshot = solver.fields_snapshot();
 
         let [mu_grid, phi_grid] = solver.problem().basis.axes();
+        let mu_grid = mu_grid.clone();
+        let phi_grid = phi_grid.clone();
 
         Self {
             base_height,
@@ -162,12 +164,26 @@ impl SphereGeometry {
 
     pub fn make_renderables(&self, num: usize) -> impl Iterator<Item = SphereRenderable> + '_ {
         flow::physics::interp_between(&self.prev_fields_snapshot, &self.curr_fields_snapshot, num)
-            .map(|fields_snapshot| SphereRenderable {
-                t: fields_snapshot.t,
-                base_height: self.base_height,
-                mu_grid: self.mu_grid.clone(),
-                phi_grid: self.phi_grid.clone(),
-                height_array: fields_snapshot.fields.height_grid(),
+            .map(|fields_snapshot| {
+                use flow::bases::Basis;
+
+                let height_grid = fields_snapshot.fields.height_grid();
+                let tracer_points_mu_phi = fields_snapshot.fields.tracer_points();
+                let tracer_heights = self
+                    .solver
+                    .problem()
+                    .basis
+                    .scalar_to_points(&height_grid, tracer_points_mu_phi.view());
+
+                SphereRenderable {
+                    t: fields_snapshot.t,
+                    base_height: self.base_height,
+                    mu_grid: self.mu_grid.clone(),
+                    phi_grid: self.phi_grid.clone(),
+                    height_array: height_grid,
+                    tracer_points_mu_phi,
+                    tracer_heights,
+                }
             })
     }
 
@@ -189,6 +205,7 @@ impl SphereGeometry {
         let mut initial_fields = flow::physics::Fields::zeros(basis.clone());
         let initial_height_grid = basis.make_scalar(|_, _| base_height);
         initial_fields.assign_height(&basis.scalar_to_spectral(&initial_height_grid));
+        initial_fields.assign_tracer_points(basis.make_random_points().view());
         let problem = flow::physics::Problem {
             basis,
             terrain_height,
@@ -232,8 +249,8 @@ impl TorusGeometry {
 
         let major_radius = axes[0][1] * axes[0].len() as Float / float_consts::TAU;
         let minor_radius = axes[1][1] * axes[1].len() as Float / float_consts::TAU;
-        let theta_grid = &axes[0] / major_radius;
-        let phi_grid = &axes[1] / minor_radius;
+        let theta_grid = axes[0] / major_radius;
+        let phi_grid = axes[1] / minor_radius;
 
         Self {
             base_height,
@@ -261,14 +278,32 @@ impl TorusGeometry {
 
     pub fn make_renderables(&self, num: usize) -> impl Iterator<Item = TorusRenderable> + '_ {
         flow::physics::interp_between(&self.prev_fields_snapshot, &self.curr_fields_snapshot, num)
-            .map(|fields_snapshot| TorusRenderable {
-                t: fields_snapshot.t,
-                base_height: self.base_height,
-                theta_grid: self.theta_grid.clone(),
-                phi_grid: self.phi_grid.clone(),
-                major_radius: self.major_radius,
-                minor_radius: self.minor_radius,
-                height_array: fields_snapshot.fields.height_grid(),
+            .map(|fields_snapshot| {
+                use flow::bases::Basis;
+
+                let height_grid = fields_snapshot.fields.height_grid();
+                let mut tracer_points = fields_snapshot.fields.tracer_points();
+                let tracer_heights = self
+                    .solver
+                    .problem()
+                    .basis
+                    .scalar_to_points(&height_grid, tracer_points.view());
+                let mut tracer_points_theta = tracer_points.slice_mut(nd::s![0, ..]);
+                tracer_points_theta /= self.major_radius;
+                let mut tracer_points_phi = tracer_points.slice_mut(nd::s![1, ..]);
+                tracer_points_phi /= self.minor_radius;
+
+                TorusRenderable {
+                    t: fields_snapshot.t,
+                    base_height: self.base_height,
+                    theta_grid: self.theta_grid.clone(),
+                    phi_grid: self.phi_grid.clone(),
+                    major_radius: self.major_radius,
+                    minor_radius: self.minor_radius,
+                    height_array: height_grid,
+                    tracer_points,
+                    tracer_heights,
+                }
             })
     }
 
@@ -285,7 +320,7 @@ impl TorusGeometry {
             2usize.pow(resolution_level),
         ];
         let lengths = [15., 5.];
-        let base_height = 5.;
+        let base_height = 1.;
         let amplitude = base_height * 0.2;
         let bump_size = 0.1;
         let kinematic_viscosity = 0.;
@@ -323,6 +358,7 @@ impl TorusGeometry {
                         .powi(2)
                         .powf(pow(bump_size, lengths[1]))
         })));
+        initial_fields.assign_tracer_points(basis.make_random_points().view());
         let problem = flow::physics::Problem {
             basis,
             terrain_height,

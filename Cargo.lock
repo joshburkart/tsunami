@@ -609,6 +609,7 @@ name = "flow"
 version = "0.1.0"
 dependencies = [
  "approx 0.5.1",
+ "frand",
  "gauss-quad",
  "itertools",
  "log",
@@ -616,6 +617,7 @@ dependencies = [
  "ndarray",
  "ndrustfft",
  "num-traits",
+ "rayon",
 ]
 
 [[package]]
@@ -646,6 +648,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e13624c2627564efccf4934284bdd98cbaa14e79b0b5a141218e507b3a823456"
 dependencies = [
  "percent-encoding",
+]
+
+[[package]]
+name = "frand"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "41cb351073d81d55b585157bac73b73f29b838ac9502f24a1665ab1cbebfe692"
+dependencies = [
+ "glam",
+ "rand_core",
 ]
 
 [[package]]
@@ -725,6 +737,12 @@ dependencies = [
  "log",
  "xml-rs",
 ]
+
+[[package]]
+name = "glam"
+version = "0.28.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "779ae4bf7e8421cf91c0b3b64e7e8b40b862fba4d393f59150042de7c4965a94"
 
 [[package]]
 name = "glow"
@@ -1722,6 +1740,12 @@ checksum = "0fa76aaf39101c457836aec0ce2316dbdc3ab723cdda1c6bd4e6ad4208acaca7"
 dependencies = [
  "proc-macro2",
 ]
+
+[[package]]
+name = "rand_core"
+version = "0.6.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ec0be4795e2f6a28069bec0b5ff3e2ac9bafc99e6a9a7dc3547996c5c816922c"
 
 [[package]]
 name = "raw-window-handle"

@@ -7,6 +7,7 @@ version = "0.1.0"
 name = "flow"
 
 [dependencies]
+frand = { workspace = true }
 itertools = { workspace = true }
 gauss-quad = { workspace = true }
 log = { workspace = true }
@@ -14,6 +15,7 @@ nalgebra = { workspace = true }
 ndarray = { workspace = true }
 ndrustfft = { workspace = true }
 num-traits = { workspace = true }
+rayon = { workspace = true }
 
 [dev-dependencies]
 approx = { workspace = true }

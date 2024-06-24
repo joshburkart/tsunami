@@ -1,14 +1,15 @@
 use ndarray as nd;
 
 use crate::{
-    bases::{Basis, FftDimension},
+    bases::{linear_periodic_interpolate, periodic_grid_search, Basis, FftDimension},
     float_consts, ComplexFloat, Float, RawFloatData,
 };
 
 pub struct RectangularPeriodicBasis {
     pub num_points: [usize; 2],
 
-    pub lengths: [Float; 2],
+    axes: [nd::Array1<Float>; 2],
+    lengths: [Float; 2],
 
     wavenumbers: nd::Array3<ComplexFloat>,
     wavenumbers_sq: nd::Array3<Float>,
@@ -53,9 +54,23 @@ impl RectangularPeriodicBasis {
             .slice(nd::s![nd::NewAxis, .., ..])
             .to_owned();
 
+        let axes = [
+            nd::Array1::linspace(
+                0.,
+                lengths[0] * (1. - 1. / num_points[0] as Float),
+                num_points[0],
+            ),
+            nd::Array1::linspace(
+                0.,
+                lengths[1] * (1. - 1. / num_points[1] as Float),
+                num_points[1],
+            ),
+        ];
+
         Self {
             num_points,
             lengths,
+            axes,
             wavenumbers,
             wavenumbers_sq,
             rfft_handler,
@@ -121,19 +136,23 @@ impl Basis for RectangularPeriodicBasis {
         self.num_points[0] * (self.num_points[1] / 2 + 1)
     }
 
-    fn axes(&self) -> [nd::Array1<Float>; 2] {
-        [
-            nd::Array1::linspace(
-                0.,
-                self.lengths[0] * (1. - 1. / self.num_points[0] as Float),
-                self.num_points[0],
-            ),
-            nd::Array1::linspace(
-                0.,
-                self.lengths[1] * (1. - 1. / self.num_points[1] as Float),
-                self.num_points[1],
-            ),
-        ]
+    fn lengths(&self) -> [Float; 2] {
+        self.lengths.clone()
+    }
+
+    fn axes(&self) -> [&nd::Array1<Float>; 2] {
+        [&self.axes[0], &self.axes[1]]
+    }
+
+    fn make_random_points(&self) -> nd::Array2<Float> {
+        let mut rng = frand::Rand::with_seed(0);
+        let mut points = nd::Array2::zeros((2, crate::physics::NUM_TRACER_POINTS));
+        for j in 0..2 {
+            for i in 0..crate::physics::NUM_TRACER_POINTS {
+                points[[j, i]] = rng.gen_range((0.)..self.lengths[j]);
+            }
+        }
+        points
     }
 
     fn scalar_from_slice<'a>(&self, slice: &'a [ComplexFloat]) -> Self::SpectralScalarField {
@@ -176,6 +195,49 @@ impl Basis for RectangularPeriodicBasis {
 
     fn vector_to_spectral(&self, grid: &nd::Array3<Float>) -> Self::SpectralVectorField {
         Self::to_spectral(&self, grid)
+    }
+
+    fn scalar_to_points(
+        &self,
+        grid: &nd::Array2<Float>,
+        points: nd::ArrayView2<'_, Float>,
+    ) -> nd::Array1<Float> {
+        let mut output = nd::Array1::zeros(points.shape()[1]);
+        for (point, mut output_value) in points
+            .axis_iter(nd::Axis(1))
+            .zip(output.axis_iter_mut(nd::Axis(0)))
+        {
+            output_value[[]] = linear_periodic_interpolate(
+                point,
+                &periodic_grid_search(self, point),
+                grid.view(),
+                &self.lengths,
+            );
+        }
+        output
+    }
+
+    fn velocity_to_points(
+        &self,
+        velocity_grid: &nd::Array3<Float>,
+        points: nd::ArrayView2<'_, Float>,
+    ) -> nd::Array2<Float> {
+        let mut output = nd::Array2::zeros((2, points.shape()[1]));
+        for (point, mut output_value) in points
+            .axis_iter(nd::Axis(1))
+            .zip(output.axis_iter_mut(nd::Axis(1)))
+        {
+            let grid_search_result = periodic_grid_search(self, point);
+            for k in 0..2 {
+                output_value[[k]] = linear_periodic_interpolate(
+                    point,
+                    &grid_search_result,
+                    velocity_grid.slice(nd::s![k, .., ..]),
+                    &self.lengths,
+                );
+            }
+        }
+        output
     }
 
     fn gradient(&self, spectral: &Self::SpectralScalarField) -> Self::SpectralVectorField {

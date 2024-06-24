@@ -792,7 +792,7 @@ mod tests {
             },
             1612,
         );
-        for (order, expected_num_system_evals) in [(2, 3906), (3, 1390), (4, 766), (5, 525)] {
+        for (order, expected_num_system_evals) in [(2, 3906), (3, 1390), (4, 766), (5, 526)] {
             test_trig_impl(
                 |system, y_init| {
                     let integrator = IntegratorNordsieckAdamsBashforth::new(

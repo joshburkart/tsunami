@@ -4,7 +4,8 @@ use three_d::{CpuMesh, Indices, Positions, Vector3};
 
 #[derive(Clone)]
 pub struct RenderingData {
-    pub points: Vec<Vector3<Float>>,
+    pub quadrature_points: Vec<Vector3<Float>>,
+    pub tracer_points: Vec<Vector3<Float>>,
     pub mesh: CpuMesh,
 }
 
@@ -40,6 +41,9 @@ pub struct SphereRenderable {
     pub phi_grid: nd::Array1<Float>,
 
     pub height_array: nd::Array2<Float>,
+
+    pub tracer_points_mu_phi: nd::Array2<Float>,
+    pub tracer_heights: nd::Array1<Float>,
 }
 
 impl SphereRenderable {
@@ -49,9 +53,9 @@ impl SphereRenderable {
 
         let make_index = |i, j| (i * num_phi + (j % num_phi)) as u32;
 
-        let points = self.make_points(height_exaggeration_factor);
+        let quadrature_points = self.make_quadrature_points(height_exaggeration_factor);
 
-        let mut augmented_points = points.clone();
+        let mut augmented_points = quadrature_points.clone();
         // Add bottom point.
         let bottom = augmented_points.len() as u32;
         augmented_points.push(self.make_point(
@@ -117,16 +121,37 @@ impl SphereRenderable {
         mesh.compute_normals();
         mesh.validate().unwrap();
 
-        RenderingData { points, mesh }
+        RenderingData {
+            quadrature_points,
+            tracer_points: self.make_tracer_points(height_exaggeration_factor),
+            mesh,
+        }
     }
 
-    fn make_points(&self, height_exaggeration_factor: Float) -> Vec<Vector3<Float>> {
+    fn make_quadrature_points(&self, height_exaggeration_factor: Float) -> Vec<Vector3<Float>> {
         let mut points = Vec::with_capacity(self.mu_grid.len() * self.phi_grid.len());
         for (i, &mu) in self.mu_grid.iter().enumerate() {
             for (j, &phi) in self.phi_grid.iter().enumerate() {
                 let height = self.height_array[[i, j]];
                 points.push(self.make_point(mu, phi, height, height_exaggeration_factor));
             }
+        }
+        points
+    }
+
+    fn make_tracer_points(&self, height_exaggeration_factor: Float) -> Vec<Vector3<Float>> {
+        let mut points = Vec::with_capacity(self.tracer_points_mu_phi.shape()[1]);
+        for (point_mu_phi, &height) in self
+            .tracer_points_mu_phi
+            .axis_iter(nd::Axis(1))
+            .zip(self.tracer_heights.iter())
+        {
+            points.push(self.make_point(
+                point_mu_phi[[0]],
+                point_mu_phi[[1]],
+                height,
+                height_exaggeration_factor,
+            ));
         }
         points
     }
@@ -157,6 +182,9 @@ pub struct TorusRenderable {
     pub minor_radius: Float,
 
     pub height_array: nd::Array2<Float>,
+
+    pub tracer_points: nd::Array2<Float>,
+    pub tracer_heights: nd::Array1<Float>,
 }
 
 impl TorusRenderable {
@@ -167,8 +195,8 @@ impl TorusRenderable {
 
         let make_index = |i, j| (i % num_theta) * num_phi + (j % num_phi);
 
-        let points = self.make_points(height_exaggeration_factor);
-        let mut augmented_points = points.clone();
+        let quadrature_points = self.make_quadrature_points(height_exaggeration_factor);
+        let mut augmented_points = quadrature_points.clone();
         let height_flat = self.height_array.as_slice().unwrap();
 
         let mut indices = Vec::new();
@@ -230,16 +258,37 @@ impl TorusRenderable {
         mesh.compute_normals();
         mesh.validate().unwrap();
 
-        RenderingData { points, mesh }
+        RenderingData {
+            quadrature_points,
+            tracer_points: self.make_tracer_points(height_exaggeration_factor),
+            mesh,
+        }
     }
 
-    fn make_points(&self, height_exaggeration_factor: Float) -> Vec<Vector3<Float>> {
+    fn make_quadrature_points(&self, height_exaggeration_factor: Float) -> Vec<Vector3<Float>> {
         let mut points = Vec::with_capacity(self.theta_grid.len() * self.phi_grid.len());
         for (i, &theta) in self.theta_grid.iter().enumerate() {
             for (j, &phi) in self.phi_grid.iter().enumerate() {
                 let height = self.height_array[[i, j]];
                 points.push(self.make_point(theta, phi, height, height_exaggeration_factor));
             }
+        }
+        points
+    }
+
+    fn make_tracer_points(&self, height_exaggeration_factor: Float) -> Vec<Vector3<Float>> {
+        let mut points = Vec::with_capacity(self.tracer_points.shape()[1]);
+        for (point_theta_phi, height) in self
+            .tracer_points
+            .axis_iter(nd::Axis(1))
+            .zip(self.tracer_heights.iter())
+        {
+            points.push(self.make_point(
+                point_theta_phi[[0]],
+                point_theta_phi[[1]],
+                *height,
+                height_exaggeration_factor,
+            ));
         }
         points
     }
