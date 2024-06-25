@@ -219,10 +219,7 @@ impl SphereGeometry {
                 rel: 1e-4,
                 abs: 1e-4,
             },
-            tracers_tolerances: flow::physics::Tolerances {
-                rel: 1e-2,
-                abs: 1e-2,
-            },
+            tracers_tolerances: flow::physics::Tolerances { rel: 1e0, abs: 1e0 },
         };
         (
             base_height,
@@ -382,10 +379,7 @@ impl TorusGeometry {
                 rel: 1e-3,
                 abs: 1e-3,
             },
-            tracers_tolerances: flow::physics::Tolerances {
-                rel: 1e-3,
-                abs: 1e-3,
-            },
+            tracers_tolerances: flow::physics::Tolerances { rel: 1e0, abs: 1e0 },
         };
         (
             base_height,
