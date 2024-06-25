@@ -1,4 +1,5 @@
 use ndarray as nd;
+use rayon::prelude::*;
 
 use crate::{
     bases::{periodic_grid_search, periodic_linear_interpolate, Basis, FftDimension},
@@ -203,17 +204,18 @@ impl Basis for RectangularPeriodicBasis {
         points: nd::ArrayView2<'_, Float>,
     ) -> nd::Array1<Float> {
         let mut output = nd::Array1::zeros(points.shape()[1]);
-        for (point, mut output_value) in points
+        points
             .axis_iter(nd::Axis(1))
-            .zip(output.axis_iter_mut(nd::Axis(0)))
-        {
-            output_value[[]] = periodic_linear_interpolate(
-                point,
-                &periodic_grid_search(self, point),
-                grid.view(),
-                &self.lengths,
-            );
-        }
+            .into_par_iter()
+            .zip_eq(output.axis_iter_mut(nd::Axis(0)))
+            .for_each(|(point, mut output_value)| {
+                output_value[[]] = periodic_linear_interpolate(
+                    point,
+                    &periodic_grid_search(self, point),
+                    grid.view(),
+                    &self.lengths,
+                );
+            });
         output
     }
 

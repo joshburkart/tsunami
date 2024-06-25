@@ -3,6 +3,9 @@ use ndarray as nd;
 
 use crate::render::{Renderable, SphereRenderable, TorusRenderable};
 
+const TRACER_LENGTH: usize = 10;
+const TRACER_STEP: usize = 3;
+
 #[derive(Clone, Copy, PartialEq)]
 pub enum GeometryType {
     Sphere,
@@ -38,8 +41,8 @@ impl Geometry {
 
     pub fn integrate(&mut self) {
         match &mut self.0 {
-            GeometryImpl::Sphere(sphere) => sphere.integrate(),
-            GeometryImpl::Torus(torus) => torus.integrate(),
+            GeometryImpl::Sphere(sphere) => sphere.step(),
+            GeometryImpl::Torus(torus) => torus.step(),
         }
     }
 
@@ -119,11 +122,15 @@ impl Geometry {
 }
 
 struct SphereGeometry {
+    step_index: usize,
+
     base_height: Float,
 
     solver: flow::physics::Solver<flow::bases::ylm::SphericalHarmonicBasis>,
     curr_fields_snapshot: flow::physics::FieldsSnapshot<flow::bases::ylm::SphericalHarmonicBasis>,
     prev_fields_snapshot: flow::physics::FieldsSnapshot<flow::bases::ylm::SphericalHarmonicBasis>,
+
+    tracers_history: ringbuffer::AllocRingBuffer<nd::Array2<Float>>,
 
     mu_grid: nd::Array1<Float>,
     phi_grid: nd::Array1<Float>,
@@ -141,39 +148,57 @@ impl SphereGeometry {
         let mu_grid = mu_grid.clone();
         let phi_grid = phi_grid.clone();
 
+        let tracers_history = ringbuffer::AllocRingBuffer::new(TRACER_LENGTH);
+
         Self {
+            step_index: 0,
+
             base_height,
 
             solver,
             curr_fields_snapshot,
             prev_fields_snapshot,
+            tracers_history,
 
             mu_grid,
             phi_grid,
         }
     }
 
-    pub fn integrate(&mut self) {
+    pub fn step(&mut self) {
+        use ringbuffer::RingBuffer;
+        if self.step_index % TRACER_STEP == 0 {
+            self.tracers_history
+                .push(self.curr_fields_snapshot.fields.tracer_points().clone());
+        }
+
         std::mem::swap(
             &mut self.prev_fields_snapshot,
             &mut self.curr_fields_snapshot,
         );
         self.solver.step();
         self.curr_fields_snapshot = self.solver.fields_snapshot();
+
+        self.step_index += 1;
     }
 
     pub fn make_renderables(&self, num: usize) -> impl Iterator<Item = SphereRenderable> + '_ {
         flow::physics::interp_between(&self.prev_fields_snapshot, &self.curr_fields_snapshot, num)
             .map(|fields_snapshot| {
                 use flow::bases::Basis;
+                use ringbuffer::RingBuffer;
 
                 let height_grid = fields_snapshot.fields.height_grid();
-                let tracer_points_mu_phi = fields_snapshot.fields.tracer_points();
-                let tracer_heights = self
-                    .solver
-                    .problem()
-                    .basis
-                    .scalar_to_points(&height_grid, tracer_points_mu_phi.view());
+                let tracer_points_history_mu_phi = self.tracers_history.to_vec();
+                let tracer_heights_history: Vec<_> = tracer_points_history_mu_phi
+                    .iter()
+                    .map(|tracer_points_mu_phi| {
+                        self.solver
+                            .problem()
+                            .basis
+                            .scalar_to_points(&height_grid, tracer_points_mu_phi.view())
+                    })
+                    .collect();
 
                 SphereRenderable {
                     t: fields_snapshot.t,
@@ -181,8 +206,8 @@ impl SphereGeometry {
                     mu_grid: self.mu_grid.clone(),
                     phi_grid: self.phi_grid.clone(),
                     height_array: height_grid,
-                    tracer_points_mu_phi,
-                    tracer_heights,
+                    tracer_points_history_mu_phi,
+                    tracer_heights_history,
                 }
             })
     }
@@ -229,6 +254,8 @@ impl SphereGeometry {
 }
 
 struct TorusGeometry {
+    step_index: usize,
+
     base_height: Float,
 
     major_radius: Float,
@@ -242,6 +269,8 @@ struct TorusGeometry {
         flow::physics::FieldsSnapshot<flow::bases::fourier::RectangularPeriodicBasis>,
     curr_fields_snapshot:
         flow::physics::FieldsSnapshot<flow::bases::fourier::RectangularPeriodicBasis>,
+
+    tracers_history: ringbuffer::AllocRingBuffer<nd::Array2<Float>>,
 }
 
 impl TorusGeometry {
@@ -259,7 +288,11 @@ impl TorusGeometry {
         let theta_grid = axes[0] / major_radius;
         let phi_grid = axes[1] / minor_radius;
 
+        let tracers_history = ringbuffer::AllocRingBuffer::new(TRACER_LENGTH);
+
         Self {
+            step_index: 0,
+
             base_height,
 
             major_radius,
@@ -271,34 +304,52 @@ impl TorusGeometry {
             solver,
             prev_fields_snapshot,
             curr_fields_snapshot,
+
+            tracers_history,
         }
     }
 
-    pub fn integrate(&mut self) {
+    pub fn step(&mut self) {
+        use ringbuffer::RingBuffer;
+        if self.step_index % TRACER_STEP == 0 {
+            self.tracers_history
+                .push(self.curr_fields_snapshot.fields.tracer_points());
+        }
+
         std::mem::swap(
             &mut self.prev_fields_snapshot,
             &mut self.curr_fields_snapshot,
         );
         self.solver.step();
         self.curr_fields_snapshot = self.solver.fields_snapshot();
+
+        self.step_index += 1;
     }
 
     pub fn make_renderables(&self, num: usize) -> impl Iterator<Item = TorusRenderable> + '_ {
         flow::physics::interp_between(&self.prev_fields_snapshot, &self.curr_fields_snapshot, num)
             .map(|fields_snapshot| {
                 use flow::bases::Basis;
+                use ringbuffer::RingBuffer;
 
                 let height_grid = fields_snapshot.fields.height_grid();
-                let mut tracer_points = fields_snapshot.fields.tracer_points();
-                let tracer_heights = self
-                    .solver
-                    .problem()
-                    .basis
-                    .scalar_to_points(&height_grid, tracer_points.view());
-                let mut tracer_points_theta = tracer_points.slice_mut(nd::s![0, ..]);
-                tracer_points_theta /= self.major_radius;
-                let mut tracer_points_phi = tracer_points.slice_mut(nd::s![1, ..]);
-                tracer_points_phi /= self.minor_radius;
+
+                let mut tracer_points_history = self.tracers_history.to_vec();
+                let tracer_heights_history: Vec<_> = tracer_points_history
+                    .iter()
+                    .map(|tracer_points| {
+                        self.solver
+                            .problem()
+                            .basis
+                            .scalar_to_points(&height_grid, tracer_points.view())
+                    })
+                    .collect();
+                for tracer_points in &mut tracer_points_history {
+                    let mut tracer_points_theta = tracer_points.slice_mut(nd::s![0, ..]);
+                    tracer_points_theta /= self.major_radius;
+                    let mut tracer_points_phi = tracer_points.slice_mut(nd::s![1, ..]);
+                    tracer_points_phi /= self.minor_radius;
+                }
 
                 TorusRenderable {
                     t: fields_snapshot.t,
@@ -308,8 +359,8 @@ impl TorusGeometry {
                     major_radius: self.major_radius,
                     minor_radius: self.minor_radius,
                     height_array: height_grid,
-                    tracer_points,
-                    tracer_heights,
+                    tracer_points_history_theta_phi: tracer_points_history,
+                    tracer_heights_history,
                 }
             })
     }
@@ -397,7 +448,7 @@ mod tests {
         let mut sphere = SphereGeometry::new(6);
         let _: Vec<_> = sphere.make_renderables(3).collect();
         for _ in 0..20 {
-            sphere.integrate();
+            sphere.step();
         }
     }
 }

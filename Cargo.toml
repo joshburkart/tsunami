@@ -24,6 +24,7 @@ num-traits = "0.2"
 numpy = "0.21"
 pyo3 = { version = "0.21.1", features = ["extension-module"] }
 rayon = "1.10"
+ringbuffer = "0.15"
 three-d = { git = "https://github.com/asny/three-d.git", rev = "a69b70874d93da231f5e4f8c35adb4d38134aeee", features = [
     "egui-gui",
 ] }

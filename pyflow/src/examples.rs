@@ -99,8 +99,18 @@ pub fn bump_2d_spectral(
         terrain_height,
         kinematic_viscosity,
         rotation_angular_speed: 0.,
-        rel_tol: 1e-3,
-        abs_tol: 1e-4,
+        height_tolerances: physics::Tolerances {
+            rel: 1e-4,
+            abs: 1e-4,
+        },
+        velocity_tolerances: physics::Tolerances {
+            rel: 1e-4,
+            abs: 1e-4,
+        },
+        tracers_tolerances: physics::Tolerances {
+            rel: 1e-4,
+            abs: 1e-4,
+        },
     };
     let solver = physics::Solver::new(problem, initial_fields);
     RectangularSolver { solver }

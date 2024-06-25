@@ -17,7 +17,7 @@ const EARTH_RADIUS_M: Float = EARTH_RADIUS_MI * M_PER_MI;
 const OCEAN_DEPTH_M: Float = 3_682.;
 const WATER_KINEMATIC_VISCOSITY_M2_PER_S: Float = 1e-6;
 
-const TITLE: &'static str = "Tsunami Playground";
+const TITLE: &'static str = "Ocean Playground";
 
 fn time_scale_s() -> Float {
     EARTH_RADIUS_M / (GRAV_ACCEL_M_PER_S2 * OCEAN_DEPTH_M).sqrt()
@@ -712,11 +712,15 @@ const DETAILS_MARKDOWN: &'static str = indoc::indoc! {"
     geometry with more limited functionality also included for fun, which uses a rectangular domain
     with periodic boundary conditions and a Fourier basis.)
     
-    Physical effects included:
+    Effects included:
     
     * Viscosity (negligible for tsunamis but can be artifically increased)
     * Coriolis force
+    * Advection of entrained “tracer” particles
     * Lunar tides (planned)
+    * Realistic terrain (continents/sea floor) (planned)
+
+    Tracer motion is accelerated by a large factor for visualization.
     
     Tech stack: Rust/WebAssembly/WebGL/[`egui`](https://www.egui.rs/)/
     [`three-d`](https://github.com/asny/three-d).

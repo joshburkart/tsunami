@@ -42,8 +42,8 @@ pub struct SphereRenderable {
 
     pub height_array: nd::Array2<Float>,
 
-    pub tracer_points_mu_phi: nd::Array2<Float>,
-    pub tracer_heights: nd::Array1<Float>,
+    pub tracer_points_history_mu_phi: Vec<nd::Array2<Float>>,
+    pub tracer_heights_history: Vec<nd::Array1<Float>>,
 }
 
 impl SphereRenderable {
@@ -140,20 +140,25 @@ impl SphereRenderable {
     }
 
     fn make_tracer_points(&self, height_exaggeration_factor: Float) -> Vec<Vector3<Float>> {
-        let mut points = Vec::with_capacity(self.tracer_points_mu_phi.shape()[1]);
-        for (point_mu_phi, &height) in self
-            .tracer_points_mu_phi
-            .axis_iter(nd::Axis(1))
-            .zip(self.tracer_heights.iter())
-        {
-            points.push(self.make_point(
-                point_mu_phi[[0]],
-                point_mu_phi[[1]],
-                height,
-                height_exaggeration_factor,
-            ));
-        }
-        points
+        use rayon::prelude::*;
+        (&self.tracer_points_history_mu_phi)
+            .into_par_iter()
+            .zip_eq((&self.tracer_heights_history).into_par_iter())
+            .map(|(tracer_points_mu_phi, tracer_heights)| {
+                tracer_points_mu_phi
+                    .axis_iter(nd::Axis(1))
+                    .zip(tracer_heights.iter())
+                    .map(|(point_mu_phi, &height)| {
+                        self.make_point(
+                            point_mu_phi[[0]],
+                            point_mu_phi[[1]],
+                            height,
+                            height_exaggeration_factor,
+                        )
+                    })
+            })
+            .flatten_iter()
+            .collect()
     }
 
     fn make_point(
@@ -183,8 +188,8 @@ pub struct TorusRenderable {
 
     pub height_array: nd::Array2<Float>,
 
-    pub tracer_points: nd::Array2<Float>,
-    pub tracer_heights: nd::Array1<Float>,
+    pub tracer_points_history_theta_phi: Vec<nd::Array2<Float>>,
+    pub tracer_heights_history: Vec<nd::Array1<Float>>,
 }
 
 impl TorusRenderable {
@@ -277,20 +282,25 @@ impl TorusRenderable {
     }
 
     fn make_tracer_points(&self, height_exaggeration_factor: Float) -> Vec<Vector3<Float>> {
-        let mut points = Vec::with_capacity(self.tracer_points.shape()[1]);
-        for (point_theta_phi, height) in self
-            .tracer_points
-            .axis_iter(nd::Axis(1))
-            .zip(self.tracer_heights.iter())
-        {
-            points.push(self.make_point(
-                point_theta_phi[[0]],
-                point_theta_phi[[1]],
-                *height,
-                height_exaggeration_factor,
-            ));
-        }
-        points
+        use rayon::prelude::*;
+        (&self.tracer_points_history_theta_phi)
+            .into_par_iter()
+            .zip_eq((&self.tracer_heights_history).into_par_iter())
+            .map(|(tracer_points_mu_phi, tracer_heights)| {
+                tracer_points_mu_phi
+                    .axis_iter(nd::Axis(1))
+                    .zip(tracer_heights.iter())
+                    .map(|(point_mu_phi, &height)| {
+                        self.make_point(
+                            point_mu_phi[[0]],
+                            point_mu_phi[[1]],
+                            height,
+                            height_exaggeration_factor,
+                        )
+                    })
+            })
+            .flatten_iter()
+            .collect()
     }
 
     fn make_point(

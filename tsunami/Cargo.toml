@@ -20,6 +20,7 @@ js-sys = { workspace = true }
 log = { workspace = true }
 ndarray = { workspace = true }
 rayon = { workspace = true }
+ringbuffer = { workspace = true }
 three-d = { workspace = true }
 three-d-asset = { workspace = true }
 wasm-bindgen = { workspace = true }
