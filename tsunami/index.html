@@ -2,6 +2,10 @@
 
 <head>
   <link rel="icon" type="image/png" href="assets/favicon.ico" />
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Roboto&display=swap"
+    rel="stylesheet">
   <meta content="text/html;charset=utf-8" http-equiv="Content-Type" />
   <style>
     html,
@@ -10,6 +14,28 @@
     canvas {
       margin: 0;
       padding: 0;
+    }
+
+    .loading {
+      position: absolute;
+      align-content: center;
+      justify-content: center;
+      width: 100%;
+      height: 100%;
+      font-family: 'Roboto';
+      font-size: 14pt;
+      color: white;
+      display: flex;
+      flex-wrap: wrap;
+      z-index: 0;
+    }
+
+    .canvas {
+      z-index: -1;
+    }
+
+    body {
+      background-color: black;
     }
   </style>
   <title>Ocean Playground</title>
@@ -20,7 +46,8 @@
   https://github.com/gzuidhof/coi-serviceworker -->
   <script src="coi-serviceworker.min.js"></script>
   <script type="module" src="/main.js"></script>
-  <canvas id="canvas" display="block"></canvas>
+  <div id="loading" class="loading">Loading Ocean Playground</div>
+  <canvas class="canvas" display="block"></canvas>
 </body>
 
 </html>

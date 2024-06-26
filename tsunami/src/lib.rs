@@ -285,6 +285,15 @@ pub async fn run() {
 
     let mut double_click_detector = DoubleClickDetector::default();
 
+    // Remove loading screen.
+    web_sys::window()
+        .unwrap()
+        .document()
+        .unwrap()
+        .get_element_by_id("loading")
+        .unwrap()
+        .remove();
+
     rayon::spawn(move || physics_loop(geometry, shared_params_read, renderable_sender));
     window.render_loop(move |mut frame_input| {
         if let Ok(mut shared_params) = shared_params_write.try_write() {
