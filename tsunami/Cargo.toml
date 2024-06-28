@@ -14,6 +14,7 @@ flow = { path = "../flow" }
 
 console_error_panic_hook = { workspace = true }
 console_log = { workspace = true }
+derivative = { workspace = true }
 egui_commonmark = { workspace = true }
 indoc = { workspace = true }
 js-sys = { workspace = true }

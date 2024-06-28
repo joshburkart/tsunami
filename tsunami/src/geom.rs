@@ -9,7 +9,7 @@ use crate::{
 const TRACER_LENGTH: usize = 10;
 const TRACER_STEP: usize = 3;
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum GeometryType {
     Sphere,
     Torus,

@@ -33,7 +33,8 @@ fn water_kinematic_viscosity_nondimen() -> Float {
     WATER_KINEMATIC_VISCOSITY_M2_PER_S / EARTH_RADIUS_M.powi(2) * time_scale_s()
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug, derivative::Derivative)]
+#[derivative(PartialEq)]
 struct Parameters {
     pub geometry_type: geom::GeometryType,
     pub resolution_level: u32,
@@ -50,15 +51,21 @@ struct Parameters {
     pub velocity_exaggeration_factor: Float,
     pub show_points: ShowPoints,
 
+    #[derivative(PartialEq = "ignore")]
     pub earthquake_position: Option<Vec3>,
     // Response set by the physics thread after an earthquake trigger has been read and handled.
+    #[derivative(PartialEq = "ignore")]
     pub earthquake_triggered: bool,
+}
 
+#[derive(Clone)]
+struct ParametersMessage {
+    pub params: Parameters,
     pub geometry_version: usize,
 }
 
-impl Default for Parameters {
-    fn default() -> Self {
+impl Parameters {
+    fn tides() -> Self {
         Self {
             geometry_type: geom::GeometryType::Sphere,
             resolution_level: 6,
@@ -73,12 +80,30 @@ impl Default for Parameters {
             show_points: ShowPoints::Tracer,
             earthquake_position: None,
             earthquake_triggered: false,
-            geometry_version: 0,
+        }
+    }
+
+    fn coriolis() -> Self {
+        Self {
+            lunar_distance_rel_to_actual: 10.,
+            rotation_period_hr: 5.,
+            earthquake_region_size_mi: 500.,
+            earthquake_height_m: -3.5,
+            earthquake_position: Some(vec3(1., 0., 1.)),
+            ..Self::tides()
+        }
+    }
+
+    fn torus() -> Self {
+        Self {
+            geometry_type: geom::GeometryType::Torus,
+            velocity_exaggeration_factor: 100.,
+            ..Self::tides()
         }
     }
 }
 
-#[derive(Clone, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 enum ShowPoints {
     Quadrature,
     Tracer,
@@ -87,19 +112,19 @@ enum ShowPoints {
 
 fn physics_loop(
     mut geometry: geom::Geometry,
-    shared_params: std::sync::Arc<std::sync::RwLock<Parameters>>,
+    shared_params_message: std::sync::Arc<std::sync::RwLock<ParametersMessage>>,
     renderable_sender: std::sync::mpsc::SyncSender<render::Renderable>,
 ) {
     // Initialize.
     log::info!("Initializing physics thread");
-    let mut params = { shared_params.read().unwrap().clone() };
+    let mut params_message = { shared_params_message.read().unwrap().clone() };
 
     // Physics loop.
     loop {
         // Send along renderables to main loop.
         {
             for renderable in geometry
-                .make_renderables(params.substeps_per_physics_step)
+                .make_renderables(params_message.params.substeps_per_physics_step)
                 .into_iter()
             {
                 renderable_sender.send(renderable).unwrap();
@@ -108,36 +133,42 @@ fn physics_loop(
 
         // Check for updated parameters.
         {
-            let new_params = shared_params.read().unwrap();
-            if params.geometry_version != new_params.geometry_version {
+            let new_params_message = shared_params_message.read().unwrap();
+            let new_params = &new_params_message.params;
+            if params_message.geometry_version != new_params_message.geometry_version {
                 geometry =
                     geom::Geometry::new(new_params.geometry_type, new_params.resolution_level);
             }
-            params = new_params.clone();
+            params_message = new_params_message.clone();
 
             geometry.set_kinematic_viscosity(
                 water_kinematic_viscosity_nondimen()
-                    * (10 as Float).powf(params.log10_kinematic_viscosity_rel_to_water),
+                    * (10 as Float)
+                        .powf(params_message.params.log10_kinematic_viscosity_rel_to_water),
             );
             geometry.set_rotation_angular_speed(
-                flow::float_consts::TAU / params.rotation_period_hr * time_scale_hr(),
+                flow::float_consts::TAU / params_message.params.rotation_period_hr
+                    * time_scale_hr(),
             );
-            geometry
-                .set_lunar_distance(params.lunar_distance_rel_to_actual * LUNAR_DISTANCE_NONDIMEN);
-            geometry.set_velocity_exaggeration_factor(params.velocity_exaggeration_factor);
+            geometry.set_lunar_distance(
+                params_message.params.lunar_distance_rel_to_actual * LUNAR_DISTANCE_NONDIMEN,
+            );
+            geometry.set_velocity_exaggeration_factor(
+                params_message.params.velocity_exaggeration_factor,
+            );
         }
 
         // Update parameters if needed.
-        if let Some(earthquake_position) = params.earthquake_position {
-            let mut shared_params_writer = shared_params.write().unwrap();
-            shared_params_writer.earthquake_position = None;
-            if !params.earthquake_triggered {
+        if let Some(earthquake_position) = params_message.params.earthquake_position {
+            let mut shared_params_writer = shared_params_message.write().unwrap();
+            shared_params_writer.params.earthquake_position = None;
+            if !params_message.params.earthquake_triggered {
                 geometry.trigger_earthquake(
                     earthquake_position,
-                    params.earthquake_region_size_mi / EARTH_RADIUS_MI,
-                    params.earthquake_height_m / OCEAN_DEPTH_M,
+                    params_message.params.earthquake_region_size_mi / EARTH_RADIUS_MI,
+                    params_message.params.earthquake_height_m / OCEAN_DEPTH_M,
                 );
-                shared_params_writer.earthquake_triggered = true;
+                shared_params_writer.params.earthquake_triggered = true;
             }
         }
 
@@ -155,12 +186,19 @@ pub async fn run() {
         rayon::current_num_threads()
     );
 
-    let mut params = Parameters::default();
+    let mut params = Parameters::tides();
+    let mut geometry_version = 0;
     let geometry = geom::Geometry::new(params.geometry_type, params.resolution_level);
     let mut renderable = geometry.make_renderables(1).pop().unwrap();
     let (renderable_sender, renderable_reader) = std::sync::mpsc::sync_channel(50);
-    let shared_params_write = std::sync::Arc::new(std::sync::RwLock::new(params.clone()));
-    let shared_params_read = shared_params_write.clone();
+    let shared_params_message_write = std::sync::Arc::new(std::sync::RwLock::new(
+        ParametersMessage {
+            params: params.clone(),
+            geometry_version,
+        }
+        .clone(),
+    ));
+    let shared_params_read = shared_params_message_write.clone();
 
     log::info!("Initializing rendering");
 
@@ -306,12 +344,15 @@ pub async fn run() {
 
     rayon::spawn(move || physics_loop(geometry, shared_params_read, renderable_sender));
     window.render_loop(move |mut frame_input| {
-        if let Ok(mut shared_params) = shared_params_write.try_write() {
-            if shared_params.earthquake_triggered && !params.earthquake_triggered {
+        if let Ok(mut shared_params_message) = shared_params_message_write.try_write() {
+            if shared_params_message.params.earthquake_triggered && !params.earthquake_triggered {
                 params.earthquake_triggered = false;
                 params.earthquake_position = None;
             }
-            *shared_params = params.clone();
+            *shared_params_message = ParametersMessage {
+                params: params.clone(),
+                geometry_version,
+            };
         }
 
         if let Ok(new_renderable) = renderable_reader.try_recv() {
@@ -478,30 +519,18 @@ pub async fn run() {
                             .show(ui, |ui| {
                                 ui.label(egui::RichText::new("Presets").strong());
                                 ui.horizontal(|ui| {
-                                    if ui.button("Tides").clicked() {
-                                        params = Parameters {
-                                            geometry_version: params.geometry_version + 1,
-                                            ..Default::default()
-                                        };
-                                    }
-                                    if ui.button("Coriolis").clicked() {
-                                        params = Parameters {
-                                            geometry_version: params.geometry_version + 1,
-                                            lunar_distance_rel_to_actual: 10.,
-                                            rotation_period_hr: 5.,
-                                            earthquake_region_size_mi: 500.,
-                                            earthquake_height_m: -3.5,
-                                            earthquake_position: Some(vec3(1., 0., 1.)),
-                                            ..Default::default()
-                                        };
-                                    }
-                                    if ui.button("Torus").clicked() {
-                                        params = Parameters {
-                                            geometry_version: params.geometry_version + 1,
-                                            geometry_type: geom::GeometryType::Torus,
-                                            velocity_exaggeration_factor: 100.,
-                                            ..Default::default()
-                                        };
+                                    for (selection_params, name) in [
+                                        (Parameters::tides(), "Tides"),
+                                        (Parameters::coriolis(), "Coriolis force"),
+                                        (Parameters::torus(), "Torus world"),
+                                    ] {
+                                        let params_same = params == selection_params;
+                                        if ui.selectable_label(params_same, name).clicked()
+                                            && !params_same
+                                        {
+                                            params = selection_params;
+                                            geometry_version += 1;
+                                        }
                                     }
                                 });
                                 ui.add_space(10.);
@@ -526,7 +555,7 @@ pub async fn run() {
                                 ui.add(
                                     egui::Slider::new(
                                         &mut params.lunar_distance_rel_to_actual,
-                                        (0.2)..=(10.),
+                                        (0.5)..=(10.),
                                     )
                                     .logarithmic(true)
                                     .text("lunar distance")
@@ -659,7 +688,7 @@ pub async fn run() {
         );
 
         if geom_change {
-            params.geometry_version += 1;
+            geometry_version += 1;
         }
 
         control.handle_events(&mut camera, &mut frame_input.events);
