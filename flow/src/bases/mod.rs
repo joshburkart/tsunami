@@ -77,6 +77,7 @@ pub trait Basis: Sync + Send {
         spectral: &Self::SpectralVectorField,
     ) -> Self::SpectralVectorField;
     fn z_cross(&self, grid: &nd::Array3<Float>) -> nd::Array3<Float>;
+    fn tidal_force(&self, lunar_distance: Float, lunar_phase: Float) -> Self::SpectralVectorField;
 }
 
 trait FftDimension: nd::Dimension {

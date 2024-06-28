@@ -1,7 +1,10 @@
 use flow::{float_consts, Float};
 use ndarray as nd;
 
-use crate::render::{Renderable, SphereRenderable, TorusRenderable};
+use crate::{
+    render::{Renderable, SphereRenderable, TorusRenderable},
+    EARTH_RADIUS_M, MOON_MASS_NONDIMEN, OCEAN_DEPTH_M,
+};
 
 const TRACER_LENGTH: usize = 10;
 const TRACER_STEP: usize = 3;
@@ -119,6 +122,24 @@ impl Geometry {
             GeometryImpl::Torus(_) => {}
         }
     }
+
+    pub fn set_lunar_distance(&mut self, value: Float) {
+        match &mut self.0 {
+            GeometryImpl::Sphere(sphere) => sphere.solver.problem_mut().lunar_distance = value,
+            GeometryImpl::Torus(_) => {}
+        }
+    }
+
+    pub fn set_velocity_exaggeration_factor(&mut self, value: Float) {
+        match &mut self.0 {
+            GeometryImpl::Sphere(sphere) => {
+                sphere.solver.problem_mut().velocity_exaggeration_factor = value
+            }
+            GeometryImpl::Torus(torus) => {
+                torus.solver.problem_mut().velocity_exaggeration_factor = value
+            }
+        }
+    }
 }
 
 struct SphereGeometry {
@@ -222,8 +243,12 @@ impl SphereGeometry {
 
         let max_l = 2usize.pow(resolution_level);
         let base_height = 1.;
+
+        // Dummy values, reset before taking a simulation step in `lib.rs`.
         let kinematic_viscosity = 0.;
         let rotation_angular_speed = 0.;
+        let lunar_distance = 1e6;
+        let velocity_exaggeration_factor = 1e4;
 
         let basis = std::sync::Arc::new(flow::bases::ylm::SphericalHarmonicBasis::new(max_l));
         let terrain_height = basis.scalar_to_spectral(&basis.make_scalar(|_, _| 1.));
@@ -236,6 +261,12 @@ impl SphereGeometry {
             terrain_height,
             kinematic_viscosity,
             rotation_angular_speed,
+            tidal_prefactor: 4.
+                * float_consts::PI
+                * MOON_MASS_NONDIMEN
+                * (EARTH_RADIUS_M / OCEAN_DEPTH_M),
+            lunar_distance,
+            velocity_exaggeration_factor,
             height_tolerances: flow::physics::Tolerances {
                 rel: 1e-5,
                 abs: 1e-10,
@@ -422,6 +453,9 @@ impl TorusGeometry {
             terrain_height,
             kinematic_viscosity,
             rotation_angular_speed,
+            lunar_distance: 1.,
+            tidal_prefactor: 0.,
+            velocity_exaggeration_factor: 1e4,
             height_tolerances: flow::physics::Tolerances {
                 rel: 1e-3,
                 abs: 1e-3,

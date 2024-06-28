@@ -16,6 +16,8 @@ const EARTH_RADIUS_MI: Float = 3_958.8;
 const EARTH_RADIUS_M: Float = EARTH_RADIUS_MI * M_PER_MI;
 const OCEAN_DEPTH_M: Float = 3_682.;
 const WATER_KINEMATIC_VISCOSITY_M2_PER_S: Float = 1e-6;
+const MOON_MASS_NONDIMEN: Float = 7.342e22 / 5.972_168e24;
+const LUNAR_DISTANCE_NONDIMEN: Float = 384_399e3 / EARTH_RADIUS_M;
 
 const TITLE: &'static str = "Ocean Playground";
 
@@ -38,17 +40,21 @@ struct Parameters {
 
     pub log10_kinematic_viscosity_rel_to_water: Float,
     pub rotation_period_hr: Float,
+    pub lunar_distance_rel_to_actual: Float,
     pub earthquake_region_size_mi: Float,
     pub earthquake_height_m: Float,
 
     pub substeps_per_physics_step: usize,
 
     pub height_exaggeration_factor: Float,
+    pub velocity_exaggeration_factor: Float,
     pub show_points: ShowPoints,
 
     pub earthquake_position: Option<Vec3>,
     // Response set by the physics thread after an earthquake trigger has been read and handled.
     pub earthquake_triggered: bool,
+
+    pub geometry_version: usize,
 }
 
 impl Default for Parameters {
@@ -58,13 +64,16 @@ impl Default for Parameters {
             resolution_level: 6,
             log10_kinematic_viscosity_rel_to_water: 0.,
             rotation_period_hr: 24.,
+            lunar_distance_rel_to_actual: 1.,
             earthquake_region_size_mi: 300.,
-            earthquake_height_m: -1.,
+            earthquake_height_m: -4.,
             substeps_per_physics_step: 1,
-            height_exaggeration_factor: 1000.,
+            height_exaggeration_factor: 500.,
+            velocity_exaggeration_factor: 7e3,
             show_points: ShowPoints::Tracer,
-            earthquake_position: Some(three_d::Vec3::new(0.5, -0.5, 0.5)),
+            earthquake_position: None,
             earthquake_triggered: false,
+            geometry_version: 0,
         }
     }
 }
@@ -100,9 +109,7 @@ fn physics_loop(
         // Check for updated parameters.
         {
             let new_params = shared_params.read().unwrap();
-            if params.geometry_type != new_params.geometry_type
-                || params.resolution_level != new_params.resolution_level
-            {
+            if params.geometry_version != new_params.geometry_version {
                 geometry =
                     geom::Geometry::new(new_params.geometry_type, new_params.resolution_level);
             }
@@ -115,6 +122,9 @@ fn physics_loop(
             geometry.set_rotation_angular_speed(
                 flow::float_consts::TAU / params.rotation_period_hr * time_scale_hr(),
             );
+            geometry
+                .set_lunar_distance(params.lunar_distance_rel_to_actual * LUNAR_DISTANCE_NONDIMEN);
+            geometry.set_velocity_exaggeration_factor(params.velocity_exaggeration_factor);
         }
 
         // Update parameters if needed.
@@ -439,7 +449,7 @@ pub async fn run() {
             |gui_context| {
                 egui::Window::new(TITLE)
                     .vscroll(true)
-                    .default_height(600.)
+                    .default_height(650.)
                     .show(gui_context, |ui| {
                         egui::CollapsingHeader::new(egui::RichText::from("Info").heading())
                             .default_open(true)
@@ -463,9 +473,38 @@ pub async fn run() {
                             ui.add_space(-10.);
                         });
 
-                        egui::CollapsingHeader::new(egui::RichText::from("Settings").heading())
+                        egui::CollapsingHeader::new(egui::RichText::from("Controls").heading())
                             .default_open(true)
                             .show(ui, |ui| {
+                                ui.label(egui::RichText::new("Presets").strong());
+                                ui.horizontal(|ui| {
+                                    if ui.button("Tides").clicked() {
+                                        params = Parameters {
+                                            geometry_version: params.geometry_version + 1,
+                                            ..Default::default()
+                                        };
+                                    }
+                                    if ui.button("Coriolis").clicked() {
+                                        params = Parameters {
+                                            geometry_version: params.geometry_version + 1,
+                                            lunar_distance_rel_to_actual: 10.,
+                                            rotation_period_hr: 5.,
+                                            earthquake_region_size_mi: 500.,
+                                            earthquake_height_m: -3.5,
+                                            earthquake_position: Some(vec3(1., 0., 1.)),
+                                            ..Default::default()
+                                        };
+                                    }
+                                    if ui.button("Torus").clicked() {
+                                        params = Parameters {
+                                            geometry_version: params.geometry_version + 1,
+                                            geometry_type: geom::GeometryType::Torus,
+                                            velocity_exaggeration_factor: 100.,
+                                            ..Default::default()
+                                        };
+                                    }
+                                });
+                                ui.add_space(10.);
                                 ui.label(egui::RichText::new("Physics").strong());
                                 ui.add(
                                     egui::Slider::new(
@@ -486,6 +525,15 @@ pub async fn run() {
                                 );
                                 ui.add(
                                     egui::Slider::new(
+                                        &mut params.lunar_distance_rel_to_actual,
+                                        (0.2)..=(10.),
+                                    )
+                                    .logarithmic(true)
+                                    .text("lunar distance")
+                                    .suffix(" × actual"),
+                                );
+                                ui.add(
+                                    egui::Slider::new(
                                         &mut params.earthquake_region_size_mi,
                                         1e2..=5e2,
                                     )
@@ -493,14 +541,17 @@ pub async fn run() {
                                     .suffix(" mi"),
                                 );
                                 ui.add(
-                                    egui::Slider::new(&mut params.earthquake_height_m, -5e0..=5e0)
+                                    egui::Slider::new(&mut params.earthquake_height_m, -6e0..=6e0)
                                         .text("earthquake height")
                                         .suffix(" m"),
                                 );
-                                ui.label(format!(
-                                    "{:.1} hr elapsed sim time",
-                                    renderable.t_nondimen() * time_scale_hr()
-                                ));
+                                ui.horizontal(|ui| {
+                                    geom_change |= ui.button("Restart").clicked();
+                                    ui.label(format!(
+                                        "{:.1} hr elapsed sim time",
+                                        renderable.t_nondimen() * time_scale_hr()
+                                    ));
+                                });
                                 ui.add_space(10.);
 
                                 ui.label(egui::RichText::new("Visualization").strong());
@@ -511,6 +562,15 @@ pub async fn run() {
                                     )
                                     .logarithmic(true)
                                     .text("height exaggeration")
+                                    .suffix("×"),
+                                );
+                                ui.add(
+                                    egui::Slider::new(
+                                        &mut params.velocity_exaggeration_factor,
+                                        1e0..=1e5,
+                                    )
+                                    .logarithmic(true)
+                                    .text("velocity exaggeration")
                                     .suffix("×"),
                                 );
                                 ui.horizontal(|ui| {
@@ -546,20 +606,20 @@ pub async fn run() {
                                     }
                                     ui.label("resolution");
                                 });
-                                ui.add(
-                                    egui::Slider::new(
-                                        &mut params.substeps_per_physics_step,
-                                        1..=30,
-                                    )
-                                    .text("substeps per physics update"),
-                                );
+                                // ui.add(
+                                //     egui::Slider::new(
+                                //         &mut params.substeps_per_physics_step,
+                                //         1..=30,
+                                //     )
+                                //     .text("substeps per physics update"),
+                                // );
                                 ui.label(format!(
-                                    "({:.0}, {:.0}) wall ms/(substep, render)",
+                                    "({:.0}, {:.0}) wall ms/(step, render)",
                                     wall_time_per_renderable_sec * 1000.,
                                     wall_time_per_render_sec * 1000.,
                                 ));
                                 ui.label(format!(
-                                    "({:.0}, {:.1}) sim s/(substep, wall ms)",
+                                    "({:.0}, {:.1}) sim s/(step, wall ms)",
                                     sim_time_per_renderable * time_scale_s(),
                                     sim_time_per_renderable * time_scale_s()
                                         / (wall_time_per_renderable_sec * 1000.),
@@ -597,6 +657,10 @@ pub async fn run() {
                 });
             },
         );
+
+        if geom_change {
+            params.geometry_version += 1;
+        }
 
         control.handle_events(&mut camera, &mut frame_input.events);
         frame_input
@@ -706,12 +770,14 @@ impl DoubleClickDetector {
 }
 
 const INFO_MARKDOWN: &'static str = indoc::indoc! {"
-    Interactive ocean simulations in a web browser. **Double click** to set off a tsunami!
+    Interactive ocean simulations in a web browser!
+    
+    * **Double click** to set off an earthquake/tsunami
+    * **Dotted lines** are “tracers” indicating local water motion
+    * **Play around** with different controls below
 
-    Alpha version — please **do not share yet**! Many rough edges, e.g. advection term not yet
-    implemented in spherical geometry.
-
-    Planned features: realistic terrain (continents/sea floor/etc.), tides, and more...
+    Alpha version — please **do not share yet**! Realistic terrain (continents/sea floor/etc.)
+    coming soon...
 "};
 
 const DETAILS_MARKDOWN: &'static str = indoc::indoc! {"
@@ -725,11 +791,12 @@ const DETAILS_MARKDOWN: &'static str = indoc::indoc! {"
     
     * Viscosity (negligible for tsunamis but can be artifically increased)
     * Coriolis force
+    * Lunar tides (taking the moon as stationary for simplicity)
     * Advection of entrained “tracer” particles
-    * Lunar tides (planned)
     * Realistic terrain (continents/sea floor) (planned)
 
-    Tracer motion is accelerated by a large factor for visualization.
+    Tracer motion is accelerated by a large factor for visualization. Nonlinear momentum advection
+    term not yet implemented in spherical geometry.
     
     Tech stack: Rust/WebAssembly/WebGL/[`egui`](https://www.egui.rs/)/
     [`three-d`](https://github.com/asny/three-d).

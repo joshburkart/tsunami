@@ -83,7 +83,8 @@ impl<B: bases::Basis> Fields<nd::OwnedRepr<ComplexFloat>, B> {
 
 impl<B: bases::Basis> Fields<nd::OwnedRepr<ComplexFloat>, B> {
     pub fn zeros(basis: std::sync::Arc<B>) -> Self {
-        let len = basis.scalar_spectral_size() + basis.vector_spectral_size() + NUM_TRACER_POINTS;
+        let len =
+            basis.scalar_spectral_size() + basis.vector_spectral_size() + 1 + NUM_TRACER_POINTS;
         let storage = nd::Array1::zeros([len]);
         Self { basis, storage }
     }
@@ -91,7 +92,10 @@ impl<B: bases::Basis> Fields<nd::OwnedRepr<ComplexFloat>, B> {
 
 impl<S: RawComplexFloatData, B: bases::Basis> Fields<S, B> {
     pub fn size(&self) -> usize {
-        self.basis.scalar_spectral_size() + self.basis.vector_spectral_size() + NUM_TRACER_POINTS
+        self.basis.scalar_spectral_size()
+            + self.basis.vector_spectral_size()
+            + 1
+            + NUM_TRACER_POINTS
     }
 
     pub fn height_spectral(&self) -> B::SpectralScalarField {
@@ -114,6 +118,7 @@ impl<S: RawComplexFloatData, B: bases::Basis> Fields<S, B> {
     }
 
     pub fn velocity_grid(&self) -> nd::Array3<Float> {
+        // TODO FORCE CALLER TO PASS IN
         let spectral = self.velocity_spectral();
         self.basis.vector_to_grid(&spectral)
     }
@@ -121,13 +126,19 @@ impl<S: RawComplexFloatData, B: bases::Basis> Fields<S, B> {
     pub fn tracer_points(&self) -> nd::Array2<Float> {
         let scalar_size = self.basis.scalar_spectral_size();
         let vector_size = self.basis.vector_spectral_size();
-        let points_complex = &self.storage.as_slice().unwrap()[scalar_size + vector_size..];
+        let points_complex = &self.storage.as_slice().unwrap()[scalar_size + vector_size + 1..];
         let mut points = nd::Array2::zeros((2, points_complex.len()));
         for (i, point_complex) in points_complex.iter().enumerate() {
             points[[0, i]] = point_complex.re;
             points[[1, i]] = point_complex.im;
         }
         points
+    }
+
+    pub fn lunar_phase(&self) -> Float {
+        let scalar_size = self.basis.scalar_spectral_size();
+        let vector_size = self.basis.vector_spectral_size();
+        self.storage[[scalar_size + vector_size]].re
     }
 }
 
@@ -149,10 +160,15 @@ impl<S: RawComplexFloatData + nd::DataMut, B: bases::Basis> Fields<S, B> {
     }
 
     pub fn assign_tracers(&mut self, tracer_points: nd::ArrayView2<Float>) {
-        let offset = self.basis.scalar_spectral_size() + self.basis.vector_spectral_size();
+        let offset = self.basis.scalar_spectral_size() + self.basis.vector_spectral_size() + 1;
         for (i, point) in tracer_points.axis_iter(nd::Axis(1)).enumerate() {
             self.storage[[offset + i]] = ComplexFloat::new(point[[0]], point[[1]]);
         }
+    }
+
+    pub fn assign_lunar_phase(&mut self, lunar_phase: Float) {
+        self.storage[[self.basis.scalar_spectral_size() + self.basis.vector_spectral_size()]] =
+            ComplexFloat::new(lunar_phase, 0.);
     }
 }
 
@@ -171,8 +187,12 @@ impl<S: RawFloatData + nd::DataMut, B: bases::Basis> Fields<S, B> {
 
     pub fn tracers_flat_mut(&mut self) -> nd::ArrayViewMut1<'_, Float> {
         self.storage.slice_mut(nd::s![
-            self.basis.scalar_spectral_size() + self.basis.vector_spectral_size()..
+            self.basis.scalar_spectral_size() + self.basis.vector_spectral_size() + 1..
         ])
+    }
+
+    pub fn lunar_phase_mut(&mut self) -> &mut Float {
+        &mut self.storage[[self.basis.scalar_spectral_size() + self.basis.vector_spectral_size()]]
     }
 }
 
@@ -192,6 +212,10 @@ pub struct Problem<B: bases::Basis> {
 
     pub kinematic_viscosity: Float,
     pub rotation_angular_speed: Float,
+    pub tidal_prefactor: Float,
+    pub lunar_distance: Float,
+
+    pub velocity_exaggeration_factor: Float,
 
     pub height_tolerances: Tolerances,
     pub velocity_tolerances: Tolerances,
@@ -236,6 +260,7 @@ where
 
         let height = fields.height_spectral();
         let velocity = fields.velocity_spectral();
+        let lunar_phase = fields.lunar_phase();
 
         let height_grid = self.basis.scalar_to_grid(&height);
         let velocity_grid = self.basis.vector_to_grid(&velocity);
@@ -269,7 +294,6 @@ where
             // Velocity time derivative.
             {
                 let velocity_time_deriv = velocity_time_deriv.clone();
-                // let velocity_grid = velocity_grid.clone();
                 s.spawn(move |_| {
                     let viscous = ComplexFloat::from(self.kinematic_viscosity)
                         * self.basis.vector_laplacian(&velocity);
@@ -279,8 +303,10 @@ where
                         &((-2. * self.rotation_angular_speed)
                             * &self.basis.z_cross(&velocity_grid)),
                     );
+                    let tidal = ComplexFloat::from(-self.tidal_prefactor)
+                        * self.basis.tidal_force(self.lunar_distance, lunar_phase);
                     let mut velocity_time_deriv = velocity_time_deriv.lock().unwrap();
-                    *velocity_time_deriv = Some(viscous + advection + gravity + coriolis);
+                    *velocity_time_deriv = Some(viscous + advection + gravity + coriolis + tidal);
                 });
             }
 
@@ -290,9 +316,10 @@ where
                 s.spawn(move |_| {
                     let mut tracers_time_deriv = tracers_time_deriv.lock().unwrap();
                     *tracers_time_deriv = Some(
-                        3e5 * self
-                            .basis
-                            .velocity_to_points(velocity_grid, fields.tracer_points().view()),
+                        self.velocity_exaggeration_factor
+                            * self
+                                .basis
+                                .velocity_to_points(velocity_grid, fields.tracer_points().view()),
                     );
                 });
             }
@@ -301,6 +328,8 @@ where
         fields_time_deriv.assign_velocity(&velocity_time_deriv.lock().unwrap().as_ref().unwrap());
         fields_time_deriv
             .assign_tracers(tracers_time_deriv.lock().unwrap().as_ref().unwrap().view());
+        // Ignore lunar orbital motion.
+        fields_time_deriv.assign_lunar_phase(-self.rotation_angular_speed);
     }
 }
 
@@ -350,12 +379,14 @@ where
         *&mut abs_tol_fields.height_flat_mut() += problem.height_tolerances.abs;
         *&mut abs_tol_fields.velocity_flat_mut() += problem.velocity_tolerances.abs;
         *&mut abs_tol_fields.tracers_flat_mut() += problem.tracers_tolerances.abs;
+        *abs_tol_fields.lunar_phase_mut() = problem.tracers_tolerances.abs;
 
         let mut rel_tol_storage = nd::Array1::<Float>::zeros(size);
         let mut rel_tol_fields = Fields::new_mut(problem.basis.clone(), rel_tol_storage.view_mut());
         *&mut rel_tol_fields.height_flat_mut() += problem.height_tolerances.rel;
         *&mut rel_tol_fields.velocity_flat_mut() += problem.velocity_tolerances.rel;
         *&mut rel_tol_fields.tracers_flat_mut() += problem.tracers_tolerances.rel;
+        *rel_tol_fields.lunar_phase_mut() = problem.tracers_tolerances.rel;
 
         let order = 3;
         let integrator = odeint::IntegratorNordsieckAdamsBashforth::new(

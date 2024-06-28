@@ -97,6 +97,8 @@ pub fn bump_2d_spectral(
     let problem = physics::Problem {
         basis,
         terrain_height,
+        lunar_distance: 1.,
+        tidal_prefactor: 0.,
         kinematic_viscosity,
         rotation_angular_speed: 0.,
         height_tolerances: physics::Tolerances {

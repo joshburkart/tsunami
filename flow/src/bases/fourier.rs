@@ -239,8 +239,8 @@ impl Basis for RectangularPeriodicBasis {
                 );
             }
         }
-        // Scaling hack.
-        output / 2e3
+
+        output
     }
 
     fn gradient(&self, spectral: &Self::SpectralScalarField) -> Self::SpectralVectorField {
@@ -271,9 +271,18 @@ impl Basis for RectangularPeriodicBasis {
         )
     }
 
-    fn z_cross(&self, spectral: &nd::Array3<Float>) -> nd::Array3<Float> {
+    fn z_cross(&self, grid: &nd::Array3<Float>) -> nd::Array3<Float> {
         // Not implemented.
-        nd::Array3::zeros(spectral.raw_dim())
+        nd::Array3::zeros(grid.raw_dim())
+    }
+
+    fn tidal_force(
+        &self,
+        _lunar_distance: Float,
+        _lunar_phase: Float,
+    ) -> Self::SpectralVectorField {
+        // Not implemented.
+        nd::Array3::zeros((2, self.num_points[0], self.rfft_output_size))
     }
 }
 

@@ -374,7 +374,11 @@ impl Basis for SphericalHarmonicBasis {
     fn gradient(&self, spectral: &SphericalHarmonicField) -> VectorSphericalHarmonicField {
         VectorSphericalHarmonicField {
             Psi: SphericalHarmonicField {
-                f_l_m: spectral.f_l_m.clone(),
+                f_l_m: spectral.f_l_m.clone()
+                    * &self
+                        .Lambda_sq
+                        .mapv(|Lambda_sq| Lambda_sq.sqrt())
+                        .slice(nd::s![.., nd::NewAxis]),
             },
             Phi: None,
         }
@@ -382,7 +386,11 @@ impl Basis for SphericalHarmonicBasis {
 
     fn divergence(&self, spectral: &VectorSphericalHarmonicField) -> SphericalHarmonicField {
         SphericalHarmonicField {
-            f_l_m: -&spectral.Psi.f_l_m * &self.Lambda_sq.slice(nd::s![.., nd::NewAxis]),
+            f_l_m: -&spectral.Psi.f_l_m
+                * &self
+                    .Lambda_sq
+                    .mapv(|Lambda_sq| Lambda_sq.sqrt())
+                    .slice(nd::s![.., nd::NewAxis]),
         }
     }
 
@@ -430,6 +438,24 @@ impl Basis for SphericalHarmonicBasis {
             }
         }
         output
+    }
+
+    fn tidal_force(&self, lunar_distance: Float, lunar_phase: Float) -> Self::SpectralVectorField {
+        let mut f_l_m = nd::Array2::zeros((self.max_l + 1, self.max_l + 1));
+        let mu_zero_index = self.vector_spherical_harmonics.P_l_m_mu.shape()[2] / 2;
+        assert!(self.vector_spherical_harmonics.P_l_m_mu[[2, 1, mu_zero_index]].abs() < 1e-9);
+        for l in 2..=self.max_l {
+            for m in 0..=l {
+                f_l_m[[l, m]] = self.Lambda_sq[[l]].sqrt() / (2. * l as Float + 1.)
+                    * (1. / lunar_distance).powi(l as i32 + 1)
+                    * self.vector_spherical_harmonics.P_l_m_mu[[l, m, mu_zero_index]]
+                    * ComplexFloat::cis(-(m as Float) * lunar_phase);
+            }
+        }
+        VectorSphericalHarmonicField {
+            Psi: SphericalHarmonicField { f_l_m },
+            Phi: None,
+        }
     }
 }
 
