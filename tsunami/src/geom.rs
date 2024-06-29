@@ -6,8 +6,8 @@ use crate::{
     EARTH_RADIUS_M, MOON_MASS_NONDIMEN, OCEAN_DEPTH_M,
 };
 
-const TRACER_LENGTH: usize = 10;
 const TRACER_STEP: usize = 3;
+const TRACER_HISTORY_LENGTH: usize = TRACER_STEP.pow(3);
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum GeometryType {
@@ -169,7 +169,7 @@ impl SphereGeometry {
         let mu_grid = mu_grid.clone();
         let phi_grid = phi_grid.clone();
 
-        let tracers_history = ringbuffer::AllocRingBuffer::new(TRACER_LENGTH);
+        let tracers_history = ringbuffer::AllocRingBuffer::new(TRACER_HISTORY_LENGTH);
 
         Self {
             step_index: 0,
@@ -188,10 +188,8 @@ impl SphereGeometry {
 
     pub fn step(&mut self) {
         use ringbuffer::RingBuffer;
-        if self.step_index % TRACER_STEP == 0 {
-            self.tracers_history
-                .push(self.curr_fields_snapshot.fields.tracer_points().clone());
-        }
+        self.tracers_history
+            .push(self.curr_fields_snapshot.fields.tracer_points().clone());
 
         std::mem::swap(
             &mut self.prev_fields_snapshot,
@@ -210,7 +208,12 @@ impl SphereGeometry {
                 use ringbuffer::RingBuffer;
 
                 let height_grid = fields_snapshot.fields.height_grid();
-                let tracer_points_history_mu_phi = self.tracers_history.to_vec();
+                let tracer_points_history_mu_phi = self
+                    .tracers_history
+                    .iter()
+                    .step_by(TRACER_STEP)
+                    .cloned()
+                    .collect::<Vec<_>>();
                 let tracer_heights_history: Vec<_> = tracer_points_history_mu_phi
                     .iter()
                     .map(|tracer_points_mu_phi| {
@@ -319,7 +322,7 @@ impl TorusGeometry {
         let theta_grid = axes[0] / major_radius;
         let phi_grid = axes[1] / minor_radius;
 
-        let tracers_history = ringbuffer::AllocRingBuffer::new(TRACER_LENGTH);
+        let tracers_history = ringbuffer::AllocRingBuffer::new(TRACER_HISTORY_LENGTH);
 
         Self {
             step_index: 0,
@@ -342,10 +345,8 @@ impl TorusGeometry {
 
     pub fn step(&mut self) {
         use ringbuffer::RingBuffer;
-        if self.step_index % TRACER_STEP == 0 {
-            self.tracers_history
-                .push(self.curr_fields_snapshot.fields.tracer_points());
-        }
+        self.tracers_history
+            .push(self.curr_fields_snapshot.fields.tracer_points());
 
         std::mem::swap(
             &mut self.prev_fields_snapshot,
@@ -365,7 +366,12 @@ impl TorusGeometry {
 
                 let height_grid = fields_snapshot.fields.height_grid();
 
-                let mut tracer_points_history = self.tracers_history.to_vec();
+                let mut tracer_points_history = self
+                    .tracers_history
+                    .iter()
+                    .step_by(TRACER_STEP)
+                    .cloned()
+                    .collect::<Vec<_>>();
                 let tracer_heights_history: Vec<_> = tracer_points_history
                     .iter()
                     .map(|tracer_points| {

@@ -95,6 +95,7 @@ impl Parameters {
             earthquake_region_size_mi: 500.,
             earthquake_height_m: -3.5,
             earthquake_position: Some(vec3(1., 0., 1.)),
+            velocity_exaggeration_factor: 5e3,
             ..Self::tides()
         }
     }
