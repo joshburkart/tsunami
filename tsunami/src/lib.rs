@@ -37,7 +37,6 @@ fn water_kinematic_viscosity_nondimen() -> Float {
 #[derivative(PartialEq)]
 struct Parameters {
     pub geometry_type: geom::GeometryType,
-    pub resolution_level: u32,
 
     pub log10_kinematic_viscosity_rel_to_water: Float,
     pub rotation_period_hr: Float,
@@ -47,8 +46,14 @@ struct Parameters {
 
     pub substeps_per_physics_step: usize,
 
+    #[derivative(PartialEq = "ignore")]
+    pub resolution_level: u32,
+
+    #[derivative(PartialEq = "ignore")]
     pub height_exaggeration_factor: Float,
+    #[derivative(PartialEq = "ignore")]
     pub velocity_exaggeration_factor: Float,
+    #[derivative(PartialEq = "ignore")]
     pub show_points: ShowPoints,
 
     #[derivative(PartialEq = "ignore")]
@@ -268,10 +273,10 @@ pub async fn run() {
     let mut wall_time_per_render_sec = 0.;
     let mut sim_time_per_renderable = 0.;
 
-    let rendering = renderable.make_rendering_data(params.height_exaggeration_factor);
+    let rendering_data = renderable.make_rendering_data(params.height_exaggeration_factor);
 
     let mut mesh_model = Gm::new(
-        Mesh::new(&context, &rendering.mesh.into()),
+        Mesh::new(&context, &rendering_data.mesh.into()),
         PhysicalMaterial::new(
             &context,
             &CpuMaterial {
@@ -293,7 +298,7 @@ pub async fn run() {
         geometry: InstancedMesh::new(
             &context,
             &PointCloud {
-                positions: Positions::F64(rendering.quadrature_points),
+                positions: Positions::F64(rendering_data.quadrature_points),
                 colors: None,
             }
             .into(),
@@ -305,7 +310,7 @@ pub async fn run() {
         geometry: InstancedMesh::new(
             &context,
             &PointCloud {
-                positions: Positions::F64(rendering.tracer_points),
+                positions: Positions::F64(rendering_data.tracer_points),
                 colors: None,
             }
             .into(),
