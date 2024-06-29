@@ -76,7 +76,7 @@ impl Parameters {
             earthquake_height_m: -4.,
             substeps_per_physics_step: 1,
             height_exaggeration_factor: 500.,
-            velocity_exaggeration_factor: 7e3,
+            velocity_exaggeration_factor: 3e3,
             show_points: ShowPoints::Tracer,
             earthquake_position: None,
             earthquake_triggered: false,

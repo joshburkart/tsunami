@@ -118,7 +118,6 @@ impl<S: RawComplexFloatData, B: bases::Basis> Fields<S, B> {
     }
 
     pub fn velocity_grid(&self) -> nd::Array3<Float> {
-        // TODO FORCE CALLER TO PASS IN
         let spectral = self.velocity_spectral();
         self.basis.vector_to_grid(&spectral)
     }

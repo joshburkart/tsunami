@@ -101,6 +101,7 @@ pub fn bump_2d_spectral(
         tidal_prefactor: 0.,
         kinematic_viscosity,
         rotation_angular_speed: 0.,
+        velocity_exaggeration_factor: 1e4,
         height_tolerances: physics::Tolerances {
             rel: 1e-4,
             abs: 1e-4,
