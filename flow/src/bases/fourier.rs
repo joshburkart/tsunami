@@ -1,5 +1,4 @@
 use ndarray as nd;
-use rayon::prelude::*;
 
 use crate::{
     bases::{periodic_grid_search, periodic_linear_interpolate, Basis, FftDimension},
@@ -90,13 +89,13 @@ impl RectangularPeriodicBasis {
             temp_field_1.raw_dim(),
             self.num_points[1],
         ));
-        ndrustfft::ndifft_par(
+        ndrustfft::ndifft(
             &spectral,
             &mut temp_field_1,
             &self.fft_handler,
             first_spatial_axis,
         );
-        ndrustfft::ndifft_r2c_par(
+        ndrustfft::ndifft_r2c(
             &temp_field_1,
             &mut temp_field_2,
             &self.rfft_handler,
@@ -113,13 +112,13 @@ impl RectangularPeriodicBasis {
         let shape = D::change_last_axis(grid.raw_dim(), self.rfft_output_size);
         let mut temp_field_1 = nd::Array::zeros(shape);
         let mut temp_field_2 = temp_field_1.clone();
-        ndrustfft::ndfft_r2c_par(
+        ndrustfft::ndfft_r2c(
             &grid,
             &mut temp_field_1,
             &self.rfft_handler,
             first_spatial_axis + 1,
         );
-        ndrustfft::ndfft_par(
+        ndrustfft::ndfft(
             &temp_field_1,
             &mut temp_field_2,
             &self.fft_handler,
@@ -206,8 +205,7 @@ impl Basis for RectangularPeriodicBasis {
         let mut output = nd::Array1::zeros(points.shape()[1]);
         points
             .axis_iter(nd::Axis(1))
-            .into_par_iter()
-            .zip_eq(output.axis_iter_mut(nd::Axis(0)))
+            .zip(output.axis_iter_mut(nd::Axis(0)))
             .for_each(|(point, mut output_value)| {
                 output_value[[]] = periodic_linear_interpolate(
                     point,

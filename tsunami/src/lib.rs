@@ -4,7 +4,7 @@ use flow::Float;
 use three_d::*;
 use wasm_bindgen::prelude::*;
 
-mod geom;
+pub mod geom;
 mod render;
 
 #[cfg(feature = "wasm-bindgen-rayon")]
@@ -88,7 +88,7 @@ impl Parameters {
         }
     }
 
-    fn coriolis() -> Self {
+    fn whirlpool() -> Self {
         Self {
             lunar_distance_rel_to_actual: 10.,
             rotation_period_hr: 5.,
@@ -192,7 +192,7 @@ pub async fn run() {
         rayon::current_num_threads()
     );
 
-    let mut params = Parameters::tides();
+    let mut params = Parameters::whirlpool();
     let mut geometry_version = 0;
     let geometry = geom::Geometry::new(params.geometry_type, params.resolution_level);
     let mut renderable = geometry.make_renderables(1).pop().unwrap();
@@ -526,8 +526,8 @@ pub async fn run() {
                                 ui.label(egui::RichText::new("Presets").strong());
                                 ui.horizontal(|ui| {
                                     for (selection_params, name) in [
+                                        (Parameters::whirlpool(), "Whirlpool"),
                                         (Parameters::tides(), "Tides"),
-                                        (Parameters::coriolis(), "Coriolis force"),
                                         (Parameters::torus(), "Torus world"),
                                     ] {
                                         let params_same = params == selection_params;

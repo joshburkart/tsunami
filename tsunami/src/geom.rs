@@ -142,7 +142,7 @@ impl Geometry {
     }
 }
 
-struct SphereGeometry {
+pub struct SphereGeometry {
     step_index: usize,
 
     base_height: Float,

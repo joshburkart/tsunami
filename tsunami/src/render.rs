@@ -140,10 +140,9 @@ impl SphereRenderable {
     }
 
     fn make_tracer_points(&self, height_exaggeration_factor: Float) -> Vec<Vector3<Float>> {
-        use rayon::prelude::*;
-        (&self.tracer_points_history_mu_phi)
-            .into_par_iter()
-            .zip_eq((&self.tracer_heights_history).into_par_iter())
+        self.tracer_points_history_mu_phi
+            .iter()
+            .zip(&self.tracer_heights_history)
             .map(|(tracer_points_mu_phi, tracer_heights)| {
                 tracer_points_mu_phi
                     .axis_iter(nd::Axis(1))
@@ -157,7 +156,7 @@ impl SphereRenderable {
                         )
                     })
             })
-            .flatten_iter()
+            .flatten()
             .collect()
     }
 
@@ -282,10 +281,9 @@ impl TorusRenderable {
     }
 
     fn make_tracer_points(&self, height_exaggeration_factor: Float) -> Vec<Vector3<Float>> {
-        use rayon::prelude::*;
-        (&self.tracer_points_history_theta_phi)
-            .into_par_iter()
-            .zip_eq((&self.tracer_heights_history).into_par_iter())
+        self.tracer_points_history_theta_phi
+            .iter()
+            .zip(&self.tracer_heights_history)
             .map(|(tracer_points_mu_phi, tracer_heights)| {
                 tracer_points_mu_phi
                     .axis_iter(nd::Axis(1))
@@ -299,7 +297,7 @@ impl TorusRenderable {
                         )
                     })
             })
-            .flatten_iter()
+            .flatten()
             .collect()
     }
 

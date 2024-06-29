@@ -18,9 +18,9 @@ itertools = "0.13"
 js-sys = "0.3.69"
 gauss-quad = "0.1.8"
 log = "0.4"
-nalgebra = "0.32.5"
+nalgebra = "0.33"
 ndarray = { version = "0.15", features = ["approx-0_5"] }
-ndrustfft = { git = "https://github.com/joshburkart/ndrustfft.git", rev = "4b8b8c91ad6e9f81b70cc06723719d031a2e780c" }
+ndrustfft = "0.4.5"
 num-traits = "0.2"
 numpy = "0.21"
 pyo3 = { version = "0.21.1", features = ["extension-module"] }

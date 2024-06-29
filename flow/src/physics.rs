@@ -6,7 +6,7 @@ use crate::{
     ComplexFloat, Float, RawComplexFloatData, RawFloatData,
 };
 
-pub const NUM_TRACER_POINTS: usize = 2000;
+pub const NUM_TRACER_POINTS: usize = 6000;
 
 pub struct FieldsSnapshot<B: bases::Basis> {
     pub t: Float,
