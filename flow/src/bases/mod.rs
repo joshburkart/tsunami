@@ -155,22 +155,22 @@ fn periodic_bilinear_interpolate(
 ) -> Float {
     let [x_bracket, y_bracket] = grid_search_result;
 
-    let left_vec = nd::array![
+    let left_vec = nalgebra::Vector2::new(
         (x_bracket[1].value - point[[0]]).rem_euclid(lengths[0]),
-        (point[[0]] - x_bracket[0].value).rem_euclid(lengths[0])
-    ];
-    let right_vec = nd::array![
+        (point[[0]] - x_bracket[0].value).rem_euclid(lengths[0]),
+    );
+    let right_vec = nalgebra::Vector2::new(
         (y_bracket[1].value - point[[1]]).rem_euclid(lengths[1]),
-        (point[[1]] - y_bracket[0].value).rem_euclid(lengths[1])
-    ];
+        (point[[1]] - y_bracket[0].value).rem_euclid(lengths[1]),
+    );
 
     let v11 = grid[[x_bracket[0].index, y_bracket[0].index]];
     let v12 = grid[[x_bracket[0].index, y_bracket[1].index]];
     let v21 = grid[[x_bracket[1].index, y_bracket[0].index]];
     let v22 = grid[[x_bracket[1].index, y_bracket[1].index]];
-    let matrix = nd::array![[v11, v12], [v21, v22]];
+    let matrix = nalgebra::Matrix2::new(v11, v12, v21, v22);
 
-    left_vec.dot(&matrix.dot(&right_vec))
+    left_vec.dot(&(matrix * right_vec))
         / (x_bracket[1].value - x_bracket[0].value).rem_euclid(lengths[0])
         / (y_bracket[1].value - y_bracket[0].value).rem_euclid(lengths[1])
 }

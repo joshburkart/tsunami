@@ -81,7 +81,7 @@ impl Parameters {
             earthquake_height_m: -4.,
             substeps_per_physics_step: 1,
             height_exaggeration_factor: 500.,
-            velocity_exaggeration_factor: 3e3,
+            velocity_exaggeration_factor: 1.5e3,
             show_points: ShowPoints::Tracer,
             earthquake_position: None,
             earthquake_triggered: false,
@@ -94,7 +94,7 @@ impl Parameters {
             rotation_period_hr: 5.,
             earthquake_region_size_mi: 500.,
             earthquake_height_m: -3.5,
-            earthquake_position: Some(vec3(1., 0., 1.)),
+            earthquake_position: Some(vec3(0.5, 1., 1.)),
             velocity_exaggeration_factor: 5e3,
             ..Self::tides()
         }
@@ -196,7 +196,7 @@ pub async fn run() {
     let mut geometry_version = 0;
     let geometry = geom::Geometry::new(params.geometry_type, params.resolution_level);
     let mut renderable = geometry.make_renderables(1).pop().unwrap();
-    let (renderable_sender, renderable_reader) = std::sync::mpsc::sync_channel(50);
+    let (renderable_sender, renderable_reader) = std::sync::mpsc::sync_channel(5);
     let shared_params_message_write = std::sync::Arc::new(std::sync::RwLock::new(
         ParametersMessage {
             params: params.clone(),
@@ -218,7 +218,7 @@ pub async fn run() {
 
     let mut camera = Camera::new_perspective(
         window.viewport(),
-        vec3(1., 1., 1.) * 2.,
+        vec3(1., 1., 0.5).normalize() * 3.,
         vec3(0., 0., 0.),
         vec3(0.0, 0.0, 1.0),
         degrees(45.0),
@@ -817,7 +817,8 @@ const INFO_MARKDOWN: &'static str = indoc::indoc! {"
 
 const DETAILS_MARKDOWN: &'static str = indoc::indoc! {"
     Solves the [shallow water equations](https://en.wikipedia.org/wiki/Shallow_water_equations)
-    [pseudospectrally](https://en.wikipedia.org/wiki/Pseudo-spectral_method) using a
+    [pseudo](https://en.wikipedia.org/wiki/Pseudo-spectral_method)\
+    [spectrally](https://en.wikipedia.org/wiki/Spectral_method) using a
     [spherical harmonic](https://en.wikipedia.org/wiki/Spherical_harmonics) basis. (Toroidal
     geometry with more limited functionality also included for fun, which uses a rectangular domain
     with periodic boundary conditions and a Fourier basis.)
