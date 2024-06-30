@@ -1,7 +1,7 @@
 use ndarray as nd;
 
 use crate::{
-    bases::{periodic_grid_search, periodic_linear_interpolate, Basis, FftDimension},
+    bases::{periodic_grid_search, periodic_bilinear_interpolate, Basis, FftDimension},
     float_consts, ComplexFloat, Float, RawFloatData,
 };
 
@@ -207,7 +207,7 @@ impl Basis for RectangularPeriodicBasis {
             .axis_iter(nd::Axis(1))
             .zip(output.axis_iter_mut(nd::Axis(0)))
             .for_each(|(point, mut output_value)| {
-                output_value[[]] = periodic_linear_interpolate(
+                output_value[[]] = periodic_bilinear_interpolate(
                     point,
                     &periodic_grid_search(self, point),
                     grid.view(),
@@ -229,7 +229,7 @@ impl Basis for RectangularPeriodicBasis {
         {
             let grid_search_result = periodic_grid_search(self, point);
             for k in 0..2 {
-                output_value[[k]] = periodic_linear_interpolate(
+                output_value[[k]] = periodic_bilinear_interpolate(
                     point,
                     &grid_search_result,
                     velocity_grid.slice(nd::s![k, .., ..]),

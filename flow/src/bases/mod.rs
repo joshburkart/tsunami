@@ -146,7 +146,8 @@ fn periodic_grid_search<B: Basis>(basis: &B, point: nd::ArrayView1<'_, Float>) -
     [make_bracket(0), make_bracket(1)]
 }
 
-fn periodic_linear_interpolate(
+#[inline(always)]
+fn periodic_bilinear_interpolate(
     point: nd::ArrayView1<Float>,
     grid_search_result: &GridSearchResult,
     grid: nd::ArrayView2<'_, Float>,

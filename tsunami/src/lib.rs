@@ -830,9 +830,6 @@ const DETAILS_MARKDOWN: &'static str = indoc::indoc! {"
     * Advection of entrained “tracer” particles
     * Realistic terrain (continents/sea floor) (planned)
 
-    Tracer motion is accelerated by a large factor for visualization. Nonlinear momentum advection
-    term not yet implemented in spherical geometry.
-    
     Tech stack: Rust/WebAssembly/WebGL/[`egui`](https://www.egui.rs/)/
     [`three-d`](https://github.com/asny/three-d).
 

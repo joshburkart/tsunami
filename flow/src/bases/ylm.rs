@@ -1,7 +1,7 @@
 use ndarray as nd;
 
 use crate::{
-    bases::{periodic_grid_search, periodic_linear_interpolate, Basis},
+    bases::{periodic_bilinear_interpolate, periodic_grid_search, Basis},
     float_consts, ComplexFloat, Float,
 };
 
@@ -154,6 +154,8 @@ impl Basis for SphericalHarmonicBasis {
     }
 
     fn vector_to_grid(&self, spectral: &VectorSphericalHarmonicField) -> nd::Array3<Float> {
+        use nd::parallel::prelude::*;
+
         let Q_l_m_mu = &self.vector_spherical_harmonics.Q_l_m_mu;
         let iR_l_m_mu = &self.vector_spherical_harmonics.iR_l_m_mu;
 
@@ -162,6 +164,7 @@ impl Basis for SphericalHarmonicBasis {
 
         f_comp_mu_m
             .axis_iter_mut(nd::Axis(1))
+            .into_par_iter()
             .zip(Q_l_m_mu.axis_iter(nd::Axis(2)))
             .zip(iR_l_m_mu.axis_iter(nd::Axis(2)))
             .for_each(|((mut f_comp_m, Q_l_m), iR_l_m)| {
@@ -186,7 +189,7 @@ impl Basis for SphericalHarmonicBasis {
             self.mu_gauss_legendre_quad.nodes.len(),
             self.phi_grid.len(),
         ));
-        ndrustfft::ndifft_r2c(&f_comp_mu_m, &mut f_comp_mu_phi, &self.rfft_handler, 2);
+        ndrustfft::ndifft_r2c_par(&f_comp_mu_m, &mut f_comp_mu_phi, &self.rfft_handler, 2);
 
         f_comp_mu_phi
     }
@@ -215,9 +218,11 @@ impl Basis for SphericalHarmonicBasis {
     }
 
     fn vector_to_spectral(&self, grid: &nd::Array3<Float>) -> VectorSphericalHarmonicField {
+        use nd::parallel::prelude::*;
+
         let mut f_comp_mu_m =
             nd::Array3::zeros((2, self.mu_gauss_legendre_quad.nodes.len(), self.max_l + 1));
-        ndrustfft::ndfft_r2c(&grid, &mut f_comp_mu_m, &self.rfft_handler, 2);
+        ndrustfft::ndfft_r2c_par(&grid, &mut f_comp_mu_m, &self.rfft_handler, 2);
         f_comp_mu_m *= ComplexFloat::from(float_consts::TAU / (2 * self.max_l + 1) as Float);
         let fw_comp_mu_m = {
             f_comp_mu_m.zip_mut_with(
@@ -236,6 +241,7 @@ impl Basis for SphericalHarmonicBasis {
         let mut Phi_f_l_m = nd::Array2::<ComplexFloat>::zeros((self.max_l + 1, self.max_l + 1));
         Psi_f_l_m
             .axis_iter_mut(nd::Axis(0))
+            .into_par_iter()
             .zip(Phi_f_l_m.axis_iter_mut(nd::Axis(0)))
             .zip(Q_l_m_mu.axis_iter(nd::Axis(0)))
             .zip(iR_l_m_mu.axis_iter(nd::Axis(0)))
@@ -278,7 +284,7 @@ impl Basis for SphericalHarmonicBasis {
                         bottom_value
                     }
                 } else {
-                    periodic_linear_interpolate(
+                    periodic_bilinear_interpolate(
                         point,
                         &grid_search_result,
                         grid.view(),
@@ -338,7 +344,7 @@ impl Basis for SphericalHarmonicBasis {
                     };
                 } else {
                     for k in 0..3 {
-                        interpolated_cartesian_velocity[[k]] = periodic_linear_interpolate(
+                        interpolated_cartesian_velocity[[k]] = periodic_bilinear_interpolate(
                             point,
                             &grid_search_result,
                             cartesian_velocity_grid.slice(nd::s![k, .., ..]),
