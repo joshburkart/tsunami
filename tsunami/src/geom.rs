@@ -66,19 +66,19 @@ impl Geometry {
                     let mut new_height = fields.height_grid().to_owned();
 
                     // Want to generate a power so that a "bump" is generated of half-angle
-                    // `half_angle_rad`. Start from FWHM definition:
+                    // `half_angle_rad`. Define bump size to be angle to reach 5% of max. Then:
                     //
                     // ```
-                    // 1 / 2 = cos(half angle) ^ (2n)
+                    // 0.05 = cos(half angle) ^ (2n)
                     // ```
                     //
                     // Solve for `n`:
                     //
                     // ```
-                    // n = log(1 / 2) / (2 * log(cos(half angle)))
+                    // n = log(0.05) / (2 * log(cos(half angle)))
                     // ```
                     let half_angle_rad = region_size_rad / 2.;
-                    let pow = ((0.5 as Float).ln() / half_angle_rad.cos().ln() / 2.) as f32;
+                    let pow = ((0.05 as Float).ln() / half_angle_rad.cos().ln() / 2.) as f32;
                     log::info!("Setting off earthquake");
                     let click_direction = position.normalize();
                     new_height = &new_height

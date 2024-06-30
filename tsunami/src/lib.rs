@@ -92,7 +92,7 @@ impl Parameters {
         Self {
             lunar_distance_rel_to_actual: 10.,
             rotation_period_hr: 5.,
-            earthquake_region_size_mi: 500.,
+            earthquake_region_size_mi: 1000.,
             earthquake_height_m: -3.5,
             earthquake_position: Some(vec3(0.5, 1., 1.)),
             velocity_exaggeration_factor: 5e3,
@@ -449,7 +449,7 @@ pub async fn run() {
                         let angle = space_position.angle(Vector3::unit_z());
                         tsunami_hint_circle
                             .transform(&Matrix4::from_scale(
-                                (params.earthquake_region_size_mi / EARTH_RADIUS_MI) as f32,
+                                (params.earthquake_region_size_mi / EARTH_RADIUS_MI / 2.) as f32,
                             ))
                             .unwrap();
                         tsunami_hint_circle
@@ -570,7 +570,7 @@ pub async fn run() {
                                 ui.add(
                                     egui::Slider::new(
                                         &mut params.earthquake_region_size_mi,
-                                        1e2..=5e2,
+                                        2e2..=1e3,
                                     )
                                     .text("earthquake region size")
                                     .suffix(" mi"),
