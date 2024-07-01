@@ -55,6 +55,8 @@ struct Parameters {
     pub velocity_exaggeration_factor: Float,
     #[derivative(PartialEq = "ignore")]
     pub show_points: ShowPoints,
+    #[derivative(PartialEq = "ignore")]
+    pub show_rotation: bool,
 
     #[derivative(PartialEq = "ignore")]
     pub earthquake_position: Option<Vec3>,
@@ -77,12 +79,13 @@ impl Parameters {
             log10_kinematic_viscosity_rel_to_water: 0.,
             rotation_period_hr: 24.,
             lunar_distance_rel_to_actual: 1.,
-            earthquake_region_size_mi: 300.,
+            earthquake_region_size_mi: 600.,
             earthquake_height_m: -4.,
             substeps_per_physics_step: 1,
             height_exaggeration_factor: 500.,
             velocity_exaggeration_factor: 1.5e3,
             show_points: ShowPoints::Tracer,
+            show_rotation: false,
             earthquake_position: None,
             earthquake_triggered: false,
         }
@@ -233,11 +236,14 @@ pub async fn run() {
         "Roboto".to_owned(),
         egui::FontData::from_static(include_bytes!("../assets/Roboto-Light.ttf")),
     );
-    fonts
+    fonts.font_data.insert(
+        "NotoEmoji-Regular".to_owned(),
+        egui::FontData::from_static(include_bytes!("../assets/NotoEmoji-Regular.ttf")),
+    );
+    *fonts
         .families
         .entry(egui::FontFamily::Proportional)
-        .or_default()
-        .insert(0, "Roboto".to_owned());
+        .or_default() = vec!["Roboto".to_owned(), "NotoEmoji-Regular".to_owned()];
     gui.context().set_fonts(fonts);
     let mut commonmark_cache = egui_commonmark::CommonMarkCache::default();
 
@@ -379,15 +385,38 @@ pub async fn run() {
             sim_time_of_last_renderable = renderable.t_nondimen();
         }
         let rendering_data = renderable.make_rendering_data(params.height_exaggeration_factor);
+        let rotation = if params.show_rotation {
+            Matrix4::from_axis_angle(
+                Vector3::unit_z(),
+                -radians(renderable.rotational_phase_rad() as f32),
+            )
+        } else {
+            Matrix4::identity()
+        };
+
+        log::info!("rotational phase: {:?}", renderable.rotational_phase_rad());
 
         {
             mesh_model.geometry = Mesh::new(&context, &rendering_data.mesh.into());
+            mesh_model.set_transformation(rotation);
 
             if let ShowPoints::Quadrature = params.show_points {
                 quadrature_point_cloud_model.geometry = InstancedMesh::new(
                     &context,
                     &PointCloud {
-                        positions: Positions::F64(rendering_data.quadrature_points),
+                        positions: Positions::F32(
+                            rendering_data
+                                .quadrature_points
+                                .into_iter()
+                                .map(|point| {
+                                    rotation.transform_vector(Vector3 {
+                                        x: point.x as f32,
+                                        y: point.y as f32,
+                                        z: point.z as f32,
+                                    })
+                                })
+                                .collect(),
+                        ),
                         colors: None,
                     }
                     .into(),
@@ -402,7 +431,19 @@ pub async fn run() {
                 tracer_point_cloud_model.geometry = InstancedMesh::new(
                     &context,
                     &PointCloud {
-                        positions: Positions::F64(rendering_data.tracer_points),
+                        positions: Positions::F32(
+                            rendering_data
+                                .tracer_points
+                                .into_iter()
+                                .map(|point| {
+                                    rotation.transform_vector(Vector3 {
+                                        x: point.x as f32,
+                                        y: point.y as f32,
+                                        z: point.z as f32,
+                                    })
+                                })
+                                .collect(),
+                        ),
                         colors: None,
                     }
                     .into(),
@@ -470,6 +511,7 @@ pub async fn run() {
                 _ => {}
             }
         }
+        tsunami_hint_circle_object.set_transformation(rotation);
 
         // Set hint circle color to red if completing a double click.
         double_click_detector.process_idle();
@@ -626,6 +668,10 @@ pub async fn run() {
                                     );
                                     ui.label("show points");
                                 });
+                                ui.horizontal(|ui| {
+                                    ui.checkbox(&mut params.show_rotation, "visualize rotation");
+                                    ui.label("(warning: 🤢)");
+                                });
                                 ui.add_space(10.);
 
                                 ui.label(egui::RichText::new("Performance").strong());
@@ -698,10 +744,22 @@ pub async fn run() {
         }
 
         control.handle_events(&mut camera, &mut frame_input.events);
+
+        // We rotated the physical objects above; now we need to rotate the camera as
+        // well so that we are observing from a corotating frame.
+        let rotated_camera = {
+            let position = rotation.transform_vector(*camera.position());
+            let target = rotation.transform_vector(*camera.target());
+            let up = rotation.transform_vector(*camera.up());
+
+            let mut rotated_camera = camera.clone();
+            rotated_camera.set_view(position, target, up);
+            rotated_camera
+        };
         frame_input
             .screen()
             .render(
-                &camera,
+                &rotated_camera,
                 std::iter::empty()
                     .chain(&mesh_model)
                     .chain(&quadrature_point_cloud_model)
@@ -811,8 +869,7 @@ const INFO_MARKDOWN: &'static str = indoc::indoc! {"
     * **Dotted lines** are “tracers” indicating local water motion
     * **Play around** with different controls below
 
-    Alpha version — please **do not share yet**! Realistic terrain (continents/sea floor/etc.)
-    coming soon...
+    Alpha version — please **do not share yet**!
 "};
 
 const DETAILS_MARKDOWN: &'static str = indoc::indoc! {"

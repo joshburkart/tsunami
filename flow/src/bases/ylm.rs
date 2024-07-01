@@ -439,7 +439,11 @@ impl Basis for SphericalHarmonicBasis {
         output
     }
 
-    fn tidal_force(&self, lunar_distance: Float, lunar_phase: Float) -> Self::SpectralVectorField {
+    fn tidal_force(
+        &self,
+        lunar_distance: Float,
+        rotational_phase: Float,
+    ) -> Self::SpectralVectorField {
         let mut f_l_m = nd::Array2::zeros((self.max_l + 1, self.max_l + 1));
         let mu_zero_index = self.vector_spherical_harmonics.P_l_m_mu.shape()[2] / 2;
         assert!(self.vector_spherical_harmonics.P_l_m_mu[[2, 1, mu_zero_index]].abs() < 1e-9);
@@ -448,7 +452,7 @@ impl Basis for SphericalHarmonicBasis {
                 f_l_m[[l, m]] = self.Lambda_sq[[l]].sqrt() / (2. * l as Float + 1.)
                     * (1. / lunar_distance).powi(l as i32 + 1)
                     * self.vector_spherical_harmonics.P_l_m_mu[[l, m, mu_zero_index]]
-                    * ComplexFloat::cis(-(m as Float) * lunar_phase);
+                    * ComplexFloat::cis(-(m as Float) * rotational_phase);
             }
         }
         VectorSphericalHarmonicField {

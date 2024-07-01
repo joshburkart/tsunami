@@ -134,7 +134,7 @@ impl<S: RawComplexFloatData, B: bases::Basis> Fields<S, B> {
         points
     }
 
-    pub fn lunar_phase(&self) -> Float {
+    pub fn rotational_phase_rad(&self) -> Float {
         let scalar_size = self.basis.scalar_spectral_size();
         let vector_size = self.basis.vector_spectral_size();
         self.storage[[scalar_size + vector_size]].re
@@ -165,9 +165,9 @@ impl<S: RawComplexFloatData + nd::DataMut, B: bases::Basis> Fields<S, B> {
         }
     }
 
-    pub fn assign_lunar_phase(&mut self, lunar_phase: Float) {
+    pub fn assign_rotational_phase(&mut self, rotational_phase: Float) {
         self.storage[[self.basis.scalar_spectral_size() + self.basis.vector_spectral_size()]] =
-            ComplexFloat::new(lunar_phase, 0.);
+            ComplexFloat::new(rotational_phase, 0.);
     }
 }
 
@@ -190,7 +190,7 @@ impl<S: RawFloatData + nd::DataMut, B: bases::Basis> Fields<S, B> {
         ])
     }
 
-    pub fn lunar_phase_mut(&mut self) -> &mut Float {
+    pub fn rotational_phase_mut(&mut self) -> &mut Float {
         &mut self.storage[[self.basis.scalar_spectral_size() + self.basis.vector_spectral_size()]]
     }
 }
@@ -259,7 +259,7 @@ where
 
         let height = fields.height_spectral();
         let velocity = fields.velocity_spectral();
-        let lunar_phase = fields.lunar_phase();
+        let rotational_phase = fields.rotational_phase_rad();
 
         let height_grid = self.basis.scalar_to_grid(&height);
         let velocity_grid = self.basis.vector_to_grid(&velocity);
@@ -303,7 +303,9 @@ where
                             * &self.basis.z_cross(&velocity_grid)),
                     );
                     let tidal = ComplexFloat::from(-self.tidal_prefactor)
-                        * self.basis.tidal_force(self.lunar_distance, lunar_phase);
+                        * self
+                            .basis
+                            .tidal_force(self.lunar_distance, rotational_phase);
                     let mut velocity_time_deriv = velocity_time_deriv.lock().unwrap();
                     *velocity_time_deriv = Some(viscous + advection + gravity + coriolis + tidal);
                 });
@@ -328,7 +330,7 @@ where
         fields_time_deriv
             .assign_tracers(tracers_time_deriv.lock().unwrap().as_ref().unwrap().view());
         // Ignore lunar orbital motion.
-        fields_time_deriv.assign_lunar_phase(-self.rotation_angular_speed);
+        fields_time_deriv.assign_rotational_phase(-self.rotation_angular_speed);
     }
 }
 
@@ -378,14 +380,14 @@ where
         *&mut abs_tol_fields.height_flat_mut() += problem.height_tolerances.abs;
         *&mut abs_tol_fields.velocity_flat_mut() += problem.velocity_tolerances.abs;
         *&mut abs_tol_fields.tracers_flat_mut() += problem.tracers_tolerances.abs;
-        *abs_tol_fields.lunar_phase_mut() = problem.tracers_tolerances.abs;
+        *abs_tol_fields.rotational_phase_mut() = problem.tracers_tolerances.abs;
 
         let mut rel_tol_storage = nd::Array1::<Float>::zeros(size);
         let mut rel_tol_fields = Fields::new_mut(problem.basis.clone(), rel_tol_storage.view_mut());
         *&mut rel_tol_fields.height_flat_mut() += problem.height_tolerances.rel;
         *&mut rel_tol_fields.velocity_flat_mut() += problem.velocity_tolerances.rel;
         *&mut rel_tol_fields.tracers_flat_mut() += problem.tracers_tolerances.rel;
-        *rel_tol_fields.lunar_phase_mut() = problem.tracers_tolerances.rel;
+        *rel_tol_fields.rotational_phase_mut() = problem.tracers_tolerances.rel;
 
         let order = 3;
         let integrator = odeint::IntegratorNordsieckAdamsBashforth::new(

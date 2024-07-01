@@ -1,7 +1,7 @@
 use ndarray as nd;
 
 use crate::{
-    bases::{periodic_grid_search, periodic_bilinear_interpolate, Basis, FftDimension},
+    bases::{periodic_bilinear_interpolate, periodic_grid_search, Basis, FftDimension},
     float_consts, ComplexFloat, Float, RawFloatData,
 };
 
@@ -277,7 +277,7 @@ impl Basis for RectangularPeriodicBasis {
     fn tidal_force(
         &self,
         _lunar_distance: Float,
-        _lunar_phase: Float,
+        _rotational_phase: Float,
     ) -> Self::SpectralVectorField {
         // Not implemented.
         nd::Array3::zeros((2, self.num_points[0], self.rfft_output_size))

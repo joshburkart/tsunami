@@ -23,6 +23,13 @@ impl Renderable {
         }
     }
 
+    pub fn rotational_phase_rad(&self) -> Float {
+        match self {
+            Renderable::Sphere(sphere) => sphere.rotational_phase_rad,
+            Renderable::Torus(torus) => torus.rotational_phase_rad,
+        }
+    }
+
     pub fn t_nondimen(&self) -> Float {
         match self {
             Renderable::Sphere(sphere) => sphere.t,
@@ -36,6 +43,7 @@ pub struct SphereRenderable {
     pub base_height: Float,
 
     pub t: Float,
+    pub rotational_phase_rad: Float,
 
     pub mu_grid: nd::Array1<Float>,
     pub phi_grid: nd::Array1<Float>,
@@ -178,6 +186,7 @@ pub struct TorusRenderable {
     pub base_height: Float,
 
     pub t: Float,
+    pub rotational_phase_rad: Float,
 
     pub theta_grid: nd::Array1<Float>,
     pub phi_grid: nd::Array1<Float>,

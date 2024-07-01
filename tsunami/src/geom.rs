@@ -119,7 +119,7 @@ impl Geometry {
             GeometryImpl::Sphere(sphere) => {
                 sphere.solver.problem_mut().rotation_angular_speed = value
             }
-            GeometryImpl::Torus(_) => {}
+            GeometryImpl::Torus(torus) => torus.solver.problem_mut().rotation_angular_speed = value,
         }
     }
 
@@ -226,6 +226,11 @@ impl SphereGeometry {
 
                 SphereRenderable {
                     t: fields_snapshot.t,
+                    rotational_phase_rad: self
+                        .solver
+                        .fields_snapshot()
+                        .fields
+                        .rotational_phase_rad(),
                     base_height: self.base_height,
                     mu_grid: self.mu_grid.clone(),
                     phi_grid: self.phi_grid.clone(),
@@ -390,6 +395,7 @@ impl TorusGeometry {
 
                 TorusRenderable {
                     t: fields_snapshot.t,
+                    rotational_phase_rad: fields_snapshot.fields.rotational_phase_rad(),
                     base_height: self.base_height,
                     theta_grid: self.theta_grid.clone(),
                     phi_grid: self.phi_grid.clone(),
