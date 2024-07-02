@@ -26,10 +26,11 @@ numpy = "0.21"
 pyo3 = { version = "0.21.1", features = ["extension-module"] }
 rayon = "1.10"
 ringbuffer = "0.15"
+strum = { version = "0.26", features = ["derive"] }
 three-d = { git = "https://github.com/asny/three-d.git", rev = "a69b70874d93da231f5e4f8c35adb4d38134aeee", features = [
     "egui-gui",
 ] }
-three-d-asset = { version = "0.7", features = ["jpeg", "http"] }
+three-d-asset = { version = "0.7", features = ["jpeg", "png"] }
 wasm-bindgen = "0.2.92"
 wasm-bindgen-futures = "0.4.42"
 wasm-bindgen-rayon = { version = "1.2.1" }

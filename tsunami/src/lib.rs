@@ -5,7 +5,9 @@ use three_d::*;
 use wasm_bindgen::prelude::*;
 
 pub mod geom;
+mod param;
 mod render;
+mod util;
 
 #[cfg(feature = "wasm-bindgen-rayon")]
 pub use wasm_bindgen_rayon::init_thread_pool;
@@ -20,6 +22,8 @@ const MOON_MASS_NONDIMEN: Float = 7.342e22 / 5.972_168e24;
 const LUNAR_DISTANCE_NONDIMEN: Float = 384_399e3 / EARTH_RADIUS_M;
 
 const TITLE: &'static str = "Ocean Playground";
+const TITLE_SIZE: f32 = 21.;
+const HEADING_SIZE: f32 = 18.;
 
 fn time_scale_s() -> Float {
     EARTH_RADIUS_M / (GRAV_ACCEL_M_PER_S2 * OCEAN_DEPTH_M).sqrt()
@@ -33,95 +37,9 @@ fn water_kinematic_viscosity_nondimen() -> Float {
     WATER_KINEMATIC_VISCOSITY_M2_PER_S / EARTH_RADIUS_M.powi(2) * time_scale_s()
 }
 
-#[derive(Clone, Debug, derivative::Derivative)]
-#[derivative(PartialEq)]
-struct Parameters {
-    pub geometry_type: geom::GeometryType,
-
-    pub log10_kinematic_viscosity_rel_to_water: Float,
-    pub rotation_period_hr: Float,
-    pub lunar_distance_rel_to_actual: Float,
-    pub earthquake_region_size_mi: Float,
-    pub earthquake_height_m: Float,
-
-    pub substeps_per_physics_step: usize,
-
-    #[derivative(PartialEq = "ignore")]
-    pub resolution_level: u32,
-
-    #[derivative(PartialEq = "ignore")]
-    pub height_exaggeration_factor: Float,
-    #[derivative(PartialEq = "ignore")]
-    pub velocity_exaggeration_factor: Float,
-    #[derivative(PartialEq = "ignore")]
-    pub show_points: ShowPoints,
-    #[derivative(PartialEq = "ignore")]
-    pub show_rotation: bool,
-
-    #[derivative(PartialEq = "ignore")]
-    pub earthquake_position: Option<Vec3>,
-    // Response set by the physics thread after an earthquake trigger has been read and handled.
-    #[derivative(PartialEq = "ignore")]
-    pub earthquake_triggered: bool,
-}
-
-#[derive(Clone)]
-struct ParametersMessage {
-    pub params: Parameters,
-    pub geometry_version: usize,
-}
-
-impl Parameters {
-    fn tides() -> Self {
-        Self {
-            geometry_type: geom::GeometryType::Sphere,
-            resolution_level: 6,
-            log10_kinematic_viscosity_rel_to_water: 0.,
-            rotation_period_hr: 24.,
-            lunar_distance_rel_to_actual: 1.,
-            earthquake_region_size_mi: 600.,
-            earthquake_height_m: -4.,
-            substeps_per_physics_step: 1,
-            height_exaggeration_factor: 500.,
-            velocity_exaggeration_factor: 1.5e3,
-            show_points: ShowPoints::Tracer,
-            show_rotation: false,
-            earthquake_position: None,
-            earthquake_triggered: false,
-        }
-    }
-
-    fn whirlpool() -> Self {
-        Self {
-            lunar_distance_rel_to_actual: 10.,
-            rotation_period_hr: 5.,
-            earthquake_region_size_mi: 1000.,
-            earthquake_height_m: -3.5,
-            earthquake_position: Some(vec3(0.5, 1., 1.)),
-            velocity_exaggeration_factor: 5e3,
-            ..Self::tides()
-        }
-    }
-
-    fn torus() -> Self {
-        Self {
-            geometry_type: geom::GeometryType::Torus,
-            velocity_exaggeration_factor: 100.,
-            ..Self::tides()
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq)]
-enum ShowPoints {
-    Quadrature,
-    Tracer,
-    None,
-}
-
 fn physics_loop(
     mut geometry: geom::Geometry,
-    shared_params_message: std::sync::Arc<std::sync::RwLock<ParametersMessage>>,
+    shared_params_message: std::sync::Arc<std::sync::RwLock<param::ParametersMessage>>,
     renderable_sender: std::sync::mpsc::SyncSender<render::Renderable>,
 ) {
     // Initialize.
@@ -133,7 +51,7 @@ fn physics_loop(
         // Send along renderables to main loop.
         {
             for renderable in geometry
-                .make_renderables(params_message.params.substeps_per_physics_step)
+                .make_renderables(params_message.params.performance.substeps_per_physics_step)
                 .into_iter()
             {
                 renderable_sender.send(renderable).unwrap();
@@ -145,25 +63,35 @@ fn physics_loop(
             let new_params_message = shared_params_message.read().unwrap();
             let new_params = &new_params_message.params;
             if params_message.geometry_version != new_params_message.geometry_version {
-                geometry =
-                    geom::Geometry::new(new_params.geometry_type, new_params.resolution_level);
+                geometry = geom::Geometry::new(
+                    new_params.physics.geometry_type,
+                    new_params.performance.resolution_level,
+                );
             }
             params_message = new_params_message.clone();
 
             geometry.set_kinematic_viscosity(
                 water_kinematic_viscosity_nondimen()
-                    * (10 as Float)
-                        .powf(params_message.params.log10_kinematic_viscosity_rel_to_water),
+                    * (10 as Float).powf(
+                        params_message
+                            .params
+                            .physics
+                            .log10_kinematic_viscosity_rel_to_water,
+                    ),
             );
             geometry.set_rotation_angular_speed(
-                flow::float_consts::TAU / params_message.params.rotation_period_hr
+                flow::float_consts::TAU / params_message.params.physics.rotation_period_hr
                     * time_scale_hr(),
             );
             geometry.set_lunar_distance(
-                params_message.params.lunar_distance_rel_to_actual * LUNAR_DISTANCE_NONDIMEN,
+                params_message.params.physics.lunar_distance_rel_to_actual
+                    * LUNAR_DISTANCE_NONDIMEN,
             );
             geometry.set_velocity_exaggeration_factor(
-                params_message.params.velocity_exaggeration_factor,
+                params_message
+                    .params
+                    .visualization
+                    .velocity_exaggeration_factor,
             );
         }
 
@@ -174,8 +102,8 @@ fn physics_loop(
             if !params_message.params.earthquake_triggered {
                 geometry.trigger_earthquake(
                     earthquake_position,
-                    params_message.params.earthquake_region_size_mi / EARTH_RADIUS_MI,
-                    params_message.params.earthquake_height_m / OCEAN_DEPTH_M,
+                    params_message.params.physics.earthquake_region_size_mi / EARTH_RADIUS_MI,
+                    params_message.params.physics.earthquake_height_m / OCEAN_DEPTH_M,
                 );
                 shared_params_writer.params.earthquake_triggered = true;
             }
@@ -195,13 +123,16 @@ pub async fn run() {
         rayon::current_num_threads()
     );
 
-    let mut params = Parameters::whirlpool();
+    let mut params = param::Parameters::from_preset(param::Preset::Whirlpool);
     let mut geometry_version = 0;
-    let geometry = geom::Geometry::new(params.geometry_type, params.resolution_level);
+    let geometry = geom::Geometry::new(
+        params.physics.geometry_type,
+        params.performance.resolution_level,
+    );
     let mut renderable = geometry.make_renderables(1).pop().unwrap();
     let (renderable_sender, renderable_reader) = std::sync::mpsc::sync_channel(5);
     let shared_params_message_write = std::sync::Arc::new(std::sync::RwLock::new(
-        ParametersMessage {
+        param::ParametersMessage {
             params: params.clone(),
             geometry_version,
         }
@@ -231,20 +162,23 @@ pub async fn run() {
     let mut control = OrbitControl::new(*camera.target(), 5. / 3., 5.);
 
     let mut gui = GUI::new(&context);
-    let mut fonts = egui::FontDefinitions::default();
-    fonts.font_data.insert(
-        "Roboto".to_owned(),
-        egui::FontData::from_static(include_bytes!("../assets/Roboto-Light.ttf")),
-    );
-    fonts.font_data.insert(
-        "NotoEmoji-Regular".to_owned(),
-        egui::FontData::from_static(include_bytes!("../assets/NotoEmoji-Regular.ttf")),
-    );
-    *fonts
-        .families
-        .entry(egui::FontFamily::Proportional)
-        .or_default() = vec!["Roboto".to_owned(), "NotoEmoji-Regular".to_owned()];
-    gui.context().set_fonts(fonts);
+    let fonts = {
+        let mut fonts = egui::FontDefinitions::default();
+        fonts.font_data.insert(
+            "Roboto".to_owned(),
+            egui::FontData::from_static(include_bytes!("../assets/Roboto-Light.ttf")),
+        );
+        fonts.font_data.insert(
+            "NotoEmoji-Regular".to_owned(),
+            egui::FontData::from_static(include_bytes!("../assets/NotoEmoji-Regular.ttf")),
+        );
+        *fonts
+            .families
+            .entry(egui::FontFamily::Proportional)
+            .or_default() = vec!["Roboto".to_owned(), "NotoEmoji-Regular".to_owned()];
+        fonts
+    };
+    gui.context().set_fonts(fonts.clone());
     let mut commonmark_cache = egui_commonmark::CommonMarkCache::default();
 
     macro_rules! load_skybox {
@@ -275,12 +209,16 @@ pub async fn run() {
 
     let ambient =
         AmbientLight::new_with_environment(&context, 20.0, Srgba::WHITE, skybox.texture());
-    let directional = DirectionalLight::new(&context, 5.0, Srgba::WHITE, &vec3(-1.0, -1.0, -1.0));
+    let directional = DirectionalLight::new(&context, 5.0, Srgba::WHITE, &vec3(-1., 0., 0.));
 
-    let mut wall_time_per_render_sec = 0.;
-    let mut sim_time_per_renderable = 0.;
+    let mut performance_stats = param::PerformanceStats {
+        wall_time_per_renderable_sec: 0.,
+        wall_time_per_render_sec: 0.,
+        sim_time_per_renderable: 0.,
+    };
 
-    let rendering_data = renderable.make_rendering_data(params.height_exaggeration_factor);
+    let rendering_data =
+        renderable.make_rendering_data(params.visualization.height_exaggeration_factor);
 
     let mut mesh_model = Gm::new(
         Mesh::new(&context, &rendering_data.mesh.into()),
@@ -339,11 +277,46 @@ pub async fn run() {
         ),
     };
 
+    let mut moon_sprite_object = {
+        let mut raw_assets = three_d_asset::io::RawAssets::new();
+        raw_assets.insert(
+            "brightmoon.png",
+            include_bytes!("../assets/brightmoon.png").to_vec(),
+        );
+
+        let mut moon_image: CpuTexture = raw_assets
+            .deserialize("brightmoon.png")
+            .inspect_err(|e| log::error!("{e:?}"))
+            .unwrap();
+        moon_image.data.to_linear_srgb();
+        let moon_material = ColorMaterial {
+            color: Srgba::WHITE,
+            texture: Some(Texture2DRef::from_cpu_texture(&context, &moon_image)),
+            is_transparent: true,
+            render_states: RenderStates {
+                write_mask: WriteMask::COLOR,
+                blend: Blend::TRANSPARENCY,
+                ..Default::default()
+            },
+        };
+        Gm {
+            geometry: Sprites::new(
+                &context,
+                &[vec3(
+                    (LUNAR_DISTANCE_NONDIMEN * params.physics.lunar_distance_rel_to_actual) as f32,
+                    0.,
+                    0.,
+                )],
+                None,
+            ),
+            material: moon_material,
+        }
+    };
+
     let mut wall_time_of_last_renderable = web_time::Instant::now();
-    let mut wall_time_per_renderable_sec = 0.5;
     let mut sim_time_of_last_renderable = 0.;
 
-    let mut double_click_detector = DoubleClickDetector::default();
+    let mut double_click_detector = util::DoubleClickDetector::default();
 
     // Remove loading screen.
     web_sys::window()
@@ -361,7 +334,7 @@ pub async fn run() {
                 params.earthquake_triggered = false;
                 params.earthquake_position = None;
             }
-            *shared_params_message = ParametersMessage {
+            *shared_params_message = param::ParametersMessage {
                 params: params.clone(),
                 geometry_version,
             };
@@ -373,19 +346,21 @@ pub async fn run() {
                 sim_time_of_last_renderable = 0.;
             }
             let now = web_time::Instant::now();
-            wall_time_per_renderable_sec = 0.98 * wall_time_per_renderable_sec
-                + 0.02
-                    * now
-                        .duration_since(wall_time_of_last_renderable)
-                        .as_secs_f64();
-            sim_time_per_renderable = 0.9 * sim_time_per_renderable
-                + 0.1 * (renderable.t_nondimen() - sim_time_of_last_renderable);
+
+            performance_stats.update(param::PerformanceStats {
+                wall_time_per_renderable_sec: now
+                    .duration_since(wall_time_of_last_renderable)
+                    .as_secs_f64(),
+                wall_time_per_render_sec: frame_input.elapsed_time as Float / 1000.,
+                sim_time_per_renderable: renderable.t_nondimen() - sim_time_of_last_renderable,
+            });
 
             wall_time_of_last_renderable = now;
             sim_time_of_last_renderable = renderable.t_nondimen();
         }
-        let rendering_data = renderable.make_rendering_data(params.height_exaggeration_factor);
-        let rotation = if params.show_rotation {
+        let rendering_data =
+            renderable.make_rendering_data(params.visualization.height_exaggeration_factor);
+        let rotation = if params.visualization.show_rotation {
             Matrix4::from_axis_angle(
                 Vector3::unit_z(),
                 -radians(renderable.rotational_phase_rad() as f32),
@@ -394,13 +369,21 @@ pub async fn run() {
             Matrix4::identity()
         };
 
-        log::info!("rotational phase: {:?}", renderable.rotational_phase_rad());
-
         {
             mesh_model.geometry = Mesh::new(&context, &rendering_data.mesh.into());
             mesh_model.set_transformation(rotation);
 
-            if let ShowPoints::Quadrature = params.show_points {
+            moon_sprite_object.geometry = Sprites::new(
+                &context,
+                &[vec3(
+                    (LUNAR_DISTANCE_NONDIMEN * params.physics.lunar_distance_rel_to_actual) as f32,
+                    0.,
+                    0.,
+                )],
+                None,
+            );
+
+            if let param::ShowPoints::Quadrature = params.visualization.show_points {
                 quadrature_point_cloud_model.geometry = InstancedMesh::new(
                     &context,
                     &PointCloud {
@@ -427,7 +410,7 @@ pub async fn run() {
                 quadrature_point_cloud_model.material.render_states.cull = Cull::FrontAndBack;
             }
 
-            if let ShowPoints::Tracer = params.show_points {
+            if let param::ShowPoints::Tracer = params.visualization.show_points {
                 tracer_point_cloud_model.geometry = InstancedMesh::new(
                     &context,
                     &PointCloud {
@@ -468,7 +451,9 @@ pub async fn run() {
                     position: screen_position,
                     ..
                 } => {
-                    if let DoubleClickResult::Detected = double_click_detector.process_release() {
+                    if let util::DoubleClickResult::Detected =
+                        double_click_detector.process_release()
+                    {
                         if let Some(space_position) =
                             pick(&context, &camera, screen_position, &mesh_model)
                         {
@@ -483,14 +468,15 @@ pub async fn run() {
                 } => {
                     if let (Some(space_position), geom::GeometryType::Sphere) = (
                         pick(&context, &camera, screen_position, &mesh_model),
-                        params.geometry_type,
+                        params.physics.geometry_type,
                     ) {
                         let mut tsunami_hint_circle = CpuMesh::circle(20);
                         let axis = space_position.cross(Vector3::unit_z()).normalize();
                         let angle = space_position.angle(Vector3::unit_z());
                         tsunami_hint_circle
                             .transform(&Matrix4::from_scale(
-                                (params.earthquake_region_size_mi / EARTH_RADIUS_MI / 2.) as f32,
+                                (params.physics.earthquake_region_size_mi / EARTH_RADIUS_MI / 2.)
+                                    as f32,
                             ))
                             .unwrap();
                         tsunami_hint_circle
@@ -516,19 +502,20 @@ pub async fn run() {
         // Set hint circle color to red if completing a double click.
         double_click_detector.process_idle();
         match double_click_detector.state {
-            DoubleClickDetectorState::Idle
-            | DoubleClickDetectorState::FirstPress(_)
-            | DoubleClickDetectorState::FirstRelease(_) => {
+            util::DoubleClickDetectorState::Idle
+            | util::DoubleClickDetectorState::FirstPress(_)
+            | util::DoubleClickDetectorState::FirstRelease(_) => {
                 tsunami_hint_circle_object.material.color.g = u8::MAX;
                 tsunami_hint_circle_object.material.color.b = u8::MAX;
             }
-            DoubleClickDetectorState::SecondPress => {
+            util::DoubleClickDetectorState::SecondPress => {
                 tsunami_hint_circle_object.material.color.g = 0;
                 tsunami_hint_circle_object.material.color.b = 0;
             }
         }
 
         let mut geom_change = false;
+        const UI_WIDTH: f32 = 333.;
 
         gui.update(
             &mut frame_input.events,
@@ -536,196 +523,45 @@ pub async fn run() {
             frame_input.viewport,
             frame_input.device_pixel_ratio,
             |gui_context| {
-                egui::Window::new(TITLE)
-                    .vscroll(true)
-                    .default_height(650.)
+                egui::SidePanel::left("left")
+                    .exact_width(UI_WIDTH)
+                    .resizable(false)
                     .show(gui_context, |ui| {
-                        egui::CollapsingHeader::new(egui::RichText::from("Info").heading())
-                            .default_open(true)
-                            .show(ui, |ui| {
-                                ui.add_space(-10.);
-                                egui_commonmark::CommonMarkViewer::new("info").show(
-                                    ui,
-                                    &mut commonmark_cache,
-                                    INFO_MARKDOWN,
-                                );
-                                ui.add_space(-10.);
-                            });
-
-                        ui.collapsing(egui::RichText::from("Details").heading(), |ui| {
+                        ui.add_space(10.);
+                        ui.label(egui::RichText::new(TITLE).size(TITLE_SIZE).strong());
+                        egui::CollapsingHeader::new(
+                            egui::RichText::from("Basics").size(HEADING_SIZE),
+                        )
+                        .default_open(true)
+                        .show(ui, |ui| {
                             ui.add_space(-10.);
-                            egui_commonmark::CommonMarkViewer::new("details").show(
+                            egui_commonmark::CommonMarkViewer::new("info").show(
                                 ui,
                                 &mut commonmark_cache,
-                                DETAILS_MARKDOWN,
+                                INFO_MARKDOWN,
                             );
                             ui.add_space(-10.);
                         });
 
-                        egui::CollapsingHeader::new(egui::RichText::from("Controls").heading())
+                        egui::CollapsingHeader::new(egui::RichText::from("Details").heading())
                             .default_open(true)
                             .show(ui, |ui| {
-                                ui.label(egui::RichText::new("Presets").strong());
-                                ui.horizontal(|ui| {
-                                    for (selection_params, name) in [
-                                        (Parameters::whirlpool(), "Whirlpool"),
-                                        (Parameters::tides(), "Tides"),
-                                        (Parameters::torus(), "Torus world"),
-                                    ] {
-                                        let params_same = params == selection_params;
-                                        if ui.selectable_label(params_same, name).clicked()
-                                            && !params_same
-                                        {
-                                            params = selection_params;
-                                            geometry_version += 1;
-                                        }
-                                    }
-                                });
-                                ui.add_space(10.);
-                                ui.label(egui::RichText::new("Physics").strong());
-                                ui.add(
-                                    egui::Slider::new(
-                                        &mut params.log10_kinematic_viscosity_rel_to_water,
-                                        (0.)..=(13.),
-                                    )
-                                    .text("viscosity")
-                                    .prefix("10^")
-                                    .suffix(" × water"),
+                                ui.add_space(-10.);
+                                egui_commonmark::CommonMarkViewer::new("details").show(
+                                    ui,
+                                    &mut commonmark_cache,
+                                    DETAILS_MARKDOWN,
                                 );
-                                ui.add(
-                                    egui::Slider::new(
-                                        &mut params.rotation_period_hr,
-                                        (5.)..=(100.),
-                                    )
-                                    .text("rotation period")
-                                    .suffix(" hr"),
-                                );
-                                ui.add(
-                                    egui::Slider::new(
-                                        &mut params.lunar_distance_rel_to_actual,
-                                        (0.5)..=(10.),
-                                    )
-                                    .logarithmic(true)
-                                    .text("lunar distance")
-                                    .suffix(" × actual"),
-                                );
-                                ui.add(
-                                    egui::Slider::new(
-                                        &mut params.earthquake_region_size_mi,
-                                        2e2..=1e3,
-                                    )
-                                    .text("earthquake region size")
-                                    .suffix(" mi"),
-                                );
-                                ui.add(
-                                    egui::Slider::new(&mut params.earthquake_height_m, -6e0..=6e0)
-                                        .text("earthquake height")
-                                        .suffix(" m"),
-                                );
-                                ui.horizontal(|ui| {
-                                    geom_change |= ui.button("Restart").clicked();
-                                    ui.label(format!(
-                                        "{:.1} hr elapsed sim time",
-                                        renderable.t_nondimen() * time_scale_hr()
-                                    ));
-                                });
-                                ui.add_space(10.);
-
-                                ui.label(egui::RichText::new("Visualization").strong());
-                                ui.add(
-                                    egui::Slider::new(
-                                        &mut params.height_exaggeration_factor,
-                                        1e0..=1e4,
-                                    )
-                                    .logarithmic(true)
-                                    .text("height exaggeration")
-                                    .suffix("×"),
-                                );
-                                ui.add(
-                                    egui::Slider::new(
-                                        &mut params.velocity_exaggeration_factor,
-                                        1e0..=1e5,
-                                    )
-                                    .logarithmic(true)
-                                    .text("velocity exaggeration")
-                                    .suffix("×"),
-                                );
-                                ui.horizontal(|ui| {
-                                    ui.radio_value(
-                                        &mut params.show_points,
-                                        ShowPoints::Quadrature,
-                                        "quadrature",
-                                    );
-                                    ui.radio_value(
-                                        &mut params.show_points,
-                                        ShowPoints::Tracer,
-                                        "tracer",
-                                    );
-                                    ui.radio_value(
-                                        &mut params.show_points,
-                                        ShowPoints::None,
-                                        "none",
-                                    );
-                                    ui.label("show points");
-                                });
-                                ui.horizontal(|ui| {
-                                    ui.checkbox(&mut params.show_rotation, "visualize rotation");
-                                    ui.label("(warning: 🤢)");
-                                });
-                                ui.add_space(10.);
-
-                                ui.label(egui::RichText::new("Performance").strong());
-                                ui.horizontal(|ui| {
-                                    for n in 5..=8 {
-                                        geom_change |= ui
-                                            .radio_value(
-                                                &mut params.resolution_level,
-                                                n,
-                                                format!("{}", 2i32.pow(n)),
-                                            )
-                                            .changed();
-                                    }
-                                    ui.label("resolution");
-                                });
-                                // ui.add(
-                                //     egui::Slider::new(
-                                //         &mut params.substeps_per_physics_step,
-                                //         1..=30,
-                                //     )
-                                //     .text("substeps per physics update"),
-                                // );
-                                ui.label(format!(
-                                    "({:.0}, {:.0}) wall ms/(step, render)",
-                                    wall_time_per_renderable_sec * 1000.,
-                                    wall_time_per_render_sec * 1000.,
-                                ));
-                                ui.label(format!(
-                                    "({:.0}, {:.1}) sim s/(step, wall ms)",
-                                    sim_time_per_renderable * time_scale_s(),
-                                    sim_time_per_renderable * time_scale_s()
-                                        / (wall_time_per_renderable_sec * 1000.),
-                                ));
-                                ui.add_space(10.);
-
-                                ui.label(egui::RichText::new("Geometry").strong());
-                                ui.horizontal(|ui| {
-                                    geom_change |= ui
-                                        .radio_value(
-                                            &mut params.geometry_type,
-                                            geom::GeometryType::Sphere,
-                                            "Sphere",
-                                        )
-                                        .changed();
-                                    geom_change |= ui
-                                        .radio_value(
-                                            &mut params.geometry_type,
-                                            geom::GeometryType::Torus,
-                                            "Torus",
-                                        )
-                                        .changed();
-                                });
-                                ui.add_space(10.);
+                                ui.add_space(-10.);
                             });
+                    });
+
+                egui::SidePanel::right("right")
+                    .exact_width(UI_WIDTH)
+                    .resizable(false)
+                    .show(gui_context, |ui| {
+                        ui.add_space(10.);
+                        params.generate_ui(ui, &renderable, performance_stats, &mut geom_change);
                     });
 
                 gui_context.output(|output| {
@@ -765,116 +601,31 @@ pub async fn run() {
                     .chain(&quadrature_point_cloud_model)
                     .chain(&tracer_point_cloud_model)
                     .chain(&tsunami_hint_circle_object)
+                    .chain(&moon_sprite_object)
                     .chain(&skybox),
                 &[&ambient, &directional],
             )
             .write(|| gui.render())
             .unwrap();
 
-        // Exponential moving average.
-        wall_time_per_render_sec =
-            0.95 * wall_time_per_render_sec + 0.05 * frame_input.elapsed_time as Float / 1000.;
-
         FrameOutput::default()
     });
-}
-
-#[derive(Clone, Copy, Default)]
-enum DoubleClickDetectorState {
-    #[default]
-    Idle,
-    FirstPress(web_time::Instant),
-    FirstRelease(web_time::Instant),
-    SecondPress,
-}
-
-enum DoubleClickResult {
-    Detected,
-    NotDetected,
-}
-
-#[derive(Default)]
-struct DoubleClickDetector {
-    state: DoubleClickDetectorState,
-}
-
-impl DoubleClickDetector {
-    const MAX_WAIT_TIME_MS: u128 = 300;
-
-    pub fn process_idle(&mut self) {
-        let now = web_time::Instant::now();
-        self.state = match self.state {
-            DoubleClickDetectorState::Idle => DoubleClickDetectorState::Idle,
-            DoubleClickDetectorState::FirstPress(prev_time)
-            | DoubleClickDetectorState::FirstRelease(prev_time) => {
-                if Self::within_wait_time(prev_time, now) {
-                    self.state
-                } else {
-                    DoubleClickDetectorState::Idle
-                }
-            }
-            DoubleClickDetectorState::SecondPress => self.state,
-        };
-    }
-
-    pub fn process_press(&mut self) {
-        let now = web_time::Instant::now();
-        self.state = match self.state {
-            DoubleClickDetectorState::Idle => DoubleClickDetectorState::FirstPress(now),
-            DoubleClickDetectorState::FirstPress(_) => DoubleClickDetectorState::Idle,
-            DoubleClickDetectorState::FirstRelease(prev_time) => {
-                if Self::within_wait_time(prev_time, now) {
-                    DoubleClickDetectorState::SecondPress
-                } else {
-                    DoubleClickDetectorState::Idle
-                }
-            }
-            DoubleClickDetectorState::SecondPress => DoubleClickDetectorState::Idle,
-        };
-    }
-
-    pub fn process_release(&mut self) -> DoubleClickResult {
-        let mut result = DoubleClickResult::NotDetected;
-        let now = web_time::Instant::now();
-        self.state = match self.state {
-            DoubleClickDetectorState::Idle => DoubleClickDetectorState::Idle,
-            DoubleClickDetectorState::FirstPress(prev_time) => {
-                if Self::within_wait_time(prev_time, now) {
-                    DoubleClickDetectorState::FirstRelease(now)
-                } else {
-                    DoubleClickDetectorState::Idle
-                }
-            }
-            DoubleClickDetectorState::FirstRelease(_) => DoubleClickDetectorState::Idle,
-            DoubleClickDetectorState::SecondPress => {
-                result = DoubleClickResult::Detected;
-                DoubleClickDetectorState::Idle
-            }
-        };
-        result
-    }
-
-    fn within_wait_time(prev_time: web_time::Instant, now: web_time::Instant) -> bool {
-        now.checked_duration_since(prev_time)
-            .unwrap_or(web_time::Duration::ZERO)
-            .as_millis()
-            <= Self::MAX_WAIT_TIME_MS
-    }
 }
 
 const INFO_MARKDOWN: &'static str = indoc::indoc! {"
     Interactive ocean simulations in a web browser!
     
+    * **Drag/scroll** to change the view
     * **Double click** to set off an earthquake/tsunami
     * **Dotted lines** are “tracers” indicating local water motion
-    * **Play around** with different controls below
+    * **Play around** with different controls in the right panel
 
     Alpha version — please **do not share yet**!
 "};
 
 const DETAILS_MARKDOWN: &'static str = indoc::indoc! {"
     Solves the [shallow water equations](https://en.wikipedia.org/wiki/Shallow_water_equations)
-    [pseudo](https://en.wikipedia.org/wiki/Pseudo-spectral_method)\
+    [pseudo](https://en.wikipedia.org/wiki/Pseudo-spectral_method)-\
     [spectrally](https://en.wikipedia.org/wiki/Spectral_method) using a
     [spherical harmonic](https://en.wikipedia.org/wiki/Spherical_harmonics) basis. (Toroidal
     geometry with more limited functionality also included for fun, which uses a rectangular domain
@@ -882,11 +633,13 @@ const DETAILS_MARKDOWN: &'static str = indoc::indoc! {"
     
     Effects included:
     
-    * Viscosity (negligible for tsunamis but can be artifically increased)
-    * Coriolis force
-    * Lunar tides (taking the moon as stationary for simplicity)
-    * Advection of entrained “tracer” particles
-    * Realistic terrain (continents/sea floor) (planned)
+    * [Viscosity](https://en.wikipedia.org/wiki/Viscosity) (negligible for tsunamis propagating in \
+        deep water but can be artifically increased)
+    * The [Coriolis force](https://en.wikipedia.org/wiki/Coriolis_force)
+    * [Lunar tides](https://en.wikipedia.org/wiki/Tide) (taking the moon to be stationary for \
+        simplicity)
+    * [Advection](https://en.wikipedia.org/wiki/Advection) of entrained “tracer” particles
+    * Realistic topography (continents/sea floor) *(planned)*
 
     Tech stack: Rust/WebAssembly/WebGL/[`egui`](https://www.egui.rs/)/
     [`three-d`](https://github.com/asny/three-d).
