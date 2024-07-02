@@ -5,7 +5,7 @@ use three_d::{CpuMesh, Indices, Positions, Vector3};
 #[derive(Clone)]
 pub struct RenderingData {
     pub quadrature_points: Vec<Vector3<Float>>,
-    pub tracer_points: Vec<Vector3<Float>>,
+    pub tracer_points: TracerPoints,
     pub mesh: CpuMesh,
 }
 
@@ -147,25 +147,31 @@ impl SphereRenderable {
         points
     }
 
-    fn make_tracer_points(&self, height_exaggeration_factor: Float) -> Vec<Vector3<Float>> {
-        self.tracer_points_history_mu_phi
+    fn make_tracer_points(&self, height_exaggeration_factor: Float) -> TracerPoints {
+        let (points, positions) = self
+            .tracer_points_history_mu_phi
             .iter()
+            .enumerate()
             .zip(&self.tracer_heights_history)
-            .map(|(tracer_points_mu_phi, tracer_heights)| {
+            .map(|((position, tracer_points_mu_phi), tracer_heights)| {
                 tracer_points_mu_phi
                     .axis_iter(nd::Axis(1))
                     .zip(tracer_heights.iter())
-                    .map(|(point_mu_phi, &height)| {
-                        self.make_point(
-                            point_mu_phi[[0]],
-                            point_mu_phi[[1]],
-                            height,
-                            height_exaggeration_factor,
+                    .map(move |(point_mu_phi, &height)| {
+                        (
+                            self.make_point(
+                                point_mu_phi[[0]],
+                                point_mu_phi[[1]],
+                                height,
+                                height_exaggeration_factor,
+                            ),
+                            position,
                         )
                     })
             })
             .flatten()
-            .collect()
+            .unzip();
+        TracerPoints { points, positions }
     }
 
     fn make_point(
@@ -289,25 +295,31 @@ impl TorusRenderable {
         points
     }
 
-    fn make_tracer_points(&self, height_exaggeration_factor: Float) -> Vec<Vector3<Float>> {
-        self.tracer_points_history_theta_phi
+    fn make_tracer_points(&self, height_exaggeration_factor: Float) -> TracerPoints {
+        let (points, positions) = self
+            .tracer_points_history_theta_phi
             .iter()
+            .enumerate()
             .zip(&self.tracer_heights_history)
-            .map(|(tracer_points_mu_phi, tracer_heights)| {
+            .map(|((position, tracer_points_mu_phi), tracer_heights)| {
                 tracer_points_mu_phi
                     .axis_iter(nd::Axis(1))
                     .zip(tracer_heights.iter())
-                    .map(|(point_mu_phi, &height)| {
-                        self.make_point(
-                            point_mu_phi[[0]],
-                            point_mu_phi[[1]],
-                            height,
-                            height_exaggeration_factor,
+                    .map(move |(point_mu_phi, &height)| {
+                        (
+                            self.make_point(
+                                point_mu_phi[[0]],
+                                point_mu_phi[[1]],
+                                height,
+                                height_exaggeration_factor,
+                            ),
+                            position,
                         )
                     })
             })
             .flatten()
-            .collect()
+            .unzip();
+        TracerPoints { points, positions }
     }
 
     fn make_point(
@@ -325,4 +337,10 @@ impl TorusRenderable {
                     + (height_exaggeration_factor / 100.) * (height - self.base_height))
                     * (-phi.cos() * radially_out + phi.sin() * Vector3::unit_z()))
     }
+}
+
+#[derive(Clone)]
+pub struct TracerPoints {
+    pub points: Vec<Vector3<Float>>,
+    pub positions: Vec<usize>,
 }

@@ -8,6 +8,7 @@ use crate::{
 
 const TRACER_STEP: usize = 3;
 const TRACER_HISTORY_LENGTH: usize = TRACER_STEP.pow(3);
+pub const TRACER_TAIL_LENGTH: usize = TRACER_HISTORY_LENGTH / TRACER_STEP;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum GeometryType {

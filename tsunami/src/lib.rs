@@ -255,13 +255,20 @@ pub async fn run() {
         geometry: InstancedMesh::new(
             &context,
             &PointCloud {
-                positions: Positions::F64(rendering_data.tracer_points),
+                positions: Positions::F64(vec![]),
                 colors: None,
             }
             .into(),
             &point_mesh,
         ),
-        material: ColorMaterial::default(),
+        material: ColorMaterial::new_transparent(
+            &context,
+            &CpuMaterial {
+                roughness: 1.,
+                albedo: Srgba::WHITE,
+                ..Default::default()
+            },
+        ),
     };
 
     let mut tsunami_hint_circle_object = Gm {
@@ -418,6 +425,7 @@ pub async fn run() {
                         positions: Positions::F32(
                             rendering_data
                                 .tracer_points
+                                .points
                                 .into_iter()
                                 .map(|point| {
                                     rotation.transform_vector(Vector3 {
@@ -428,7 +436,22 @@ pub async fn run() {
                                 })
                                 .collect(),
                         ),
-                        colors: None,
+                        colors: Some(
+                            rendering_data
+                                .tracer_points
+                                .positions
+                                .into_iter()
+                                .map(|position| {
+                                    Srgba::new(
+                                        u8::MAX,
+                                        u8::MAX,
+                                        u8::MAX,
+                                        // Add transparency based on position in tracer's trail.
+                                        u8::MAX / geom::TRACER_TAIL_LENGTH as u8 * position as u8,
+                                    )
+                                })
+                                .collect(),
+                        ),
                     }
                     .into(),
                     &point_mesh,
