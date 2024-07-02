@@ -515,7 +515,8 @@ pub async fn run() {
         }
 
         let mut geom_change = false;
-        const UI_WIDTH: f32 = 333.;
+        const UI_WIDTH: f32 = 325.;
+        const UI_MARGIN: f32 = 15.;
 
         gui.update(
             &mut frame_input.events,
@@ -523,9 +524,13 @@ pub async fn run() {
             frame_input.viewport,
             frame_input.device_pixel_ratio,
             |gui_context| {
-                egui::SidePanel::left("left")
-                    .exact_width(UI_WIDTH)
+                egui::Window::new("left")
+                    .title_bar(false)
+                    .min_width(UI_WIDTH)
+                    .max_width(UI_WIDTH)
                     .resizable(false)
+                    .constrain(true)
+                    .default_pos(egui::Pos2::new(UI_MARGIN, UI_MARGIN))
                     .show(gui_context, |ui| {
                         ui.add_space(10.);
                         ui.label(egui::RichText::new(TITLE).size(TITLE_SIZE).strong());
@@ -556,9 +561,16 @@ pub async fn run() {
                             });
                     });
 
-                egui::SidePanel::right("right")
-                    .exact_width(UI_WIDTH)
+                egui::Window::new("right")
+                    .title_bar(false)
+                    .min_width(UI_WIDTH)
+                    .max_width(UI_WIDTH)
                     .resizable(false)
+                    .constrain(true)
+                    .current_pos(egui::Pos2::new(
+                        frame_input.window_width as f32 - UI_WIDTH - UI_MARGIN,
+                        UI_MARGIN,
+                    ))
                     .show(gui_context, |ui| {
                         ui.add_space(10.);
                         params.generate_ui(ui, &renderable, performance_stats, &mut geom_change);
