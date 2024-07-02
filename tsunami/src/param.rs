@@ -164,7 +164,7 @@ pub struct VisualizationParameters {
     pub height_exaggeration_factor: Float,
     pub velocity_exaggeration_factor: Float,
     pub show_points: ShowPoints,
-    pub show_rotation: bool,
+    pub show_rotation: ShowRotation,
 }
 
 impl VisualizationParameters {
@@ -183,10 +183,7 @@ impl VisualizationParameters {
                 .suffix("×"),
         );
         self.show_points.generate_ui(ui);
-        ui.horizontal(|ui| {
-            ui.checkbox(&mut self.show_rotation, "🤢");
-            ui.label("visualize rotation");
-        });
+        self.show_rotation.generate_ui(ui);
         ui.add_space(10.);
     }
 }
@@ -197,7 +194,7 @@ impl Default for VisualizationParameters {
             height_exaggeration_factor: 500.,
             velocity_exaggeration_factor: 1.5e3,
             show_points: ShowPoints::Tracer,
-            show_rotation: false,
+            show_rotation: ShowRotation::None,
         }
     }
 }
@@ -264,7 +261,14 @@ impl Parameters {
                 earthquake_position: Some(vec3(0.5, 1., 1.)),
                 ..Self::default()
             },
-            Preset::Tides => Default::default(),
+            Preset::Tides => Self {
+                visualization: VisualizationParameters {
+                    show_rotation: ShowRotation::Inertial,
+                    height_exaggeration_factor: 1500.,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
             Preset::Torus => Self {
                 physics: PhysicsParameters {
                     geometry_type: geom::GeometryType::Torus,
@@ -292,7 +296,7 @@ impl Default for Parameters {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, strum::EnumIter)]
+#[derive(Copy, Clone, Debug, PartialEq, strum::EnumIter)]
 pub enum ShowPoints {
     Quadrature,
     Tracer,
@@ -302,9 +306,11 @@ pub enum ShowPoints {
 impl ShowPoints {
     fn generate_ui(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            ui.radio_value(self, ShowPoints::Quadrature, "quadrature");
-            ui.radio_value(self, ShowPoints::Tracer, "tracer");
-            ui.radio_value(self, ShowPoints::None, "none");
+            use strum::IntoEnumIterator;
+
+            for value in Self::iter() {
+                ui.radio_value(self, value, value.to_string());
+            }
             ui.label("show points");
         });
     }
@@ -316,6 +322,36 @@ impl std::fmt::Display for ShowPoints {
             ShowPoints::Quadrature => "quadrature",
             ShowPoints::Tracer => "tracer",
             ShowPoints::None => "none",
+        })
+    }
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, strum::EnumIter)]
+pub enum ShowRotation {
+    Corotating,
+    Inertial,
+    None,
+}
+
+impl ShowRotation {
+    fn generate_ui(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            use strum::IntoEnumIterator;
+
+            for value in Self::iter() {
+                ui.radio_value(self, value, value.to_string());
+            }
+            ui.label("show rotation");
+        });
+    }
+}
+
+impl std::fmt::Display for ShowRotation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            ShowRotation::Corotating => "corotating 🤢",
+            ShowRotation::Inertial => "inertial",
+            ShowRotation::None => "none",
         })
     }
 }

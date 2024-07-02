@@ -130,7 +130,7 @@ pub async fn run() {
         params.performance.resolution_level,
     );
     let mut renderable = geometry.make_renderables(1).pop().unwrap();
-    let (renderable_sender, renderable_reader) = std::sync::mpsc::sync_channel(5);
+    let (renderable_sender, renderable_reader) = std::sync::mpsc::sync_channel(2);
     let shared_params_message_write = std::sync::Arc::new(std::sync::RwLock::new(
         param::ParametersMessage {
             params: params.clone(),
@@ -360,13 +360,14 @@ pub async fn run() {
         }
         let rendering_data =
             renderable.make_rendering_data(params.visualization.height_exaggeration_factor);
-        let rotation = if params.visualization.show_rotation {
-            Matrix4::from_axis_angle(
-                Vector3::unit_z(),
-                -radians(renderable.rotational_phase_rad() as f32),
-            )
-        } else {
-            Matrix4::identity()
+        let rotation = match params.visualization.show_rotation {
+            param::ShowRotation::Corotating | param::ShowRotation::Inertial => {
+                Matrix4::from_axis_angle(
+                    Vector3::unit_z(),
+                    -radians(renderable.rotational_phase_rad() as f32),
+                )
+            }
+            param::ShowRotation::None => Matrix4::identity(),
         };
 
         {
@@ -595,14 +596,17 @@ pub async fn run() {
 
         // We rotated the physical objects above; now we need to rotate the camera as
         // well so that we are observing from a corotating frame.
-        let rotated_camera = {
-            let position = rotation.transform_vector(*camera.position());
-            let target = rotation.transform_vector(*camera.target());
-            let up = rotation.transform_vector(*camera.up());
+        let rotated_camera = match params.visualization.show_rotation {
+            param::ShowRotation::Corotating => {
+                let position = rotation.transform_vector(*camera.position());
+                let target = rotation.transform_vector(*camera.target());
+                let up = rotation.transform_vector(*camera.up());
 
-            let mut rotated_camera = camera.clone();
-            rotated_camera.set_view(position, target, up);
-            rotated_camera
+                let mut rotated_camera = camera.clone();
+                rotated_camera.set_view(position, target, up);
+                rotated_camera
+            }
+            _ => camera.clone(),
         };
         frame_input
             .screen()
