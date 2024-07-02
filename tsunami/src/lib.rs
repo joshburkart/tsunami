@@ -567,7 +567,7 @@ pub async fn run() {
                     .max_width(UI_WIDTH)
                     .resizable(false)
                     .constrain(true)
-                    .current_pos(egui::Pos2::new(
+                    .default_pos(egui::Pos2::new(
                         frame_input.window_width as f32 - UI_WIDTH - UI_MARGIN,
                         UI_MARGIN,
                     ))
