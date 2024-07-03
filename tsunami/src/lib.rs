@@ -447,7 +447,11 @@ pub async fn run() {
                                         u8::MAX,
                                         u8::MAX,
                                         // Add transparency based on position in tracer's trail.
-                                        u8::MAX / geom::TRACER_TAIL_LENGTH as u8 * position as u8,
+                                        (u8::MAX as Float
+                                            * (position as Float
+                                                / geom::TRACER_TAIL_LENGTH as Float)
+                                                .powf(0.25))
+                                            as u8,
                                     )
                                 })
                                 .collect(),
