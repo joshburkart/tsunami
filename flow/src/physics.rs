@@ -262,9 +262,29 @@ where
         height_grid.iter().for_each(|&h| {
             if h < 0. {
                 log::error!("Water column height became negative: {h:?}");
-                panic!()
+                panic!();
+            }
+            if !h.is_finite() {
+                log::error!("Water column height became NaN");
+                panic!();
             }
         });
+        velocity_grid.iter().for_each(|&v| {
+            if !v.is_finite() {
+                log::error!("Water velocity became NaN");
+                panic!();
+            }
+        });
+        fields
+            .tracer_points()
+            .axis_iter(nd::Axis(1))
+            .enumerate()
+            .for_each(|(i, point)| {
+                if !(point[[0]].is_finite() && point[[1]].is_finite()) {
+                    log::error!("Tracer {i} became NaN: {point:?}");
+                    panic!();
+                }
+            });
 
         // Compute derivatives in parallel.
         let height_time_deriv = std::sync::Arc::new(std::sync::Mutex::new(None));

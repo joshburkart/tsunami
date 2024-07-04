@@ -181,6 +181,7 @@ impl SphereRenderable {
         height: Float,
         height_exaggeration_factor: Float,
     ) -> three_d::Vector3<Float> {
+        let mu = mu.clamp(-1., 1.);
         let sin_theta = (1. - mu.powi(2)).sqrt();
         let radially_out = Vector3::new(sin_theta * phi.cos(), sin_theta * phi.sin(), mu);
         radially_out * (1. + (height - self.base_height) * height_exaggeration_factor)
