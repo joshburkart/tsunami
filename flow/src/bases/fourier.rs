@@ -144,11 +144,11 @@ impl Basis for RectangularPeriodicBasis {
         [&self.axes[0], &self.axes[1]]
     }
 
-    fn make_random_points(&self) -> nd::Array2<Float> {
+    fn make_random_points(&self, num: usize) -> nd::Array2<Float> {
         let mut rng = frand::Rand::with_seed(0);
-        let mut points = nd::Array2::zeros((2, crate::physics::NUM_TRACER_POINTS));
+        let mut points = nd::Array2::zeros((2, num));
         for j in 0..2 {
-            for i in 0..crate::physics::NUM_TRACER_POINTS {
+            for i in 0..num {
                 points[[j, i]] = rng.gen_range((0.)..self.lengths[j]);
             }
         }

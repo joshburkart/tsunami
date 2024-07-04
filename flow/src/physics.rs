@@ -6,8 +6,6 @@ use crate::{
     ComplexFloat, Float, RawComplexFloatData, RawFloatData,
 };
 
-pub const NUM_TRACER_POINTS: usize = 6000;
-
 pub struct FieldsSnapshot<B: bases::Basis> {
     pub t: Float,
     pub fields: Fields<nd::OwnedRepr<ComplexFloat>, B>,
@@ -82,9 +80,8 @@ impl<B: bases::Basis> Fields<nd::OwnedRepr<ComplexFloat>, B> {
 }
 
 impl<B: bases::Basis> Fields<nd::OwnedRepr<ComplexFloat>, B> {
-    pub fn zeros(basis: std::sync::Arc<B>) -> Self {
-        let len =
-            basis.scalar_spectral_size() + basis.vector_spectral_size() + 1 + NUM_TRACER_POINTS;
+    pub fn zeros(basis: std::sync::Arc<B>, num_tracers: usize) -> Self {
+        let len = basis.scalar_spectral_size() + basis.vector_spectral_size() + 1 + num_tracers;
         let storage = nd::Array1::zeros([len]);
         Self { basis, storage }
     }
@@ -92,10 +89,7 @@ impl<B: bases::Basis> Fields<nd::OwnedRepr<ComplexFloat>, B> {
 
 impl<S: RawComplexFloatData, B: bases::Basis> Fields<S, B> {
     pub fn size(&self) -> usize {
-        self.basis.scalar_spectral_size()
-            + self.basis.vector_spectral_size()
-            + 1
-            + NUM_TRACER_POINTS
+        self.storage.len()
     }
 
     pub fn height_spectral(&self) -> B::SpectralScalarField {
@@ -206,6 +200,7 @@ impl<S: RawComplexFloatData + nd::RawDataClone, B: bases::Basis> Clone for Field
 
 pub struct Problem<B: bases::Basis> {
     pub basis: std::sync::Arc<B>,
+    pub num_tracers: usize,
 
     pub terrain_height: B::SpectralScalarField,
 
@@ -373,7 +368,7 @@ where
         let mut fields = Fields::new_mut(problem.basis.clone(), storage.view_mut());
         fields.assign_height(&initial_fields.height_spectral());
         fields.assign_velocity(&initial_fields.velocity_spectral());
-        fields.assign_tracers(problem.basis.make_random_points().view());
+        fields.assign_tracers(problem.basis.make_random_points(problem.num_tracers).view());
 
         let mut abs_tol_storage = nd::Array1::<Float>::zeros(size);
         let mut abs_tol_fields = Fields::new_mut(problem.basis.clone(), abs_tol_storage.view_mut());

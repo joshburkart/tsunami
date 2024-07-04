@@ -10,6 +10,7 @@ pub fn bump_2d_spectral(
 
     let lengths = [5., 15.];
     let bump_size = 0.3;
+    let num_tracers = 100;
 
     // Want to generate a power so that a periodic "bump" is generated of width
     // `bump_size`. Start from FWHM definition:
@@ -31,7 +32,7 @@ pub fn bump_2d_spectral(
         lengths,
     ));
     let terrain_height = basis.scalar_to_spectral(&basis.make_scalar(|_, _| 0.));
-    let mut initial_fields = physics::Fields::zeros(basis.clone());
+    let mut initial_fields = physics::Fields::zeros(basis.clone(), num_tracers);
     initial_fields.assign_height(&basis.scalar_to_spectral(&basis.make_scalar(|x, y| {
         base_height
             + amplitude
@@ -46,6 +47,7 @@ pub fn bump_2d_spectral(
     })));
     let problem = physics::Problem {
         basis,
+        num_tracers,
         terrain_height,
         kinematic_viscosity,
         tidal_prefactor: 0.,

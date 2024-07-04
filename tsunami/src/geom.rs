@@ -24,10 +24,14 @@ enum GeometryImpl {
 }
 
 impl Geometry {
-    pub fn new(geometry_type: GeometryType, resolution_level: u32) -> Self {
+    pub fn new(geometry_type: GeometryType, resolution_level: u32, num_tracers: usize) -> Self {
         Self(match geometry_type {
-            GeometryType::Sphere => GeometryImpl::Sphere(SphereGeometry::new(resolution_level)),
-            GeometryType::Torus => GeometryImpl::Torus(TorusGeometry::new(resolution_level)),
+            GeometryType::Sphere => {
+                GeometryImpl::Sphere(SphereGeometry::new(resolution_level, num_tracers))
+            }
+            GeometryType::Torus => {
+                GeometryImpl::Torus(TorusGeometry::new(resolution_level, num_tracers))
+            }
         })
     }
 
@@ -159,10 +163,10 @@ pub struct SphereGeometry {
 }
 
 impl SphereGeometry {
-    pub fn new(resolution_level: u32) -> Self {
+    pub fn new(resolution_level: u32, num_tracers: usize) -> Self {
         use flow::bases::Basis;
 
-        let (base_height, solver) = Self::make_solver(resolution_level);
+        let (base_height, solver) = Self::make_solver(resolution_level, num_tracers);
         let prev_fields_snapshot = solver.fields_snapshot();
         let curr_fields_snapshot = solver.fields_snapshot();
 
@@ -244,6 +248,7 @@ impl SphereGeometry {
 
     fn make_solver(
         resolution_level: u32,
+        num_tracers: usize,
     ) -> (
         Float,
         flow::physics::Solver<flow::bases::ylm::SphericalHarmonicBasis>,
@@ -261,12 +266,13 @@ impl SphereGeometry {
 
         let basis = std::sync::Arc::new(flow::bases::ylm::SphericalHarmonicBasis::new(max_l));
         let terrain_height = basis.scalar_to_spectral(&basis.make_scalar(|_, _| 1.));
-        let mut initial_fields = flow::physics::Fields::zeros(basis.clone());
+        let mut initial_fields = flow::physics::Fields::zeros(basis.clone(), num_tracers);
         let initial_height_grid = basis.make_scalar(|_, _| base_height);
         initial_fields.assign_height(&basis.scalar_to_spectral(&initial_height_grid));
-        initial_fields.assign_tracers(basis.make_random_points().view());
+        initial_fields.assign_tracers(basis.make_random_points(num_tracers).view());
         let problem = flow::physics::Problem {
             basis,
+            num_tracers,
             terrain_height,
             kinematic_viscosity,
             rotation_angular_speed,
@@ -314,10 +320,10 @@ struct TorusGeometry {
 }
 
 impl TorusGeometry {
-    pub fn new(resolution_level: u32) -> Self {
+    pub fn new(resolution_level: u32, num_tracers: usize) -> Self {
         use flow::bases::Basis;
 
-        let (base_height, solver) = Self::make_solver(resolution_level);
+        let (base_height, solver) = Self::make_solver(resolution_level, num_tracers);
         let prev_fields_snapshot = solver.fields_snapshot();
         let curr_fields_snapshot = prev_fields_snapshot.clone();
 
@@ -411,6 +417,7 @@ impl TorusGeometry {
 
     fn make_solver(
         resolution_level: u32,
+        num_tracers: usize,
     ) -> (
         Float,
         flow::physics::Solver<flow::bases::fourier::RectangularPeriodicBasis>,
@@ -447,7 +454,7 @@ impl TorusGeometry {
             num_points, lengths,
         ));
         let terrain_height = basis.scalar_to_spectral(&basis.make_scalar(|_, _| 0.));
-        let mut initial_fields = flow::physics::Fields::zeros(basis.clone());
+        let mut initial_fields = flow::physics::Fields::zeros(basis.clone(), num_tracers);
         initial_fields.assign_height(&basis.scalar_to_spectral(&basis.make_scalar(|x, y| {
             base_height
                 - amplitude
@@ -460,9 +467,10 @@ impl TorusGeometry {
                         .powi(2)
                         .powf(pow(bump_size, lengths[1]))
         })));
-        initial_fields.assign_tracers(basis.make_random_points().view());
+        initial_fields.assign_tracers(basis.make_random_points(num_tracers).view());
         let problem = flow::physics::Problem {
             basis,
+            num_tracers,
             terrain_height,
             kinematic_viscosity,
             rotation_angular_speed,
@@ -492,7 +500,7 @@ mod tests {
 
     #[test]
     fn test_sphere_no_crash() {
-        let mut sphere = SphereGeometry::new(6);
+        let mut sphere = SphereGeometry::new(6, 100);
         let _: Vec<_> = sphere.make_renderables(3).collect();
         for _ in 0..20 {
             sphere.step();

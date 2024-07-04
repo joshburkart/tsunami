@@ -67,10 +67,10 @@ impl Basis for SphericalHarmonicBasis {
         [&self.mu_gauss_legendre_quad.nodes, &self.phi_grid]
     }
 
-    fn make_random_points(&self) -> nd::Array2<Float> {
+    fn make_random_points(&self, num: usize) -> nd::Array2<Float> {
         let mut rng = frand::Rand::with_seed(0);
-        let mut points = nd::Array2::zeros((2, crate::physics::NUM_TRACER_POINTS));
-        for i in 0..crate::physics::NUM_TRACER_POINTS {
+        let mut points = nd::Array2::zeros((2, num));
+        for i in 0..num {
             // Crazy: https://math.stackexchange.com/a/1586015/146975
             let mu = rng.gen_range((-1.)..(1.));
             let phi = rng.gen_range((0.)..(float_consts::TAU));

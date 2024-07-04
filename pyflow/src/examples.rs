@@ -85,7 +85,7 @@ pub fn bump_2d_spectral(
     };
     let basis = std::sync::Arc::new(bases::ylm::SphericalHarmonicBasis::new(num_points));
     let terrain_height = basis.scalar_to_spectral(&basis.make_scalar(|_, _| 1.));
-    let mut initial_fields = physics::Fields::zeros(basis.clone());
+    let mut initial_fields = physics::Fields::zeros(basis.clone(), 100);
     let powx = pow(bump_size, 1.);
     let powy = pow(bump_size, 1.);
     initial_fields.assign_height(&basis.scalar_to_spectral(&basis.make_scalar(|mu, phi| {
@@ -96,6 +96,7 @@ pub fn bump_2d_spectral(
     })));
     let problem = physics::Problem {
         basis,
+        num_tracers: 100,
         terrain_height,
         lunar_distance: 1.,
         tidal_prefactor: 0.,

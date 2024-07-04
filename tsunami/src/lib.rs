@@ -66,6 +66,7 @@ fn physics_loop(
                 geometry = geom::Geometry::new(
                     new_params.physics.geometry_type,
                     new_params.performance.resolution_level,
+                    2u32.pow(new_params.performance.log2_num_tracers) as usize,
                 );
             }
             params_message = new_params_message.clone();
@@ -128,6 +129,7 @@ pub async fn run() {
     let geometry = geom::Geometry::new(
         params.physics.geometry_type,
         params.performance.resolution_level,
+        2u32.pow(params.performance.log2_num_tracers) as usize,
     );
     let mut renderable = geometry.make_renderables(1).pop().unwrap();
     let (renderable_sender, renderable_reader) = std::sync::mpsc::sync_channel(2);
@@ -211,11 +213,7 @@ pub async fn run() {
         AmbientLight::new_with_environment(&context, 20.0, Srgba::WHITE, skybox.texture());
     let directional = DirectionalLight::new(&context, 5.0, Srgba::WHITE, &vec3(-1., 0., 0.));
 
-    let mut performance_stats = param::PerformanceStats {
-        wall_time_per_renderable_sec: 0.,
-        wall_time_per_render_sec: 0.,
-        sim_time_per_renderable: 0.,
-    };
+    let mut performance_stats = param::PerformanceStats::default();
 
     let rendering_data =
         renderable.make_rendering_data(params.visualization.height_exaggeration_factor);
@@ -525,8 +523,9 @@ pub async fn run() {
                 _ => {}
             }
         }
-        tsunami_hint_circle_object.set_transformation(rotation);
-
+        if let param::ShowRotation::Corotating = params.visualization.show_rotation {
+            tsunami_hint_circle_object.set_transformation(rotation);
+        }
         // Set hint circle color to red if completing a double click.
         double_click_detector.process_idle();
         match double_click_detector.state {
@@ -623,8 +622,8 @@ pub async fn run() {
 
         // We rotated the physical objects above; now we need to rotate the camera as
         // well so that we are observing from a corotating frame.
-        let rotated_camera = match params.visualization.show_rotation {
-            param::ShowRotation::Corotating => {
+        let rotated_camera =
+            if let param::ShowRotation::Corotating = params.visualization.show_rotation {
                 let position = rotation.transform_vector(*camera.position());
                 let target = rotation.transform_vector(*camera.target());
                 let up = rotation.transform_vector(*camera.up());
@@ -632,9 +631,9 @@ pub async fn run() {
                 let mut rotated_camera = camera.clone();
                 rotated_camera.set_view(position, target, up);
                 rotated_camera
-            }
-            _ => camera.clone(),
-        };
+            } else {
+                camera.clone()
+            };
         frame_input
             .screen()
             .render(

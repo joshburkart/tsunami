@@ -18,7 +18,7 @@ pub trait Basis: Sync + Send {
     fn lengths(&self) -> [Float; 2];
     fn axes(&self) -> [&nd::Array1<Float>; 2];
 
-    fn make_random_points(&self) -> nd::Array2<Float>;
+    fn make_random_points(&self, num: usize) -> nd::Array2<Float>;
 
     fn make_scalar<F: Fn(Float, Float) -> Float>(&self, f: F) -> nd::Array2<Float> {
         let [xs, ys] = self.axes();

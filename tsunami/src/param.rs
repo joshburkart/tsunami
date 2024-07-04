@@ -203,6 +203,7 @@ impl Default for VisualizationParameters {
 pub struct PerformanceParameters {
     pub substeps_per_physics_step: usize,
     pub resolution_level: u32,
+    pub log2_num_tracers: u32,
 }
 
 impl PerformanceParameters {
@@ -221,6 +222,18 @@ impl PerformanceParameters {
             }
             ui.label("resolution");
         });
+        ui.horizontal(|ui| {
+            for n in 12..=15 {
+                *geom_change |= ui
+                    .radio_value(
+                        &mut self.log2_num_tracers,
+                        n,
+                        format!("{}k", 2i32.pow(n) / 1000),
+                    )
+                    .changed();
+            }
+            ui.label("num tracers");
+        });
         // ui.add(
         //     egui::Slider::new(
         //         &mut params.substeps_per_physics_step,
@@ -238,6 +251,7 @@ impl Default for PerformanceParameters {
     fn default() -> Self {
         Self {
             resolution_level: 6,
+            log2_num_tracers: 12,
             substeps_per_physics_step: 1,
         }
     }
@@ -356,7 +370,7 @@ impl std::fmt::Display for ShowRotation {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 pub struct PerformanceStats {
     pub wall_time_per_renderable_sec: Float,
     pub wall_time_per_render_sec: Float,
