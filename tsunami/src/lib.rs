@@ -118,6 +118,7 @@ fn physics_loop(
 #[wasm_bindgen]
 pub async fn run() {
     console_log::init().unwrap();
+    console_error_panic_hook::set_once();
 
     log::info!(
         "Spawning threads, {} available in pool",
