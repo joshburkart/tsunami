@@ -11,6 +11,7 @@ pub struct SphericalHarmonicBasis {
 
     mu_gauss_legendre_quad: GaussLegendreQuadrature,
     phi_grid: nd::Array1<Float>,
+    theta_grid: nd::Array1<Float>,
     rfft_handler: ndrustfft::R2cFftHandler<Float>,
 
     vector_spherical_harmonics: VectorSphericalHarmonics,
@@ -25,6 +26,7 @@ impl SphericalHarmonicBasis {
         );
 
         let mu_gauss_legendre_quad = GaussLegendreQuadrature::new(max_l);
+        let theta_grid = mu_gauss_legendre_quad.nodes.mapv(Float::acos).to_owned();
 
         let Lambda_sq = (0..=max_l)
             .map(|l| (l as Float * (l as Float + 1.)))
@@ -40,6 +42,7 @@ impl SphericalHarmonicBasis {
             Lambda_sq,
             mu_gauss_legendre_quad,
             phi_grid,
+            theta_grid,
             rfft_handler,
             vector_spherical_harmonics,
         }
@@ -60,11 +63,11 @@ impl Basis for SphericalHarmonicBasis {
     }
 
     fn lengths(&self) -> [Float; 2] {
-        [2., float_consts::TAU]
+        [float_consts::PI, float_consts::TAU]
     }
 
     fn axes(&self) -> [&nd::Array1<Float>; 2] {
-        [&self.mu_gauss_legendre_quad.nodes, &self.phi_grid]
+        [&self.theta_grid, &self.phi_grid]
     }
 
     fn make_random_points(&self, num: usize) -> nd::Array2<Float> {
@@ -72,9 +75,10 @@ impl Basis for SphericalHarmonicBasis {
         let mut points = nd::Array2::zeros((2, num));
         for i in 0..num {
             // Crazy: https://math.stackexchange.com/a/1586015/146975
-            let mu = rng.gen_range((-1.)..(1.));
+            let mu: Float = rng.gen_range((-1.)..(1.));
+            let theta = mu.acos();
             let phi = rng.gen_range((0.)..(float_consts::TAU));
-            points[[Component::Theta as usize, i]] = mu;
+            points[[Component::Theta as usize, i]] = theta;
             points[[Component::Phi as usize, i]] = phi;
         }
         points
@@ -277,8 +281,10 @@ impl Basis for SphericalHarmonicBasis {
             .zip(points.axis_iter(nd::Axis(1)))
             .for_each(|(mut output_value, point)| {
                 let grid_search_result = periodic_grid_search(self, point);
-                output_value[[]] = if grid_search_result[0][1].index == 0 {
-                    if grid_search_result[0][1].value > 0. {
+                output_value[[]] = if grid_search_result[Component::Theta as usize][1].index == 0 {
+                    if grid_search_result[Component::Theta as usize][1].value
+                        < float_consts::FRAC_PI_2
+                    {
                         top_value
                     } else {
                         bottom_value
@@ -301,19 +307,18 @@ impl Basis for SphericalHarmonicBasis {
         points: nd::ArrayView2<'_, Float>,
     ) -> nd::Array2<Float> {
         // Project the velocity grid to Cartesian so we can interpolate in Cartesian.
-        let [mu_grid, phi_grid] = self.axes();
+        let [theta_grid, phi_grid] = self.axes();
         let cartesian_velocity_grid = {
-            let mut values = nd::Array3::zeros((3, mu_grid.len(), phi_grid.len()));
+            let mut values = nd::Array3::zeros((3, theta_grid.len(), phi_grid.len()));
             for (j, &phi) in phi_grid.iter().enumerate() {
                 let (sin_phi, cos_phi) = phi.sin_cos();
-                for (i, &mu) in mu_grid.iter().enumerate() {
-                    let mu = mu.clamp(-1., 1.);
-                    let sin_theta = (1. - mu.powi(2)).sqrt();
-                    let v_mu = velocity_grid[[0, i, j]];
-                    let v_phi = velocity_grid[[1, i, j]];
-                    values[[0, i, j]] = v_mu * mu * cos_phi - v_phi * sin_phi;
-                    values[[1, i, j]] = v_mu * mu * sin_phi + v_phi * cos_phi;
-                    values[[2, i, j]] = -v_mu * sin_theta;
+                for (i, &theta) in theta_grid.iter().enumerate() {
+                    let (sin_theta, cos_theta) = theta.sin_cos();
+                    let v_theta = velocity_grid[[Component::Theta as usize, i, j]];
+                    let v_phi = velocity_grid[[Component::Phi as usize, i, j]];
+                    values[[0, i, j]] = v_theta * cos_theta * cos_phi - v_phi * sin_phi;
+                    values[[1, i, j]] = v_theta * cos_theta * sin_phi + v_phi * cos_phi;
+                    values[[2, i, j]] = -v_theta * sin_theta;
                 }
             }
             values
@@ -335,9 +340,9 @@ impl Basis for SphericalHarmonicBasis {
             .for_each(|(mut output_value, point)| {
                 let grid_search_result = periodic_grid_search(self, point);
                 let mut interpolated_cartesian_velocity = nd::Array1::zeros(3);
-                if grid_search_result[0][1].index == 0 {
+                if grid_search_result[Component::Theta as usize][1].index == 0 {
                     // We're at a polar cap. Use the mean polar Cartesian velocity.
-                    if grid_search_result[0][1].value > 0. {
+                    if grid_search_result[0][1].value < float_consts::FRAC_PI_2 {
                         interpolated_cartesian_velocity.assign(&top_cartesian_velocity);
                     } else {
                         interpolated_cartesian_velocity.assign(&bottom_cartesian_velocity);
@@ -353,18 +358,17 @@ impl Basis for SphericalHarmonicBasis {
                     }
                 }
 
-                // Project Cartesian velocity to spherical unit vectors and incorporate
-                // $\csc(\theta)$ factor for $\phi$ time derivative (see notes).
-                let (sin_phi, cos_phi) = point[[1]].sin_cos();
-                let cos_theta = point[[0]].clamp(-1., 1.);
-                let sin_theta = (1. - cos_theta.powi(2)).sqrt();
+                // Convert Cartesian velocity into spherical coordinate time derivatives using
+                // Jacobian.
+                let (sin_phi, cos_phi) = point[[Component::Phi as usize]].sin_cos();
+                let (sin_theta, cos_theta) = point[[Component::Theta as usize]].sin_cos();
                 let dtheta_dt = cos_theta * cos_phi * interpolated_cartesian_velocity[[0]]
                     + cos_theta * sin_phi * interpolated_cartesian_velocity[[1]]
                     - sin_theta * interpolated_cartesian_velocity[[2]];
-                output_value[[0]] = -sin_theta * dtheta_dt;
-                output_value[[1]] = (-sin_phi * interpolated_cartesian_velocity[[0]]
-                    + cos_phi * interpolated_cartesian_velocity[[1]])
-                    * (1. / sin_theta).min(1000.);
+                let dphi_dt = -sin_phi / sin_theta * interpolated_cartesian_velocity[[0]]
+                    + cos_phi / sin_theta * interpolated_cartesian_velocity[[1]];
+                output_value[[Component::Theta as usize]] = dtheta_dt;
+                output_value[[Component::Phi as usize]] = dphi_dt;
             });
 
         output
@@ -430,10 +434,11 @@ impl Basis for SphericalHarmonicBasis {
         output
             .slice_mut(nd::s![Component::Phi as usize, .., ..])
             .assign(&grid.slice(nd::s![Component::Theta as usize, .., ..]));
-        for (i, &mu) in self.mu_gauss_legendre_quad.nodes.iter().enumerate() {
+        for (i, &theta) in self.theta_grid.iter().enumerate() {
             for j in 0..self.phi_grid.len() {
-                output[[Component::Theta as usize, i, j]] *= -mu;
-                output[[Component::Phi as usize, i, j]] *= mu;
+                let cos_theta = theta.cos();
+                output[[Component::Theta as usize, i, j]] *= -cos_theta;
+                output[[Component::Phi as usize, i, j]] *= cos_theta;
             }
         }
         output
@@ -754,14 +759,12 @@ struct GaussLegendreQuadrature {
 
 impl GaussLegendreQuadrature {
     pub fn new(max_l: usize) -> Self {
-        use itertools::Itertools;
         let gauss_legendre = gauss_quad::GaussLegendre::init(max_l + 1);
         let (nodes, weights): (Vec<Float>, Vec<Float>) = gauss_legendre
             .nodes
             .into_iter()
             .map(|x| x as Float)
             .zip(gauss_legendre.weights.into_iter().map(|x| x as Float))
-            .sorted_by(|(x, _), (y, _)| x.partial_cmp(y).unwrap())
             .unzip();
         Self {
             nodes: nodes.into(),
@@ -801,7 +804,7 @@ mod test {
     fn test_scalar_roundtrip_first() {
         let basis = SphericalHarmonicBasis::new(1);
 
-        let grid = basis.make_scalar(|mu, _| mu);
+        let grid = basis.make_scalar(|theta, _| theta.cos());
         let spectral = basis.scalar_to_spectral(&grid);
         let grid_roundtrip = basis.scalar_to_grid(&spectral);
 
@@ -820,10 +823,10 @@ mod test {
 
     #[test]
     fn test_scalar_roundtrip() {
-        test_scalar_roundtrip_impl(0, |_mu, _phi| 1.);
-        test_scalar_roundtrip_impl(2, |mu, phi| (1. - mu.powi(2)) * (2. * phi).sin());
-        test_scalar_roundtrip_impl(7, |mu, phi| (1. - mu.powi(2)) * (2. * phi).sin());
-        test_scalar_roundtrip_impl(7, |mu, _| mu.powi(4));
+        test_scalar_roundtrip_impl(0, |_theta, _phi| 1.);
+        test_scalar_roundtrip_impl(2, |theta, phi| theta.sin().powi(2) * (2. * phi).sin());
+        test_scalar_roundtrip_impl(7, |theta, phi| theta.sin().powi(2) * (2. * phi).sin());
+        test_scalar_roundtrip_impl(7, |theta, _| theta.cos().powi(4));
     }
 
     fn test_scalar_roundtrip_impl<F: Fn(Float, Float) -> Float>(max_l: usize, f: F) {

@@ -87,9 +87,8 @@ impl Geometry {
                     log::info!("Setting off earthquake");
                     let click_direction = position.normalize();
                     new_height = &new_height
-                        + &basis.make_scalar(|mu, phi| {
-                            let cos_theta = mu as f32;
-                            let sin_theta = (1. - cos_theta.powi(2)).sqrt() as f32;
+                        + &basis.make_scalar(|theta, phi| {
+                            let (sin_theta, cos_theta) = (theta as f32).sin_cos();
                             let cos_phi = phi.cos() as f32;
                             let sin_phi = phi.sin() as f32;
                             let point_direction = three_d::Vec3::new(
@@ -158,7 +157,7 @@ pub struct SphereGeometry {
 
     tracers_history: ringbuffer::AllocRingBuffer<nd::Array2<Float>>,
 
-    mu_grid: nd::Array1<Float>,
+    theta_grid: nd::Array1<Float>,
     phi_grid: nd::Array1<Float>,
 }
 
@@ -170,8 +169,8 @@ impl SphereGeometry {
         let prev_fields_snapshot = solver.fields_snapshot();
         let curr_fields_snapshot = solver.fields_snapshot();
 
-        let [mu_grid, phi_grid] = solver.problem().basis.axes();
-        let mu_grid = mu_grid.clone();
+        let [theta_grid, phi_grid] = solver.problem().basis.axes();
+        let theta_grid = theta_grid.clone();
         let phi_grid = phi_grid.clone();
 
         let tracers_history = ringbuffer::AllocRingBuffer::new(TRACER_HISTORY_LENGTH);
@@ -186,7 +185,7 @@ impl SphereGeometry {
             prev_fields_snapshot,
             tracers_history,
 
-            mu_grid,
+            theta_grid,
             phi_grid,
         }
     }
@@ -213,19 +212,19 @@ impl SphereGeometry {
                 use ringbuffer::RingBuffer;
 
                 let height_grid = fields_snapshot.fields.height_grid();
-                let tracer_points_history_mu_phi = self
+                let tracer_points_history_theta_phi = self
                     .tracers_history
                     .iter()
                     .step_by(TRACER_STEP)
                     .cloned()
                     .collect::<Vec<_>>();
-                let tracer_heights_history: Vec<_> = tracer_points_history_mu_phi
+                let tracer_heights_history: Vec<_> = tracer_points_history_theta_phi
                     .iter()
-                    .map(|tracer_points_mu_phi| {
+                    .map(|tracer_points_theta_phi| {
                         self.solver
                             .problem()
                             .basis
-                            .scalar_to_points(&height_grid, tracer_points_mu_phi.view())
+                            .scalar_to_points(&height_grid, tracer_points_theta_phi.view())
                     })
                     .collect();
 
@@ -237,10 +236,10 @@ impl SphereGeometry {
                         .fields
                         .rotational_phase_rad(),
                     base_height: self.base_height,
-                    mu_grid: self.mu_grid.clone(),
+                    theta_grid: self.theta_grid.clone(),
                     phi_grid: self.phi_grid.clone(),
                     height_array: height_grid,
-                    tracer_points_history_mu_phi,
+                    tracer_points_history_theta_phi,
                     tracer_heights_history,
                 }
             })

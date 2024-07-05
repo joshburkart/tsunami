@@ -45,18 +45,18 @@ pub struct SphereRenderable {
     pub t: Float,
     pub rotational_phase_rad: Float,
 
-    pub mu_grid: nd::Array1<Float>,
+    pub theta_grid: nd::Array1<Float>,
     pub phi_grid: nd::Array1<Float>,
 
     pub height_array: nd::Array2<Float>,
 
-    pub tracer_points_history_mu_phi: Vec<nd::Array2<Float>>,
+    pub tracer_points_history_theta_phi: Vec<nd::Array2<Float>>,
     pub tracer_heights_history: Vec<nd::Array1<Float>>,
 }
 
 impl SphereRenderable {
     pub fn make_rendering_data(&self, height_exaggeration_factor: Float) -> RenderingData {
-        let num_mu = self.mu_grid.len();
+        let num_theta = self.theta_grid.len();
         let num_phi = self.phi_grid.len();
 
         let make_index = |i, j| (i * num_phi + (j % num_phi)) as u32;
@@ -64,19 +64,19 @@ impl SphereRenderable {
         let quadrature_points = self.make_quadrature_points(height_exaggeration_factor);
 
         let mut augmented_points = quadrature_points.clone();
-        // Add bottom point.
-        let bottom = augmented_points.len() as u32;
+        // Add top point.
+        let top = augmented_points.len() as u32;
         augmented_points.push(self.make_point(
-            -1.,
+            0.,
             0.,
             self.height_array.slice(nd::s![0, ..]).iter().sum::<Float>() / num_phi as Float,
             height_exaggeration_factor,
         ));
-        // Add top point.
-        let top = augmented_points.len() as u32;
+        // Add bottom point.
+        let bottom = augmented_points.len() as u32;
         augmented_points.push(
             self.make_point(
-                1.,
+                float_consts::PI,
                 0.,
                 self.height_array
                     .slice(nd::s![-1, ..])
@@ -88,7 +88,7 @@ impl SphereRenderable {
         );
 
         let mut indices = Vec::new();
-        for i in 0..num_mu - 1 {
+        for i in 0..num_theta - 1 {
             for j in 0..num_phi {
                 let ll = make_index(i, j);
                 let lr = make_index(i + 1, j);
@@ -106,19 +106,19 @@ impl SphereRenderable {
             }
         }
         for j in 0..num_phi {
-            // Add bottom cap.
+            // Add top cap.
             let ul = make_index(0, j);
             let ur = make_index(0, j + 1);
             indices.push(ul);
             indices.push(ur);
-            indices.push(bottom);
+            indices.push(top);
 
-            // Add top cap.
-            let ll = make_index(num_mu - 1, j);
-            let lr = make_index(num_mu - 1, j + 1);
+            // Add bottom cap.
+            let ll = make_index(num_theta - 1, j);
+            let lr = make_index(num_theta - 1, j + 1);
             indices.push(lr);
             indices.push(ll);
-            indices.push(top);
+            indices.push(bottom);
         }
 
         let mut mesh = CpuMesh {
@@ -137,11 +137,11 @@ impl SphereRenderable {
     }
 
     fn make_quadrature_points(&self, height_exaggeration_factor: Float) -> Vec<Vector3<Float>> {
-        let mut points = Vec::with_capacity(self.mu_grid.len() * self.phi_grid.len());
-        for (i, &mu) in self.mu_grid.iter().enumerate() {
+        let mut points = Vec::with_capacity(self.theta_grid.len() * self.phi_grid.len());
+        for (i, &theta) in self.theta_grid.iter().enumerate() {
             for (j, &phi) in self.phi_grid.iter().enumerate() {
                 let height = self.height_array[[i, j]];
-                points.push(self.make_point(mu, phi, height, height_exaggeration_factor));
+                points.push(self.make_point(theta, phi, height, height_exaggeration_factor));
             }
         }
         points
@@ -149,19 +149,19 @@ impl SphereRenderable {
 
     fn make_tracer_points(&self, height_exaggeration_factor: Float) -> TracerPoints {
         let (points, positions) = self
-            .tracer_points_history_mu_phi
+            .tracer_points_history_theta_phi
             .iter()
             .enumerate()
             .zip(&self.tracer_heights_history)
-            .map(|((position, tracer_points_mu_phi), tracer_heights)| {
-                tracer_points_mu_phi
+            .map(|((position, tracer_points_theta_phi), tracer_heights)| {
+                tracer_points_theta_phi
                     .axis_iter(nd::Axis(1))
                     .zip(tracer_heights.iter())
-                    .map(move |(point_mu_phi, &height)| {
+                    .map(move |(point_theta_phi, &height)| {
                         (
                             self.make_point(
-                                point_mu_phi[[0]],
-                                point_mu_phi[[1]],
+                                point_theta_phi[[flow::bases::ylm::Component::Theta as usize]],
+                                point_theta_phi[[flow::bases::ylm::Component::Phi as usize]],
                                 height,
                                 height_exaggeration_factor,
                             ),
@@ -176,14 +176,13 @@ impl SphereRenderable {
 
     fn make_point(
         &self,
-        mu: Float,
+        theta: Float,
         phi: Float,
         height: Float,
         height_exaggeration_factor: Float,
     ) -> three_d::Vector3<Float> {
-        let mu = mu.clamp(-1., 1.);
-        let sin_theta = (1. - mu.powi(2)).sqrt();
-        let radially_out = Vector3::new(sin_theta * phi.cos(), sin_theta * phi.sin(), mu);
+        let (sin_theta, cos_theta) = theta.sin_cos();
+        let radially_out = Vector3::new(sin_theta * phi.cos(), sin_theta * phi.sin(), cos_theta);
         radially_out * (1. + (height - self.base_height) * height_exaggeration_factor)
     }
 }
@@ -302,15 +301,15 @@ impl TorusRenderable {
             .iter()
             .enumerate()
             .zip(&self.tracer_heights_history)
-            .map(|((position, tracer_points_mu_phi), tracer_heights)| {
-                tracer_points_mu_phi
+            .map(|((position, tracer_points_theta_phi), tracer_heights)| {
+                tracer_points_theta_phi
                     .axis_iter(nd::Axis(1))
                     .zip(tracer_heights.iter())
-                    .map(move |(point_mu_phi, &height)| {
+                    .map(move |(point_theta_phi, &height)| {
                         (
                             self.make_point(
-                                point_mu_phi[[0]],
-                                point_mu_phi[[1]],
+                                point_theta_phi[[0]],
+                                point_theta_phi[[1]],
                                 height,
                                 height_exaggeration_factor,
                             ),
