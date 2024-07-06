@@ -27,7 +27,7 @@ pyo3 = { version = "0.21.1", features = ["extension-module"] }
 rayon = "1.10"
 ringbuffer = "0.15"
 strum = { version = "0.26", features = ["derive"] }
-three-d = { git = "https://github.com/joshburkart/three-d.git", rev = "afdf6f75701c2410ea2ad980f8d710c2ea7776a3", features = [
+three-d = { git = "https://github.com/asny/three-d.git", rev = "a69b70874d93da231f5e4f8c35adb4d38134aeee", features = [
     "egui-gui",
 ] }
 three-d-asset = { version = "0.7", features = ["jpeg", "png"] }

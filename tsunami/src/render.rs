@@ -375,11 +375,31 @@ impl Tracers {
                         let end = Vec3::new(end.x as f32, end.y as f32, end.z as f32);
                         let displacement = end - start;
                         let length = displacement.magnitude();
-                        let axis = Vec3::unit_x().cross(displacement).normalize();
+                        let axis = {
+                            let axis = Vec3::unit_x().cross(displacement);
+                            let magnitude = axis.magnitude();
+                            if magnitude > 1e-8 {
+                                axis / magnitude
+                            } else {
+                                Vec3::unit_x()
+                            }
+                        };
                         let angle = displacement.angle(Vec3::unit_x());
 
                         let direction_rotation = Mat4::from_axis_angle(axis, angle);
                         let length_scale = Mat4::from_nonuniform_scale(length, 1., 1.);
+                        let translation = Mat4::from_translation(start);
+                        let transformation =
+                            rotation * translation * direction_rotation * length_scale;
+
+                        // if !transformation.is_finite() {
+                        //     panic!(
+                        //         "Tracer transformation was not finite: rotation={rotation:?}, \
+                        //          translation={translation:?}, \
+                        //          direction_rotation={direction_rotation:?}, \
+                        //          length_scale={length_scale:?}, overall={transformation:?}"
+                        //     );
+                        // }
 
                         // Add transparency based on position in tracer's trail and length of line
                         // segment.
@@ -390,13 +410,7 @@ impl Tracers {
                         let color =
                             Srgba::new(u8::MAX, u8::MAX, u8::MAX, (u8::MAX as f32 * opacity) as u8);
 
-                        (
-                            rotation
-                                * Mat4::from_translation(start)
-                                * direction_rotation
-                                * length_scale,
-                            color,
-                        )
+                        (transformation, color)
                     })
             })
             .flatten()

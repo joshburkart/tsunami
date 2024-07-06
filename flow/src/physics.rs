@@ -100,7 +100,20 @@ impl<S: RawComplexFloatData, B: bases::Basis> Fields<S, B> {
 
     pub fn height_grid(&self) -> nd::Array2<Float> {
         let spectral = self.height_spectral();
-        self.basis.scalar_to_grid(&spectral)
+        let grid = self.basis.scalar_to_grid(&spectral);
+
+        grid.iter().for_each(|&h| {
+            if h < 0. {
+                log::error!("Water column height became negative: {h:?}");
+                panic!();
+            }
+            if !h.is_finite() {
+                log::error!("Water column height became NaN");
+                panic!();
+            }
+        });
+
+        grid
     }
 
     pub fn velocity_spectral(&self) -> B::SpectralVectorField {
@@ -113,7 +126,16 @@ impl<S: RawComplexFloatData, B: bases::Basis> Fields<S, B> {
 
     pub fn velocity_grid(&self) -> nd::Array3<Float> {
         let spectral = self.velocity_spectral();
-        self.basis.vector_to_grid(&spectral)
+        let grid = self.basis.vector_to_grid(&spectral);
+
+        grid.iter().for_each(|&v| {
+            if !v.is_finite() {
+                log::error!("Water velocity became NaN");
+                panic!();
+            }
+        });
+
+        grid
     }
 
     pub fn tracer_points(&self) -> nd::Array2<Float> {
@@ -125,6 +147,17 @@ impl<S: RawComplexFloatData, B: bases::Basis> Fields<S, B> {
             points[[0, i]] = point_complex.re;
             points[[1, i]] = point_complex.im;
         }
+
+        points
+            .axis_iter(nd::Axis(1))
+            .enumerate()
+            .for_each(|(i, point)| {
+                if !(point[[0]].is_finite() && point[[1]].is_finite()) {
+                    log::error!("Tracer {i} became NaN: {point:?}");
+                    panic!();
+                }
+            });
+
         points
     }
 
@@ -258,33 +291,6 @@ where
 
         let height_grid = self.basis.scalar_to_grid(&height);
         let velocity_grid = self.basis.vector_to_grid(&velocity);
-
-        height_grid.iter().for_each(|&h| {
-            if h < 0. {
-                log::error!("Water column height became negative: {h:?}");
-                panic!();
-            }
-            if !h.is_finite() {
-                log::error!("Water column height became NaN");
-                panic!();
-            }
-        });
-        velocity_grid.iter().for_each(|&v| {
-            if !v.is_finite() {
-                log::error!("Water velocity became NaN");
-                panic!();
-            }
-        });
-        fields
-            .tracer_points()
-            .axis_iter(nd::Axis(1))
-            .enumerate()
-            .for_each(|(i, point)| {
-                if !(point[[0]].is_finite() && point[[1]].is_finite()) {
-                    log::error!("Tracer {i} became NaN: {point:?}");
-                    panic!();
-                }
-            });
 
         // Compute derivatives in parallel.
         let height_time_deriv = std::sync::Arc::new(std::sync::Mutex::new(None));
