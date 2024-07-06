@@ -125,7 +125,7 @@ pub async fn run() {
         rayon::current_num_threads()
     );
 
-    let mut params = param::Parameters::from_preset(param::Preset::Whirlpool);
+    let mut params = param::Parameters::from_preset(param::Preset::Vortices);
     let mut geometry_version = 0;
     let geometry = geom::Geometry::new(
         params.physics.geometry_type,
@@ -634,7 +634,7 @@ const INFO_MARKDOWN: &'static str = indoc::indoc! {"
     
     * **Drag/scroll** to change the view
     * **Double click** to set off an earthquake/tsunami
-    * **Dotted lines** are “tracers” indicating local water motion
+    * **Path lines** indicate (exaggerated) local water motion
     * **Play around** with different controls in the right panel
 
     Alpha version — please **do not share yet**!
@@ -655,7 +655,7 @@ const DETAILS_MARKDOWN: &'static str = indoc::indoc! {"
     * The [Coriolis force](https://en.wikipedia.org/wiki/Coriolis_force)
     * [Lunar tides](https://en.wikipedia.org/wiki/Tide) (taking the moon to be stationary for \
         simplicity)
-    * [Advection](https://en.wikipedia.org/wiki/Advection) of entrained “tracer” particles
+    * [Advection](https://en.wikipedia.org/wiki/Advection) of entrained tracer particles
     * Realistic topography (continents/sea floor) *(planned)*
 
     Tech stack: Rust/WebAssembly/WebGL/[`egui`](https://www.egui.rs/)/

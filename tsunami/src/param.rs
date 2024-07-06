@@ -37,7 +37,7 @@ impl Parameters {
 
 #[derive(Copy, Clone, strum::EnumIter)]
 pub enum Preset {
-    Whirlpool,
+    Vortices,
     Tides,
     Torus,
 }
@@ -67,9 +67,9 @@ impl Preset {
 impl std::fmt::Display for Preset {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
-            Preset::Whirlpool => "Whirlpool",
+            Preset::Vortices => "Vortices",
             Preset::Tides => "Tides",
-            Preset::Torus => "Torus World",
+            Preset::Torus => "Torus",
         })
     }
 }
@@ -260,7 +260,7 @@ impl Default for PerformanceParameters {
 impl Parameters {
     pub fn from_preset(preset: Preset) -> Self {
         match preset {
-            Preset::Whirlpool => Self {
+            Preset::Vortices => Self {
                 physics: PhysicsParameters {
                     lunar_distance_rel_to_actual: 10.,
                     rotation_period_hr: 5.,
@@ -355,7 +355,7 @@ impl ShowRotation {
             for value in Self::iter() {
                 ui.radio_value(self, value, value.to_string());
             }
-            ui.label("show rotation");
+            ui.label("show rotation 🤢");
         });
     }
 }
@@ -363,7 +363,7 @@ impl ShowRotation {
 impl std::fmt::Display for ShowRotation {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
-            ShowRotation::Corotating => "corotating 🤢",
+            ShowRotation::Corotating => "corotating",
             ShowRotation::Inertial => "inertial",
             ShowRotation::None => "none",
         })
