@@ -163,7 +163,7 @@ impl Default for PhysicsParameters {
 pub struct VisualizationParameters {
     pub height_exaggeration_factor: Float,
     pub velocity_exaggeration_factor: Float,
-    pub show_points: ShowPoints,
+    pub show_features: ShowFeatures,
     pub show_rotation: ShowRotation,
 }
 
@@ -182,7 +182,7 @@ impl VisualizationParameters {
                 .text("velocity exaggeration")
                 .suffix("×"),
         );
-        self.show_points.generate_ui(ui);
+        self.show_features.generate_ui(ui);
         self.show_rotation.generate_ui(ui);
         ui.add_space(10.);
     }
@@ -193,7 +193,7 @@ impl Default for VisualizationParameters {
         Self {
             height_exaggeration_factor: 500.,
             velocity_exaggeration_factor: 1.5e3,
-            show_points: ShowPoints::Tracer,
+            show_features: ShowFeatures::Tracers,
             show_rotation: ShowRotation::None,
         }
     }
@@ -311,13 +311,13 @@ impl Default for Parameters {
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, strum::EnumIter)]
-pub enum ShowPoints {
+pub enum ShowFeatures {
     Quadrature,
-    Tracer,
+    Tracers,
     None,
 }
 
-impl ShowPoints {
+impl ShowFeatures {
     fn generate_ui(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             use strum::IntoEnumIterator;
@@ -325,17 +325,17 @@ impl ShowPoints {
             for value in Self::iter() {
                 ui.radio_value(self, value, value.to_string());
             }
-            ui.label("show points");
+            ui.label("show");
         });
     }
 }
 
-impl std::fmt::Display for ShowPoints {
+impl std::fmt::Display for ShowFeatures {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
-            ShowPoints::Quadrature => "quadrature",
-            ShowPoints::Tracer => "tracer",
-            ShowPoints::None => "none",
+            ShowFeatures::Quadrature => "quadrature points",
+            ShowFeatures::Tracers => "path lines",
+            ShowFeatures::None => "none",
         })
     }
 }

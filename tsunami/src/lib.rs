@@ -236,8 +236,20 @@ pub async fn run() {
         ),
     );
 
-    let mut point_mesh = CpuMesh::sphere(10);
-    point_mesh.transform(&Mat4::from_scale(0.002)).unwrap();
+    let point_size = 0.002;
+    let point_mesh = {
+        let mut point_mesh = CpuMesh::sphere(10);
+        point_mesh.transform(&Mat4::from_scale(point_size)).unwrap();
+        point_mesh
+    };
+    let line_mesh = {
+        let mut line_mesh = CpuMesh::cylinder(10);
+        line_mesh
+            .transform(&Mat4::from_nonuniform_scale(1., point_size, point_size))
+            .unwrap();
+        line_mesh
+    };
+
     let mut quadrature_point_cloud_model = Gm {
         geometry: InstancedMesh::new(
             &context,
@@ -250,7 +262,7 @@ pub async fn run() {
         ),
         material: ColorMaterial::default(),
     };
-    let mut tracer_point_cloud_model = Gm {
+    let mut tracers_model = Gm {
         geometry: InstancedMesh::new(
             &context,
             &PointCloud {
@@ -390,7 +402,7 @@ pub async fn run() {
                 None,
             );
 
-            if let param::ShowPoints::Quadrature = params.visualization.show_points {
+            if let param::ShowFeatures::Quadrature = params.visualization.show_features {
                 quadrature_point_cloud_model.geometry = InstancedMesh::new(
                     &context,
                     &PointCloud {
@@ -417,51 +429,13 @@ pub async fn run() {
                 quadrature_point_cloud_model.material.render_states.cull = Cull::FrontAndBack;
             }
 
-            if let param::ShowPoints::Tracer = params.visualization.show_points {
-                tracer_point_cloud_model.geometry = InstancedMesh::new(
-                    &context,
-                    &PointCloud {
-                        positions: Positions::F32(
-                            rendering_data
-                                .tracer_points
-                                .points
-                                .into_iter()
-                                .map(|point| {
-                                    rotation.transform_vector(Vector3 {
-                                        x: point.x as f32,
-                                        y: point.y as f32,
-                                        z: point.z as f32,
-                                    })
-                                })
-                                .collect(),
-                        ),
-                        colors: Some(
-                            rendering_data
-                                .tracer_points
-                                .positions
-                                .into_iter()
-                                .map(|position| {
-                                    Srgba::new(
-                                        u8::MAX,
-                                        u8::MAX,
-                                        u8::MAX,
-                                        // Add transparency based on position in tracer's trail.
-                                        (u8::MAX as Float
-                                            * (position as Float
-                                                / geom::TRACER_TAIL_LENGTH as Float)
-                                                .powf(0.25))
-                                            as u8,
-                                    )
-                                })
-                                .collect(),
-                        ),
-                    }
-                    .into(),
-                    &point_mesh,
-                );
-                tracer_point_cloud_model.material.render_states.cull = Cull::None;
+            if let param::ShowFeatures::Tracers = params.visualization.show_features {
+                tracers_model.geometry = rendering_data
+                    .tracer_points
+                    .make_mesh(&context, &line_mesh, point_size, &rotation);
+                tracers_model.material.render_states.cull = Cull::None;
             } else {
-                tracer_point_cloud_model.material.render_states.cull = Cull::FrontAndBack;
+                tracers_model.material.render_states.cull = Cull::FrontAndBack;
             }
         }
 
@@ -642,7 +616,7 @@ pub async fn run() {
                 std::iter::empty()
                     .chain(&mesh_model)
                     .chain(&quadrature_point_cloud_model)
-                    .chain(&tracer_point_cloud_model)
+                    .chain(&tracers_model)
                     .chain(&tsunami_hint_circle_object)
                     .chain(&moon_sprite_object)
                     .chain(&skybox),

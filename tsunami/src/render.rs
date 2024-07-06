@@ -1,11 +1,11 @@
 use flow::{float_consts, Float};
 use ndarray as nd;
-use three_d::{CpuMesh, Indices, Positions, Vector3};
+use three_d::*;
 
 #[derive(Clone)]
 pub struct RenderingData {
     pub quadrature_points: Vec<Vector3<Float>>,
-    pub tracer_points: TracerPoints,
+    pub tracer_points: Tracers,
     pub mesh: CpuMesh,
 }
 
@@ -131,7 +131,7 @@ impl SphereRenderable {
 
         RenderingData {
             quadrature_points,
-            tracer_points: self.make_tracer_points(height_exaggeration_factor),
+            tracer_points: self.make_tracers(height_exaggeration_factor),
             mesh,
         }
     }
@@ -147,31 +147,34 @@ impl SphereRenderable {
         points
     }
 
-    fn make_tracer_points(&self, height_exaggeration_factor: Float) -> TracerPoints {
-        let (points, positions) = self
+    fn make_tracers(&self, height_exaggeration_factor: Float) -> Tracers {
+        if self.tracer_points_history_theta_phi.is_empty() {
+            return Tracers::new(Vec::new());
+        }
+
+        let mut path_lines: Vec<_> =
+            (0..self.tracer_points_history_theta_phi.first().unwrap().len())
+                .map(|_| Vec::with_capacity(self.tracer_points_history_theta_phi.len()))
+                .collect();
+        for (tracer_points_theta_phi, tracer_heights) in self
             .tracer_points_history_theta_phi
             .iter()
-            .enumerate()
-            .zip(&self.tracer_heights_history)
-            .map(|((position, tracer_points_theta_phi), tracer_heights)| {
-                tracer_points_theta_phi
-                    .axis_iter(nd::Axis(1))
-                    .zip(tracer_heights.iter())
-                    .map(move |(point_theta_phi, &height)| {
-                        (
-                            self.make_point(
-                                point_theta_phi[[flow::bases::ylm::Component::Theta as usize]],
-                                point_theta_phi[[flow::bases::ylm::Component::Phi as usize]],
-                                height,
-                                height_exaggeration_factor,
-                            ),
-                            position,
-                        )
-                    })
-            })
-            .flatten()
-            .unzip();
-        TracerPoints { points, positions }
+            .zip(self.tracer_heights_history.iter())
+        {
+            for (j, (tracer_point_theta_phi, &tracer_height)) in tracer_points_theta_phi
+                .axis_iter(nd::Axis(1))
+                .zip(tracer_heights.iter())
+                .enumerate()
+            {
+                path_lines[j].push(self.make_point(
+                    tracer_point_theta_phi[[flow::bases::ylm::Component::Theta as usize]],
+                    tracer_point_theta_phi[[flow::bases::ylm::Component::Phi as usize]],
+                    tracer_height,
+                    height_exaggeration_factor,
+                ));
+            }
+        }
+        Tracers::new(path_lines)
     }
 
     fn make_point(
@@ -279,7 +282,7 @@ impl TorusRenderable {
 
         RenderingData {
             quadrature_points,
-            tracer_points: self.make_tracer_points(height_exaggeration_factor),
+            tracer_points: self.make_tracers(height_exaggeration_factor),
             mesh,
         }
     }
@@ -295,31 +298,34 @@ impl TorusRenderable {
         points
     }
 
-    fn make_tracer_points(&self, height_exaggeration_factor: Float) -> TracerPoints {
-        let (points, positions) = self
+    fn make_tracers(&self, height_exaggeration_factor: Float) -> Tracers {
+        if self.tracer_points_history_theta_phi.is_empty() {
+            return Tracers::new(Vec::new());
+        }
+
+        let mut path_lines: Vec<_> =
+            (0..self.tracer_points_history_theta_phi.first().unwrap().len())
+                .map(|_| Vec::with_capacity(self.tracer_points_history_theta_phi.len()))
+                .collect();
+        for (tracer_points_theta_phi, tracer_heights) in self
             .tracer_points_history_theta_phi
             .iter()
-            .enumerate()
-            .zip(&self.tracer_heights_history)
-            .map(|((position, tracer_points_theta_phi), tracer_heights)| {
-                tracer_points_theta_phi
-                    .axis_iter(nd::Axis(1))
-                    .zip(tracer_heights.iter())
-                    .map(move |(point_theta_phi, &height)| {
-                        (
-                            self.make_point(
-                                point_theta_phi[[0]],
-                                point_theta_phi[[1]],
-                                height,
-                                height_exaggeration_factor,
-                            ),
-                            position,
-                        )
-                    })
-            })
-            .flatten()
-            .unzip();
-        TracerPoints { points, positions }
+            .zip(self.tracer_heights_history.iter())
+        {
+            for (j, (tracer_point_theta_phi, &tracer_height)) in tracer_points_theta_phi
+                .axis_iter(nd::Axis(1))
+                .zip(tracer_heights.iter())
+                .enumerate()
+            {
+                path_lines[j].push(self.make_point(
+                    tracer_point_theta_phi[[flow::bases::ylm::Component::Theta as usize]],
+                    tracer_point_theta_phi[[flow::bases::ylm::Component::Phi as usize]],
+                    tracer_height,
+                    height_exaggeration_factor,
+                ));
+            }
+        }
+        Tracers::new(path_lines)
     }
 
     fn make_point(
@@ -340,7 +346,70 @@ impl TorusRenderable {
 }
 
 #[derive(Clone)]
-pub struct TracerPoints {
-    pub points: Vec<Vector3<Float>>,
-    pub positions: Vec<usize>,
+pub struct Tracers {
+    path_lines: Vec<Vec<Vector3<Float>>>,
+}
+
+impl Tracers {
+    pub fn new(path_lines: Vec<Vec<Vector3<Float>>>) -> Self {
+        Self { path_lines }
+    }
+
+    pub fn make_mesh(
+        &self,
+        context: &three_d::Context,
+        line_mesh: &three_d::CpuMesh,
+        line_width: f32,
+        rotation: &three_d::Mat4,
+    ) -> three_d::InstancedMesh {
+        let (transformations, colors) = self
+            .path_lines
+            .iter()
+            .map(|path_line| {
+                path_line
+                    .iter()
+                    .zip(path_line.iter().skip(1))
+                    .enumerate()
+                    .map(|(position, (start, end))| {
+                        let start = Vec3::new(start.x as f32, start.y as f32, start.z as f32);
+                        let end = Vec3::new(end.x as f32, end.y as f32, end.z as f32);
+                        let displacement = end - start;
+                        let length = displacement.magnitude();
+                        let axis = Vec3::unit_x().cross(displacement).normalize();
+                        let angle = displacement.angle(Vec3::unit_x());
+
+                        let direction_rotation = Mat4::from_axis_angle(axis, angle);
+                        let length_scale = Mat4::from_nonuniform_scale(length, 1., 1.);
+
+                        // Add transparency based on position in tracer's trail and length of line
+                        // segment.
+                        let opacity = (4. * length
+                            / (crate::geom::TRACER_TAIL_LENGTH as f32 * line_width))
+                            .min(1.)
+                            * (position as f32 / crate::geom::TRACER_TAIL_LENGTH as f32);
+                        let color =
+                            Srgba::new(u8::MAX, u8::MAX, u8::MAX, (u8::MAX as f32 * opacity) as u8);
+
+                        (
+                            rotation
+                                * Mat4::from_translation(start)
+                                * direction_rotation
+                                * length_scale,
+                            color,
+                        )
+                    })
+            })
+            .flatten()
+            .unzip();
+
+        InstancedMesh::new(
+            context,
+            &Instances {
+                transformations,
+                colors: Some(colors),
+                texture_transformations: None,
+            },
+            line_mesh,
+        )
+    }
 }
