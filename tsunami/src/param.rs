@@ -280,6 +280,10 @@ impl Parameters {
                 ..Self::default()
             },
             Preset::Tides => Self {
+                physics: PhysicsParameters {
+                    log10_kinematic_viscosity_rel_to_water: 13.,
+                    ..Default::default()
+                },
                 visualization: VisualizationParameters {
                     show_rotation: ShowRotation::Inertial,
                     height_exaggeration_factor: 1500.,

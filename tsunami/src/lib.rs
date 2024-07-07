@@ -219,7 +219,7 @@ pub async fn run() {
     let rendering_data =
         renderable.make_rendering_data(params.visualization.height_exaggeration_factor);
 
-    let mut mesh_model = Gm::new(
+    let mut ocean_model = Gm::new(
         Mesh::new(&context, &rendering_data.mesh.into()),
         PhysicalMaterial::new(
             &context,
@@ -378,19 +378,26 @@ pub async fn run() {
         }
         let rendering_data =
             renderable.make_rendering_data(params.visualization.height_exaggeration_factor);
-        let rotation = match params.visualization.show_rotation {
-            param::ShowRotation::Corotating | param::ShowRotation::Inertial => {
-                Matrix4::from_axis_angle(
-                    Vector3::unit_z(),
-                    -radians(renderable.rotational_phase_rad() as f32),
-                )
+
+        let (mesh_rotation, inverse_mesh_rotation, camera_rotation) = {
+            let rotation = Mat4::from_axis_angle(
+                Vector3::unit_z(),
+                -radians(renderable.rotational_phase_rad() as f32),
+            );
+            let inverse_rotation = Mat4::from_axis_angle(
+                Vector3::unit_z(),
+                radians(renderable.rotational_phase_rad() as f32),
+            );
+            match params.visualization.show_rotation {
+                param::ShowRotation::Corotating => (rotation, inverse_rotation, rotation),
+                param::ShowRotation::Inertial => (rotation, inverse_rotation, Mat4::identity()),
+                param::ShowRotation::None => (Mat4::identity(), Mat4::identity(), Mat4::identity()),
             }
-            param::ShowRotation::None => Matrix4::identity(),
         };
 
         {
-            mesh_model.geometry = Mesh::new(&context, &rendering_data.mesh.into());
-            mesh_model.set_transformation(rotation);
+            ocean_model.geometry = Mesh::new(&context, &rendering_data.mesh.into());
+            ocean_model.set_transformation(mesh_rotation);
 
             moon_sprite_object.geometry = Sprites::new(
                 &context,
@@ -411,7 +418,7 @@ pub async fn run() {
                                 .quadrature_points
                                 .into_iter()
                                 .map(|point| {
-                                    rotation.transform_vector(Vector3 {
+                                    mesh_rotation.transform_vector(Vector3 {
                                         x: point.x as f32,
                                         y: point.y as f32,
                                         z: point.z as f32,
@@ -430,9 +437,12 @@ pub async fn run() {
             }
 
             if let param::ShowFeatures::Tracers = params.visualization.show_features {
-                tracers_model.geometry = rendering_data
-                    .tracer_points
-                    .make_mesh(&context, &line_mesh, point_size, &rotation);
+                tracers_model.geometry = rendering_data.tracer_points.make_mesh(
+                    &context,
+                    &line_mesh,
+                    point_size,
+                    &mesh_rotation,
+                );
                 tracers_model.material.render_states.cull = Cull::None;
             } else {
                 tracers_model.material.render_states.cull = Cull::FrontAndBack;
@@ -456,9 +466,13 @@ pub async fn run() {
                         double_click_detector.process_release()
                     {
                         if let Some(space_position) =
-                            pick(&context, &camera, screen_position, &mesh_model)
+                            pick(&context, &camera, screen_position, &ocean_model)
                         {
-                            params.earthquake_position = Some(space_position);
+                            // We rotate the camera below, so we need apply the camera rotation
+                            // transformation to `space_position` as well.
+                            params.earthquake_position = Some(camera_rotation.transform_vector(
+                                inverse_mesh_rotation.transform_vector(space_position),
+                            ));
                             params.earthquake_triggered = false;
                         }
                     }
@@ -468,7 +482,7 @@ pub async fn run() {
                     ..
                 } => {
                     if let (Some(space_position), geom::GeometryType::Sphere) = (
-                        pick(&context, &camera, screen_position, &mesh_model),
+                        pick(&context, &camera, screen_position, &ocean_model),
                         params.physics.geometry_type,
                     ) {
                         let mut tsunami_hint_circle = CpuMesh::circle(20);
@@ -498,9 +512,7 @@ pub async fn run() {
                 _ => {}
             }
         }
-        if let param::ShowRotation::Corotating = params.visualization.show_rotation {
-            tsunami_hint_circle_object.set_transformation(rotation);
-        }
+        tsunami_hint_circle_object.set_transformation(camera_rotation);
         // Set hint circle color to red if completing a double click.
         double_click_detector.process_idle();
         match double_click_detector.state {
@@ -595,26 +607,23 @@ pub async fn run() {
 
         control.handle_events(&mut camera, &mut frame_input.events);
 
-        // We rotated the physical objects above; now we need to rotate the camera as
-        // well so that we are observing from a corotating frame.
-        let rotated_camera =
-            if let param::ShowRotation::Corotating = params.visualization.show_rotation {
-                let position = rotation.transform_vector(*camera.position());
-                let target = rotation.transform_vector(*camera.target());
-                let up = rotation.transform_vector(*camera.up());
+        // We rotated the physical objects above; now we need to correspondingly rotate
+        // the camera if we're in a corotating frame.
+        let rotated_camera = {
+            let position = camera_rotation.transform_vector(*camera.position());
+            let target = camera_rotation.transform_vector(*camera.target());
+            let up = camera_rotation.transform_vector(*camera.up());
 
-                let mut rotated_camera = camera.clone();
-                rotated_camera.set_view(position, target, up);
-                rotated_camera
-            } else {
-                camera.clone()
-            };
+            let mut rotated_camera = camera.clone();
+            rotated_camera.set_view(position, target, up);
+            rotated_camera
+        };
         frame_input
             .screen()
             .render(
                 &rotated_camera,
                 std::iter::empty()
-                    .chain(&mesh_model)
+                    .chain(&ocean_model)
                     .chain(&quadrature_point_cloud_model)
                     .chain(&tracers_model)
                     .chain(&tsunami_hint_circle_object)
