@@ -37,6 +37,7 @@ impl Parameters {
 
 #[derive(Copy, Clone, strum::EnumIter)]
 pub enum Preset {
+    Tsunami,
     Vortices,
     Tides,
     Torus,
@@ -67,6 +68,7 @@ impl Preset {
 impl std::fmt::Display for Preset {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
+            Preset::Tsunami => "Tsunami",
             Preset::Vortices => "Vortices",
             Preset::Tides => "Tides",
             Preset::Torus => "Torus",
@@ -232,7 +234,7 @@ impl PerformanceParameters {
                     )
                     .changed();
             }
-            ui.label("num tracers");
+            ui.label("num path lines");
         });
         // ui.add(
         //     egui::Slider::new(
@@ -260,6 +262,24 @@ impl Default for PerformanceParameters {
 impl Parameters {
     pub fn from_preset(preset: Preset) -> Self {
         match preset {
+            Preset::Tsunami => Self {
+                physics: PhysicsParameters {
+                    lunar_distance_rel_to_actual: 10.,
+                    rotation_period_hr: 100.,
+                    earthquake_region_size_mi: 400.,
+                    ..Default::default()
+                },
+                visualization: VisualizationParameters {
+                    velocity_exaggeration_factor: 1e4,
+                    ..Default::default()
+                },
+                performance: PerformanceParameters {
+                    resolution_level: 7,
+                    ..Default::default()
+                },
+                earthquake_position: Some(vec3(0.5, 1., 1.)),
+                ..Self::default()
+            },
             Preset::Vortices => Self {
                 physics: PhysicsParameters {
                     lunar_distance_rel_to_actual: 10.,
