@@ -3,7 +3,7 @@ members = ["flow", "pyflow", "tsunami"]
 resolver = "2"
 
 [profile.release]
-debug = true
+debug = false
 lto = true
 
 [workspace.dependencies]
