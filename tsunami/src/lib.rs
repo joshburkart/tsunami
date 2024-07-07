@@ -661,6 +661,5 @@ const DETAILS_MARKDOWN: &'static str = indoc::indoc! {"
     Tech stack: Rust/WebAssembly/WebGL/[`egui`](https://www.egui.rs/)/
     [`three-d`](https://github.com/asny/three-d).
 
-    By Josh Burkart. View and contribute to the code on
-    [GitHub](https://github.com/joshburkart/tsunami)!
+    By Josh Burkart. Check out the code on [GitHub](https://github.com/joshburkart/tsunami)!
 "};

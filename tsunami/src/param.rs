@@ -269,7 +269,11 @@ impl Parameters {
                     ..Default::default()
                 },
                 visualization: VisualizationParameters {
-                    velocity_exaggeration_factor: 5e3,
+                    velocity_exaggeration_factor: 8e3,
+                    ..Default::default()
+                },
+                performance: PerformanceParameters {
+                    log2_num_tracers: 13,
                     ..Default::default()
                 },
                 earthquake_position: Some(vec3(0.5, 1., 1.)),
@@ -290,6 +294,10 @@ impl Parameters {
                 },
                 visualization: VisualizationParameters {
                     velocity_exaggeration_factor: 100.,
+                    ..Default::default()
+                },
+                performance: PerformanceParameters {
+                    resolution_level: 7,
                     ..Default::default()
                 },
                 ..Self::default()
